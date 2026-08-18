@@ -26,6 +26,15 @@ export const instanceSettings = pgTable("instance_settings", {
   allowUserAccent: boolean("allow_user_accent").notNull().default(true),
   defaultUserStorageBytes: bigint("default_user_storage_bytes", { mode: "number" }).notNull().default(1073741824),
   smtpHost: text("smtp_host"), smtpPort: integer("smtp_port"), smtpUser: text("smtp_user"), smtpPassword: text("smtp_password"), smtpFrom: text("smtp_from"), smtpSecure: boolean("smtp_secure").notNull().default(false),
+  moderationEnabled: boolean("moderation_enabled").notNull().default(false),
+  moderationSquare: boolean("moderation_square").notNull().default(true),
+  moderationCircle: boolean("moderation_circle").notNull().default(false),
+  moderationArticle: boolean("moderation_article").notNull().default(true),
+  moderationBaseUrl: text("moderation_base_url"), moderationModel: text("moderation_model"), moderationApiKey: text("moderation_api_key"),
+  moderationRules: text("moderation_rules"),
+  moderationCategories: jsonb("moderation_categories").notNull().default(["politics", "porn", "violence", "abuse", "illegal", "privacy", "ad"]),
+  moderationThreshold: integer("moderation_threshold").notNull().default(60),
+  moderationOnError: text("moderation_on_error").notNull().default("review"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -235,6 +244,18 @@ export const posts = pgTable("posts", {
   editedAt: timestamp("edited_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
+/** 一条待审 / 已审的内容。广场帖、圈子帖、公开文章共用这张表，人工审核队列直接查它。 */
+export const moderationReviews = pgTable("moderation_reviews", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  targetType: text("target_type").notNull(), targetId: uuid("target_id").notNull(),
+  scope: text("scope").notNull(), workspaceId: uuid("workspace_id"), authorUserId: uuid("author_user_id").notNull().references(() => users.id),
+  snapshot: text("snapshot").notNull(),
+  aiVerdict: text("ai_verdict").notNull(), aiScore: integer("ai_score"), aiCategories: jsonb("ai_categories").notNull().default([]), aiReason: text("ai_reason"), aiModel: text("ai_model"),
+  status: text("status").notNull().default("pending"),
+  reviewerId: uuid("reviewer_id").references(() => users.id), reviewNote: text("review_note"), reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const postReactions = pgTable("post_reactions", { postId: uuid("post_id").notNull().references(() => posts.id), userId: uuid("user_id").notNull().references(() => users.id), kind: text("kind").notNull().default("like"), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull() }, t => [primaryKey({columns:[t.postId,t.userId,t.kind]})]);
 
 export const comments = pgTable("comments", {

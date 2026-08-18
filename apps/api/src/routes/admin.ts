@@ -3,7 +3,7 @@ import { and, count, desc, eq, ilike, or } from "drizzle-orm";
 import { z } from "zod";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { instanceSettings, mcpTokens, registrationCodes, sessions, users, workspaces } from "../db/schema.ts";
+import { instanceSettings, mcpTokens, moderationReviews, registrationCodes, sessions, users, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { registrationCode, tokenHash } from "../lib/tokens.ts";
@@ -18,6 +18,11 @@ function pageQuery(c: { req: { query: (k: string) => string | undefined } }) {
 function likeContains(raw: string | undefined) {
   const q = raw?.replace(/[%_]/g, "").trim() ?? "";
   return q ? `%${q}%` : null;
+}
+
+/** 密文也别回前端，UI 只需要知道「配没配」。 */
+function maskSettings(s: typeof instanceSettings.$inferSelect | undefined) {
+  return s ? { ...s, smtpPassword: s.smtpPassword ? "••••••••" : null, moderationApiKey: s.moderationApiKey ? "••••••••" : null } : s;
 }
 
 function publicUser(row: typeof users.$inferSelect) {
@@ -40,20 +45,28 @@ adminRoutes.get("/admin/overview", async c => {
   const [{ value: adminCount }] = await db.select({ value: count() }).from(users).where(and(eq(users.roleInstance, "admin"), eq(users.status, "active")));
   const [{ value: codeCount }] = await db.select({ value: count() }).from(registrationCodes);
   const [{ value: activeCodeCount }] = await db.select({ value: count() }).from(registrationCodes).where(eq(registrationCodes.status, "active"));
+  const [{ value: pendingModerationCount }] = await db.select({ value: count() }).from(moderationReviews).where(eq(moderationReviews.status, "pending"));
   const recent = await db.select().from(users).orderBy(desc(users.createdAt)).limit(6);
   const [settings] = await db.select().from(instanceSettings);
   return ok(c, {
-    userCount, workspaceCount, adminCount, codeCount, activeCodeCount,
+    userCount, workspaceCount, adminCount, codeCount, activeCodeCount, pendingModerationCount,
     recentUsers: recent.map(publicUser),
-    settings: settings ? { ...settings, smtpPassword: settings.smtpPassword ? "••••••••" : null } : settings,
+    settings: maskSettings(settings),
   });
 });
 adminRoutes.patch("/admin/settings", async c => {
   await admin(c);
-  const body = z.object({ allowOpenRegistration: z.boolean().optional(), allowCodeRegistration: z.boolean().optional(), requireEmailVerification: z.boolean().optional(), allowUserCreateWorkspace: z.boolean().optional(), squareEnabled: z.boolean().optional(), aiEnabled: z.boolean().optional(), defaultUserStorageBytes: z.number().int().min(1048576).max(1099511627776).optional(), smtpHost:z.string().nullable().optional(),smtpPort:z.number().int().min(1).max(65535).nullable().optional(),smtpUser:z.string().nullable().optional(),smtpPassword:z.string().nullable().optional(),smtpFrom:z.string().nullable().optional(),smtpSecure:z.boolean().optional() }).parse(await c.req.json());
-  const values={...body,smtpPassword:body.smtpPassword?seal(body.smtpPassword):body.smtpPassword,updatedAt:new Date()};
+  const body = z.object({ allowOpenRegistration: z.boolean().optional(), allowCodeRegistration: z.boolean().optional(), requireEmailVerification: z.boolean().optional(), allowUserCreateWorkspace: z.boolean().optional(), squareEnabled: z.boolean().optional(), aiEnabled: z.boolean().optional(), defaultUserStorageBytes: z.number().int().min(1048576).max(1099511627776).optional(), smtpHost:z.string().nullable().optional(),smtpPort:z.number().int().min(1).max(65535).nullable().optional(),smtpUser:z.string().nullable().optional(),smtpPassword:z.string().nullable().optional(),smtpFrom:z.string().nullable().optional(),smtpSecure:z.boolean().optional(),
+    moderationEnabled: z.boolean().optional(), moderationSquare: z.boolean().optional(), moderationCircle: z.boolean().optional(), moderationArticle: z.boolean().optional(),
+    moderationBaseUrl: z.string().url().nullable().optional(), moderationModel: z.string().max(120).nullable().optional(), moderationApiKey: z.string().max(400).nullable().optional(),
+    moderationRules: z.string().max(4000).nullable().optional(), moderationCategories: z.array(z.string().min(1).max(40)).max(20).optional(),
+    moderationThreshold: z.number().int().min(1).max(100).optional(), moderationOnError: z.enum(["pass", "review"]).optional() }).parse(await c.req.json());
+  // 前端回填的是掩码，别把 •••••••• 当成新 Key 存进去。
+  const key = body.moderationApiKey === undefined || body.moderationApiKey?.startsWith("••") ? undefined : body.moderationApiKey ? seal(body.moderationApiKey) : null;
+  const values={...body,smtpPassword:body.smtpPassword?seal(body.smtpPassword):body.smtpPassword,moderationApiKey:key,updatedAt:new Date()};
+  if (key === undefined) delete (values as Record<string, unknown>).moderationApiKey;
   const [saved] = await db.update(instanceSettings).set(values).where(eq(instanceSettings.id, 1)).returning();
-  return ok(c, saved);
+  return ok(c, maskSettings(saved));
 });
 adminRoutes.get("/admin/users", async c => {
   await admin(c);

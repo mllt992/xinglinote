@@ -1,18 +1,21 @@
 import { Hono } from "hono";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { instanceSettings, notes, postReactions, posts, users, workspaceMembers, workspaces } from "../db/schema.ts";
+import { instanceSettings, moderationReviews, notes, postReactions, posts, users, workspaceMembers, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
+import { moderate, pendingMessage, recordReview } from "../lib/moderation.ts";
 export const feedRoutes=new Hono();
 async function user(c:Parameters<typeof currentUser>[0]){const u=await currentUser(c);if(!u)throw fail("UNAUTHENTICATED","未登录");return u;}
-async function hydrate(rows:typeof posts.$inferSelect[], viewer?:string){const authors=await db.select().from(users);const reactions=await db.select().from(postReactions);const ns=await db.select().from(notes);return rows.map(p=>({id:p.id,body:p.body,visibility:p.visibility,workspaceId:p.workspaceId,createdAt:p.createdAt,author:authors.find(u=>u.id===p.authorUserId)?{handle:authors.find(u=>u.id===p.authorUserId)!.handle,displayName:authors.find(u=>u.id===p.authorUserId)!.displayName}:null,note:p.noteId?(()=>{const n=ns.find(n=>n.id===p.noteId);return n?{id:n.id,title:n.title}:null})():null,likes:reactions.filter(r=>r.postId===p.id&&r.kind==="like").length,liked:!!viewer&&reactions.some(r=>r.postId===p.id&&r.userId===viewer&&r.kind==="like"),editedAt:p.editedAt,mine:!!viewer&&p.authorUserId===viewer}));}
-feedRoutes.get("/feed/public",async c=>{const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");const viewer=await currentUser(c);const rows=await db.select().from(posts).where(and(eq(posts.visibility,"public"),eq(posts.status,"visible"))).orderBy(desc(posts.createdAt));return ok(c,{posts:await hydrate(rows.slice(0,50),viewer?.id)});});
-feedRoutes.get("/feed/workspaces/:id",async c=>{const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");const rows=await db.select().from(posts).where(and(eq(posts.workspaceId,wsId),eq(posts.status,"visible"))).orderBy(desc(posts.createdAt));return ok(c,{posts:await hydrate(rows.slice(0,50),u.id)});});
-feedRoutes.post("/posts",async c=>{const u=await user(c);const body=z.object({body:z.string().min(1).max(5000),visibility:z.enum(["public","workspace"]),workspaceId:z.string().uuid().nullable().optional(),noteId:z.string().uuid().nullable().optional()}).parse(await c.req.json());if(body.visibility==="workspace"){if(!body.workspaceId)throw fail("VALIDATION","缺少工作区");const role=await memberRole(body.workspaceId,u.id);if(!role||role==="viewer")throw fail("FORBIDDEN","无权发布工作区动态");const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,body.workspaceId));if(ws?.frozen)throw fail("FORBIDDEN","工作区已冻结，暂时只读");}if(body.visibility==="public"&&body.workspaceId)throw fail("VALIDATION","公开动态不能指定工作区");if(body.noteId){const [n]=await db.select().from(notes).where(eq(notes.id,body.noteId));if(!n||n.trashedAt||!n.published)throw fail("VALIDATION","只能附加已发布笔记");if(body.visibility==="workspace"&&n.workspaceId!==body.workspaceId)throw fail("FORBIDDEN","不能附加其他工作区的笔记");if(body.visibility==="public"&&!(await memberRole(n.workspaceId,u.id)))throw fail("FORBIDDEN","不能附加无权访问的笔记");}const [p]=await db.insert(posts).values({authorUserId:u.id,workspaceId:body.workspaceId,visibility:body.visibility,body:body.body,noteId:body.noteId}).returning();return ok(c,p,201);});
+/** 只有作者本人能在时间线里看到自己待审 / 被驳回的帖子，别人看不见。 */
+function readable(viewer?:string){return viewer?or(eq(posts.status,"visible"),and(eq(posts.authorUserId,viewer),inArray(posts.status,["pending_review","rejected"]))):eq(posts.status,"visible");}
+async function hydrate(rows:typeof posts.$inferSelect[], viewer?:string){const authors=await db.select().from(users);const reactions=await db.select().from(postReactions);const ns=await db.select().from(notes);const held=rows.filter(p=>p.status!=="visible").map(p=>p.id);const reviews=held.length?await db.select().from(moderationReviews).where(and(eq(moderationReviews.targetType,"post"),inArray(moderationReviews.targetId,held))).orderBy(desc(moderationReviews.createdAt)):[];return rows.map(p=>({id:p.id,status:p.status,moderationReason:p.status==="visible"?null:(()=>{const r=reviews.find(r=>r.targetId===p.id);return r?(r.reviewNote??r.aiReason??null):null;})(),body:p.body,visibility:p.visibility,workspaceId:p.workspaceId,createdAt:p.createdAt,author:authors.find(u=>u.id===p.authorUserId)?{handle:authors.find(u=>u.id===p.authorUserId)!.handle,displayName:authors.find(u=>u.id===p.authorUserId)!.displayName}:null,note:p.noteId?(()=>{const n=ns.find(n=>n.id===p.noteId);return n?{id:n.id,title:n.title}:null})():null,likes:reactions.filter(r=>r.postId===p.id&&r.kind==="like").length,liked:!!viewer&&reactions.some(r=>r.postId===p.id&&r.userId===viewer&&r.kind==="like"),editedAt:p.editedAt,mine:!!viewer&&p.authorUserId===viewer}));}
+feedRoutes.get("/feed/public",async c=>{const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");const viewer=await currentUser(c);const rows=await db.select().from(posts).where(and(eq(posts.visibility,"public"),readable(viewer?.id))).orderBy(desc(posts.createdAt));return ok(c,{posts:await hydrate(rows.slice(0,50),viewer?.id)});});
+feedRoutes.get("/feed/workspaces/:id",async c=>{const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");const rows=await db.select().from(posts).where(and(eq(posts.workspaceId,wsId),readable(u.id))).orderBy(desc(posts.createdAt));return ok(c,{posts:await hydrate(rows.slice(0,50),u.id)});});
+feedRoutes.post("/posts",async c=>{const u=await user(c);const body=z.object({body:z.string().min(1).max(5000),visibility:z.enum(["public","workspace"]),workspaceId:z.string().uuid().nullable().optional(),noteId:z.string().uuid().nullable().optional()}).parse(await c.req.json());if(body.visibility==="workspace"){if(!body.workspaceId)throw fail("VALIDATION","缺少工作区");const role=await memberRole(body.workspaceId,u.id);if(!role||role==="viewer")throw fail("FORBIDDEN","无权发布工作区动态");const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,body.workspaceId));if(ws?.frozen)throw fail("FORBIDDEN","工作区已冻结，暂时只读");}if(body.visibility==="public"&&body.workspaceId)throw fail("VALIDATION","公开动态不能指定工作区");if(body.noteId){const [n]=await db.select().from(notes).where(eq(notes.id,body.noteId));if(!n||n.trashedAt||!n.published)throw fail("VALIDATION","只能附加已发布笔记");if(body.visibility==="workspace"&&n.workspaceId!==body.workspaceId)throw fail("FORBIDDEN","不能附加其他工作区的笔记");if(body.visibility==="public"&&!(await memberRole(n.workspaceId,u.id)))throw fail("FORBIDDEN","不能附加无权访问的笔记");}const scope=body.visibility==="public"?"square":"circle";const verdict=await moderate(body.body,scope);const held=verdict.decision==="review";const [p]=await db.insert(posts).values({authorUserId:u.id,workspaceId:body.workspaceId,visibility:body.visibility,body:body.body,noteId:body.noteId,status:held?"pending_review":"visible"}).returning();await recordReview({targetType:"post",targetId:p.id,scope,workspaceId:p.workspaceId,authorUserId:u.id,snapshot:body.body,verdict});return ok(c,{...p,moderation:{held,message:held?pendingMessage(verdict):null}},201);});
 feedRoutes.delete("/posts/:id",async c=>{const u=await user(c);const [p]=await db.select().from(posts).where(eq(posts.id,c.req.param("id")));if(!p)throw fail("NOT_FOUND","动态不存在");if(p.authorUserId!==u.id&&u.roleInstance!=="admin")throw fail("FORBIDDEN","无权删除");await db.update(posts).set({status:"deleted",updatedAt:new Date()}).where(eq(posts.id,p.id));return ok(c,{});});
 feedRoutes.post("/posts/:id/like",async c=>{const u=await user(c);const postId=c.req.param("id");const [post]=await db.select().from(posts).where(eq(posts.id,postId));if(!post||post.status!=="visible")throw fail("NOT_FOUND","动态不存在");if(post.visibility==="workspace"&&(!post.workspaceId||!(await memberRole(post.workspaceId,u.id))))throw fail("FORBIDDEN","无权操作此动态");const existing=await db.select().from(postReactions).where(and(eq(postReactions.postId,postId),eq(postReactions.userId,u.id),eq(postReactions.kind,"like")));if(existing.length)await db.delete(postReactions).where(and(eq(postReactions.postId,postId),eq(postReactions.userId,u.id),eq(postReactions.kind,"like")));else await db.insert(postReactions).values({postId,userId:u.id,kind:"like"});return ok(c,{liked:!existing.length});});
 
@@ -52,11 +55,14 @@ feedRoutes.post("/posts/leak-check",async c=>{const u=await user(c);const b=z.ob
 
 feedRoutes.patch("/posts/:id",async c=>{
   const u=await user(c);const[p]=await db.select().from(posts).where(eq(posts.id,c.req.param("id")));
-  if(!p||p.status!=="visible")throw fail("NOT_FOUND","动态不存在");
+  if(!p||p.status==="deleted")throw fail("NOT_FOUND","动态不存在");
   if(p.authorUserId!==u.id)throw fail("FORBIDDEN","只有作者能编辑");
   const b=z.object({body:z.string().min(1).max(5000)}).parse(await c.req.json());
-  const[saved]=await db.update(posts).set({body:b.body,editedAt:new Date(),updatedAt:new Date()}).where(eq(posts.id,p.id)).returning();
-  return ok(c,{id:saved.id,editedAt:saved.editedAt});
+  // 改完要重新过一遍审核，否则先发一句人畜无害的再编辑成违规内容就绕过去了。
+  const scope=p.visibility==="public"?"square":"circle";const verdict=await moderate(b.body,scope);const held=verdict.decision==="review";
+  const[saved]=await db.update(posts).set({body:b.body,status:held?"pending_review":"visible",editedAt:new Date(),updatedAt:new Date()}).where(eq(posts.id,p.id)).returning();
+  await recordReview({targetType:"post",targetId:saved.id,scope,workspaceId:saved.workspaceId,authorUserId:u.id,snapshot:b.body,verdict});
+  return ok(c,{id:saved.id,editedAt:saved.editedAt,status:saved.status,moderation:{held,message:held?pendingMessage(verdict):null}});
 });
 
 /** 圈子公开到广场是复制一条新的，圈子里那条不动。 */
@@ -71,8 +77,12 @@ feedRoutes.post("/posts/:id/publish-to-square",async c=>{
   const leaked=scan.filter(x=>!x.publiclyVisible).map(x=>x.title);
   const b=z.object({confirmStripLinks:z.boolean().default(false)}).parse(await c.req.json().catch(()=>({})));
   if(leaked.length&&!b.confirmStripLinks)throw fail("VALIDATION",`这些链接对外看不到，确认后会写成纯文本：${leaked.join("、")}`);
-  const[copy]=await db.insert(posts).values({authorUserId:u.id,workspaceId:null,visibility:"public",body:stripLeaks(p.body,leaked),noteId:null}).returning();
-  return ok(c,{id:copy.id,strippedLinks:leaked},201);
+  const text=stripLeaks(p.body,leaked);
+  // 圈子可能没开审核而广场开了，所以复制到广场要按广场的规矩重审一次。
+  const verdict=await moderate(text,"square");const held=verdict.decision==="review";
+  const[copy]=await db.insert(posts).values({authorUserId:u.id,workspaceId:null,visibility:"public",body:text,noteId:null,status:held?"pending_review":"visible"}).returning();
+  await recordReview({targetType:"post",targetId:copy.id,scope:"square",workspaceId:null,authorUserId:u.id,snapshot:text,verdict});
+  return ok(c,{id:copy.id,strippedLinks:leaked,moderation:{held,message:held?pendingMessage(verdict):null}},201);
 });
 
 /** 转正：把一条动态存成笔记，文首留一句出处。 */

@@ -326,6 +326,38 @@ const statements = [
     last_used_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now()
   )`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS moderation_enabled boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS moderation_square boolean NOT NULL DEFAULT true`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS moderation_circle boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS moderation_article boolean NOT NULL DEFAULT true`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS moderation_base_url text`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS moderation_model text`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS moderation_api_key text`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS moderation_rules text`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS moderation_categories jsonb NOT NULL DEFAULT '["politics","porn","violence","abuse","illegal","privacy","ad"]'::jsonb`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS moderation_threshold integer NOT NULL DEFAULT 60`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS moderation_on_error text NOT NULL DEFAULT 'review'`,
+  `CREATE TABLE IF NOT EXISTS moderation_reviews (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    target_type text NOT NULL,
+    target_id uuid NOT NULL,
+    scope text NOT NULL,
+    workspace_id uuid,
+    author_user_id uuid NOT NULL REFERENCES users(id),
+    snapshot text NOT NULL,
+    ai_verdict text NOT NULL,
+    ai_score integer,
+    ai_categories jsonb NOT NULL DEFAULT '[]'::jsonb,
+    ai_reason text,
+    ai_model text,
+    status text NOT NULL DEFAULT 'pending',
+    reviewer_id uuid REFERENCES users(id),
+    review_note text,
+    reviewed_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS moderation_reviews_pending_idx ON moderation_reviews (status, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS moderation_reviews_target_idx ON moderation_reviews (target_type, target_id)`,
 ];
 
 async function main() {

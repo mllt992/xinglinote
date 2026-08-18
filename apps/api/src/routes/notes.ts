@@ -13,6 +13,7 @@ import { backlinksFor, rebuildLinks, snippetAround } from "../lib/links.ts";
 import { assertUserStorage, textBytes } from "../lib/quota.ts";
 import { noteAccess } from "../lib/note-access.ts";
 import { notebookAccess } from "../lib/notebook-access.ts";
+import { instanceConfig, lastReviewedAt, moderate, moderationOn, pendingMessage, recordReview } from "../lib/moderation.ts";
 import { purgeFolder,purgeNotebook,purgeNotes,restoreFolder,restoreFolderId,restoreNotebook,restoreTitle,trashFolder,trashNotebook } from "../lib/trash.ts";
 
 export const knowledge = new Hono();
@@ -161,10 +162,22 @@ knowledge.patch("/notes/:id", async (c) => {
   const nextTitle = body.title ?? note.title;
   const nextBody = body.bodyMd ?? note.bodyMd;
   await assertUserStorage(note.createdBy, textBytes(nextTitle, nextBody) - textBytes(note.title, note.bodyMd));
+  // 公开文章的审核：翻成 published 时必审；已公开的文章改了正文也要重审，
+  // 否则先发一篇干净的、再改成违规就绕过去了。但自动保存很密，同一篇 60 秒内只审一次。
+  const settings = await instanceConfig();
+  const wantsPublish = body.published === true && !note.published;
+  const stillPublic = note.published && (body.published ?? true);
+  const contentChanged = nextTitle !== note.title || nextBody !== note.bodyMd;
+  let verdict = null;
+  if (moderationOn(settings, "article") && (wantsPublish || (stillPublic && contentChanged))) {
+    const last = wantsPublish ? null : await lastReviewedAt("note", note.id);
+    if (!last || Date.now() - new Date(last).getTime() > 60000) verdict = await moderate(`${nextTitle}\n\n${nextBody}`, "article", settings);
+  }
+  const held = verdict?.decision === "review";
   const next = {
     title: nextTitle,
     bodyMd: nextBody,
-    published: body.published ?? note.published,
+    published: held ? false : (body.published ?? note.published),
     aiIndex: body.aiIndex ?? note.aiIndex,
     tags: body.tags ? [...new Set(body.tags.map(t => t.trim()).filter(Boolean))] : (note.tags as string[]),
     version: note.version + 1,
@@ -182,7 +195,8 @@ knowledge.patch("/notes/:id", async (c) => {
   });
   await writeNoteFile({ ...saved, noteId: saved.id });
   await rebuildLinks(saved.id, saved.workspaceId, saved.bodyMd);
-  return ok(c, saved);
+  if (verdict) await recordReview({ targetType: "note", targetId: saved.id, scope: "article", workspaceId: saved.workspaceId, authorUserId: user.id, snapshot: `${saved.title}\n\n${saved.bodyMd}`, verdict });
+  return ok(c, { ...saved, moderation: { held: !!held, message: held ? pendingMessage(verdict!) : null } });
 });
 
 knowledge.post("/workspaces", async (c) => {
