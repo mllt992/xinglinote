@@ -34,18 +34,21 @@ export function ImportDialog({notebookId,notebookTitle,open,onOpenChange,onDone}
     try{setPlan(await api<Plan>(`/api/v1/notebooks/${notebookId}/import-preview`,{method:"POST",body:JSON.stringify({files:payload,mode:m,createFolders:folders})}));}
     catch(e){setErr((e as Error).message)}finally{setBusy(false)}
   }
+  /** 导入可能要跑几十秒。确认之后立刻放人走，剩下的在后台跑完再用通知汇报。 */
   async function run(){
     if(!notebookId||!files.length)return;
-    setBusy(true);setErr("");
+    const payload=files;const m=mode;const folders=createFolders;
+    setErr("");reset();onOpenChange(false);
+    toast.toast({title:"正在导入…",description:`${payload.length} 篇，完成后会通知你。这期间可以照常用。`});
     try{
-      const d=await api<{created:unknown[];overwritten:unknown[];skipped:unknown[];foldersCreated:string[]}>(`/api/v1/notebooks/${notebookId}/import-markdown`,{method:"POST",body:JSON.stringify({files,mode,createFolders})});
+      const d=await api<{created:unknown[];overwritten:unknown[];skipped:unknown[];foldersCreated:string[]}>(`/api/v1/notebooks/${notebookId}/import-markdown`,{method:"POST",body:JSON.stringify({files:payload,mode:m,createFolders:folders})});
       const parts=[`新建 ${d.created.length} 篇`];
       if(d.overwritten.length)parts.push(`覆盖 ${d.overwritten.length} 篇`);
       if(d.skipped.length)parts.push(`跳过 ${d.skipped.length} 篇`);
       if(d.foldersCreated.length)parts.push(`建了 ${d.foldersCreated.length} 个目录`);
       toast.success("导入完成",parts.join("，"));
-      reset();onOpenChange(false);onDone();
-    }catch(e){setErr((e as Error).message)}finally{setBusy(false)}
+      onDone();
+    }catch(e){toast.error("导入失败",(e as Error).message)}
   }
 
   return <Dialog open={open} onOpenChange={v=>{if(!v)reset();onOpenChange(v)}}><DialogContent className="max-h-[86vh] max-w-2xl overflow-auto">

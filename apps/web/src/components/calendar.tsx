@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { BellRing, CalendarDays, ChevronRight, FileText, Inbox, Link2Off, PenLine, Plus, RotateCcw, Star, UserPlus } from "lucide-react";
+import { BellRing, CalendarDays, ChevronRight, FileText, Inbox, Link2Off, PenLine, Plus, RotateCcw, Star, UserPlus, X } from "lucide-react";
 import { api } from "../api";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
@@ -102,12 +102,12 @@ export function CalendarPage() {
   const [items, setItems] = useState<CalendarItem[]>([]);
   const [footprints, setFootprints] = useState<Footprint[]>([]);
   const [panel, setPanel] = useState<InboxData>({ inbox: [], groups: [], overdue: 0, me: "", workspaceKind: "personal", canEdit: true });
-  const [showPanel, setShowPanel] = useState(true);
+  const [panelTab, setPanelTab] = useState<"tasks" | "sync" | null>("tasks");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const [quick, setQuick] = useState<{ open: boolean; text: string; preview: QuickPreview | null }>({ open: false, text: "", preview: null });
-  const [syncOpen, setSyncOpen] = useState(false);
+
   const [members, setMembers] = useState<Member[]>([]);
   useEffect(() => {
     // 指派只在团队工作区有意义，但成员列表本身对谁都无害，失败也不该打断日历
@@ -424,9 +424,9 @@ export function CalendarPage() {
         <Button variant="outline" size="sm" onClick={() => setCursor(atMidnight(civil(new Date(), tz)))}>今天</Button>
         <Button variant="ghost" size="sm" onClick={() => setCursor(addDays(cursor, view === "month" ? 30 : view === "week" ? 7 : view === "agenda" ? 14 : 1))} aria-label="下一段">›</Button>
         <Button variant="ghost" size="sm" onClick={() => nav(`/w/${wsId}/today`)}>今天页</Button>
-        <Button variant="ghost" size="sm" onClick={() => setSyncOpen(true)}>订阅</Button>
+        <Button variant={panelTab === "sync" ? "secondary" : "ghost"} size="sm" onClick={() => setPanelTab(t => t === "sync" ? null : "sync")}>订阅</Button>
         <Button size="sm" onClick={() => { setQuick(q => ({ ...q, open: true })); setTimeout(() => quickRef.current?.focus(), 0); }}><Plus />新建</Button>
-        <Button variant={showPanel ? "secondary" : "ghost"} size="sm" onClick={() => setShowPanel(v => !v)}><Inbox />待办{panel.overdue > 0 && <span className="ml-1 rounded-full bg-destructive px-1.5 text-[10px] text-destructive-foreground">{panel.overdue}</span>}</Button>
+        <Button variant={panelTab === "tasks" ? "secondary" : "ghost"} size="sm" onClick={() => setPanelTab(t => t === "tasks" ? null : "tasks")}><Inbox />待办{panel.overdue > 0 && <span className="ml-1 rounded-full bg-destructive px-1.5 text-[10px] text-destructive-foreground">{panel.overdue}</span>}</Button>
       </div>
     </header>
 
@@ -446,10 +446,10 @@ export function CalendarPage() {
           : view === "agenda" ? <AgendaList start={start} days={14} today={today} byDay={byDay} notesByDay={notesByDay} onToggle={toggleDone} onDiary={() => void openDiary()} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />
           : <TimeGrid start={start} days={view === "week" ? 7 : 1} today={today} byDay={byDay} notesByDay={notesByDay} onDrop={reschedule} onToggle={toggleDone} onResize={resizeItem} onCreate={createEvent} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />}
       </div>
-      {showPanel && <TaskPanel narrow={narrow} data={panel} members={members} onToggle={toggleDone} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} onCapture={captureToInbox} onDropBack={dropBackToInbox} onReschedule={(i, t) => void reschedule(i, t)} onRemind={setReminder} onAssign={assignTo} tz={tz} />}
+      {panelTab === "tasks" && <TaskPanel narrow={narrow} data={panel} members={members} onToggle={toggleDone} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} onCapture={captureToInbox} onDropBack={dropBackToInbox} onReschedule={(i, t) => void reschedule(i, t)} onRemind={setReminder} onAssign={assignTo} tz={tz} />}
+      {panelTab === "sync" && <CalendarSyncPanel wsId={wsId} narrow={narrow} onClose={() => setPanelTab(null)} onChanged={() => void load()} />}
     </div>
 
-    <CalendarSyncDialog wsId={wsId} open={syncOpen} onOpenChange={setSyncOpen} onChanged={() => void load()} />
 
     <Dialog open={!!scopeAsk} onOpenChange={open => { if (!open) setScopeAsk(null); }}>
       <DialogContent>
@@ -1134,7 +1134,7 @@ function Empty({ title, text, action }: { title: string; text: string; action?: 
 type Subscription = { id: string; name: string; url: string; enabled: boolean; lastSyncAt: string | null; lastError: string | null; failCount: number };
 type Feed = { id: string; scope: "mine" | "workspace"; url: string; lastUsedAt: string | null };
 
-function CalendarSyncDialog({ wsId, open, onOpenChange, onChanged }: { wsId: string; open: boolean; onOpenChange: (v: boolean) => void; onChanged: () => void }) {
+function CalendarSyncPanel({ wsId, narrow, onClose, onChanged }: { wsId: string; narrow: boolean; onClose: () => void; onChanged: () => void }) {
   const toast = useToast();
   const [subs, setSubs] = useState<Subscription[]>([]);
   const [feeds, setFeeds] = useState<Feed[]>([]);
@@ -1151,7 +1151,7 @@ function CalendarSyncDialog({ wsId, open, onOpenChange, onChanged }: { wsId: str
       setFeeds(b.feeds);
     } catch (e) { toast.error("读取订阅失败", (e as Error).message); }
   }, [wsId]);
-  useEffect(() => { if (open) void load(); }, [open, load]);
+  useEffect(() => { void load(); }, [load]);
 
   async function run(key: string, fn: () => Promise<unknown>, okText?: string) {
     setBusy(key);
@@ -1160,12 +1160,18 @@ function CalendarSyncDialog({ wsId, open, onOpenChange, onChanged }: { wsId: str
     finally { setBusy(""); }
   }
 
-  return <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogContent className="max-w-2xl">
-      <DialogHeader>
-        <DialogTitle>日历同步</DialogTitle>
-        <DialogDescription>订阅外部日历（只读），或者把自己的日程导出成一个订阅地址。</DialogDescription>
-      </DialogHeader>
+  return <aside className={cn(
+    "flex flex-col bg-muted/25",
+    narrow
+      ? "fixed inset-x-0 bottom-0 z-40 h-[60vh] rounded-t-2xl border-t border-border shadow-[0_-8px_24px_rgba(0,0,0,.12)]"
+      : "w-96 shrink-0 border-l border-border",
+  )}>
+    <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
+      <span className="text-sm font-semibold">日历同步</span>
+      <Button className="ml-auto" variant="ghost" size="icon" aria-label="关闭" onClick={onClose}><X /></Button>
+    </div>
+    <ScrollArea className="min-h-0 flex-1"><div className="space-y-5 p-3">
+      <p className="text-xs text-muted-foreground">订阅外部日历（只读），或者把自己的日程导出成一个订阅地址。</p>
 
       <section className="space-y-2">
         <h3 className="text-sm font-semibold">订阅外部日历</h3>
@@ -1214,8 +1220,8 @@ function CalendarSyncDialog({ wsId, open, onOpenChange, onChanged }: { wsId: str
           </Button>)}
         </div>
       </section>
-    </DialogContent>
-  </Dialog>;
+    </div></ScrollArea>
+  </aside>;
 }
 
 // ── 今天 ────────────────────────────────────────────────────────────────

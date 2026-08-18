@@ -62,6 +62,7 @@ node scripts/verify-gaps-cdp.mjs
 node scripts/verify-feed-cdp.mjs
 node scripts/verify-transfer-cdp.mjs
 node scripts/verify-calendar-cdp.mjs
+node scripts/verify-editor-cdp.mjs      # 编辑器内核、字节保真、快捷键、公式与任务列表
 node --experimental-strip-types scripts/verify-zip.mjs   # 不需要账号
 ```
 

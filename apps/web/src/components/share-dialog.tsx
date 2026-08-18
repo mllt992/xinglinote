@@ -6,6 +6,19 @@ const typeLabel:Record<string,string>={note:"整篇",heading:"某一节",folder:
 /** 和后端 headingSlug 同一套规则，锚点两边要能对上。 */
 const slug=(t:string)=>t.trim().toLowerCase().replace(/\s+/g,"-").replace(/[^\p{L}\p{N}_-]/gu,"");
 
+function ShareRow({s,url,copied,onCopy,onRevoke}:{s:ShareDto;url:string;copied?:boolean;onCopy?:()=>void;onRevoke?:()=>void}){
+  const expired=!!s.expiresAt&&new Date(s.expiresAt).getTime()<Date.now();
+  return <div className="flex items-center gap-3 rounded-xl border border-border p-3">
+    <span className={`grid size-9 shrink-0 place-items-center rounded-lg ${onCopy?"bg-primary text-primary-foreground":"bg-muted text-muted-foreground"}`}>{s.hasPassword?<Lock className="size-4"/>:<Link2 className="size-4"/>}</span>
+    <div className="min-w-0 flex-1"><p className={`truncate font-mono text-xs ${onCopy?"":"text-muted-foreground line-through"}`}>{url}</p>
+      <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground"><Badge>{typeLabel[s.targetType]??s.targetType}</Badge>
+        {s.status==="revoked"?"已撤销":expired?"已过期":s.expiresAt?`到期 ${new Date(s.expiresAt).toLocaleDateString()}`:"永不过期"}
+        {s.hasPassword?" · 有密码":" · 无密码"}{s.correctionsEnabled?" · 可纠错":""}</p></div>
+    {onCopy&&<Button variant="ghost" size="icon" aria-label="复制链接" onClick={onCopy}>{copied?<Check/>:<Copy/>}</Button>}
+    {onRevoke&&<Button variant="ghost" size="icon" aria-label="撤销链接" className="text-destructive" onClick={onRevoke}><Trash2/></Button>}
+  </div>;
+}
+
 /** 一个目标可以有多条互不影响的链接：密码、有效期、评论纠错开关都各自独立。 */
 export function ShareDialog({target,open,onOpenChange}:{target:ShareTarget|null;open:boolean;onOpenChange:(v:boolean)=>void}){
   const[shares,setShares]=useState<ShareDto[]>([]);const[password,setPassword]=useState("");const[days,setDays]=useState("never");const[busy,setBusy]=useState(false);const[copied,setCopied]=useState("");const[err,setErr]=useState("");
@@ -17,6 +30,14 @@ export function ShareDialog({target,open,onOpenChange}:{target:ShareTarget|null;
   const load=()=>listPath&&api<{shares:ShareDto[]}>(listPath).then(d=>setShares(d.shares)).catch(()=>setShares([]));
   useEffect(()=>{if(open){setErr("");setAnchor("");void load()}},[open,target?.id]);
   const url=(s:ShareDto)=>`${location.origin}/p/${s.token}`;
+  const[showDead,setShowDead]=useState(false);
+  // 撤销和过期的链接留着可查，但别和还能用的混在一起。
+  const isLive=(s:ShareDto)=>s.status==="active"&&(!s.expiresAt||new Date(s.expiresAt).getTime()>Date.now());
+  const live=shares.filter(isLive);const dead=shares.filter(s=>!isLive(s));
+  async function revoke(s:ShareDto){
+    if(!await askConfirm({title:`撤销《${target?.title}》的这条链接？`,description:"撤销后这条链接立刻失效且不可恢复，已经拿到链接的人也打不开了。需要的话可以再生成一条新的。",confirmText:"撤销链接",destructive:true}))return;
+    await api(`/api/v1/shares/${s.id}`,{method:"DELETE"});void load();
+  }
   async function copy(s:ShareDto){await navigator.clipboard.writeText(url(s));setCopied(s.id);setTimeout(()=>setCopied(""),1200);}
 
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-w-xl">
@@ -35,12 +56,17 @@ export function ShareDialog({target,open,onOpenChange}:{target:ShareTarget|null;
       </div>}
       <FormError className="mt-2">{err}</FormError>
     </div>
-    {target?.kind==="note"?<div className="max-h-72 space-y-2 overflow-auto">{shares.length===0?<div className="py-10 text-center text-sm text-muted-foreground">还没有分享链接。</div>:shares.map(s=><div key={s.id} className="flex items-center gap-3 rounded-xl border border-border p-3">
-      <span className={`grid size-9 place-items-center rounded-lg ${s.status==="active"?"bg-primary text-primary-foreground":"bg-muted text-muted-foreground"}`}>{s.hasPassword?<Lock className="size-4"/>:<Link2 className="size-4"/>}</span>
-      <div className="min-w-0 flex-1"><p className="truncate font-mono text-xs">{url(s)}</p><p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground"><Badge>{typeLabel[s.targetType]??s.targetType}</Badge>{s.status==="revoked"?"已撤销":s.expiresAt?`到期 ${new Date(s.expiresAt).toLocaleDateString()}`:"永不过期"}{s.hasPassword?" · 有密码":" · 无密码"}{s.correctionsEnabled?" · 可纠错":""}</p></div>
-      {s.status==="active"&&<><Button variant="ghost" size="icon" aria-label="复制链接" onClick={()=>void copy(s)}>{copied===s.id?<Check/>:<Copy/>}</Button>
-      <Button variant="ghost" size="icon" aria-label="撤销链接" className="text-destructive" onClick={async()=>{if(!await askConfirm({title:`撤销《${target?.title}》的这条链接？`,description:"撤销后这条链接立刻失效且不可恢复，已经拿到链接的人也打不开了。需要的话可以再生成一条新的。",confirmText:"撤销链接",destructive:true}))return;await api(`/api/v1/shares/${s.id}`,{method:"DELETE"});void load()}}><Trash2/></Button></>}
-    </div>)}</div>
+    {target?.kind==="note"?<div className="max-h-80 space-y-2 overflow-auto">
+      {shares.length===0&&<div className="py-10 text-center text-sm text-muted-foreground">还没有分享链接。</div>}
+      {live.length>0&&<p className="px-1 text-[11px] font-semibold uppercase tracking-[.12em] text-muted-foreground">生效中 {live.length}</p>}
+      {live.map(s=><ShareRow key={s.id} s={s} url={url(s)} copied={copied===s.id} onCopy={()=>void copy(s)} onRevoke={()=>void revoke(s)} />)}
+      {dead.length>0&&<>
+        <button className="mt-2 w-full rounded-lg px-1 py-1.5 text-left text-[11px] font-semibold uppercase tracking-[.12em] text-muted-foreground hover:bg-muted" onClick={()=>setShowDead(v=>!v)}>
+          {showDead?"▾":"▸"} 已失效 {dead.length}
+        </button>
+        {showDead&&dead.map(s=><ShareRow key={s.id} s={s} url={url(s)} />)}
+      </>}
+    </div>
     :<p className="text-xs text-muted-foreground">生成的链接已复制到剪贴板。这个目标的全部链接可以在「备份与审计 → 分享」里管理。</p>}
   </DialogContent></Dialog>;
 }
