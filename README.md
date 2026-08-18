@@ -42,7 +42,7 @@ node scripts/verify-manage.mjs      # 备份 / 导出 / 审计 / 冻结 / 通知
 node scripts/verify-mcp-keys.mjs    # MCP 钥匙的额度、范围、档位、轮换、吊销
 node scripts/verify-gaps.mjs        # 分享类型、分享总览、回收站销毁、搜索、标签
 node scripts/verify-feed.mjs        # 圈子动态、泄漏检查、转正、公开主页、评论
-node --experimental-strip-types scripts/verify-transfer.mjs   # 导入向导、zip 导出、版本裁剪
+node --experimental-strip-types scripts/verify-transfer.mjs   # 导入向导、zip 导出、版本裁剪（约 3 分钟）
 node scripts/verify-manage-cdp.mjs
 node scripts/verify-gaps-cdp.mjs
 node scripts/verify-feed-cdp.mjs
@@ -54,3 +54,12 @@ node --experimental-strip-types scripts/verify-zip.mjs   # 不需要账号
 
 出厂皮肤是「现代墨白」。设置 → 外观 可改主题色、导入 `theme.json`。  
 制作说明：[docs/主题开发手册.md](docs/主题开发手册.md)
+
+## 部署
+
+生产用 Docker：一个镜像三个命令（api / worker / migrate），只暴露一个 HTTP 入口。
+见 [docs/部署.md](docs/部署.md)。
+
+```bash
+docker compose --profile app --profile tls up -d --build
+```
