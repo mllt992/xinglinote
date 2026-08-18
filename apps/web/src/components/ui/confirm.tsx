@@ -47,28 +47,40 @@ const ConfirmContext = React.createContext<Api | null>(null);
  */
 export function ConfirmProvider({ children }: { children: React.ReactNode }) {
   const [pending, setPending] = React.useState<Pending | null>(null);
+  const [open, setOpen] = React.useState(false);
   const [value, setValue] = React.useState("");
   const resolver = React.useRef<((v: Settled) => void) | null>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  /** Radix 关闭后会把焦点还给 <AlertDialog.Trigger>，而我们是代码里直接开的，没有 Trigger，
+   *  所以自己记下打开前的焦点，关闭时还回去（元素已被卸载就交给它自己的容器处理）。 */
+  const opener = React.useRef<HTMLElement | null>(null);
 
-  /** 关闭路径不止一条（按钮、Esc、遮罩），用 ref 保证只结算一次。 */
+  /**
+   * 关闭路径不止一条（按钮、Esc、遮罩），用 ref 保证只结算一次。
+   * 这里只翻 open，不清 pending：内容要留在树里让 Radix 自己走关闭流程，
+   * 焦点才会回到触发按钮上。
+   */
   const settle = React.useCallback((v: Settled) => {
     const r = resolver.current;
     resolver.current = null;
-    setPending(null);
+    setOpen(false);
     r?.(v);
   }, []);
 
   const api = React.useMemo<Api>(() => ({
     confirm: o => new Promise<boolean>(resolve => {
       resolver.current = resolve as (v: Settled) => void;
+      opener.current = document.activeElement as HTMLElement | null;
       setValue("");
       setPending({ kind: "confirm", options: o });
+      setOpen(true);
     }),
     prompt: o => new Promise<string | null>(resolve => {
       resolver.current = resolve as (v: Settled) => void;
+      opener.current = document.activeElement as HTMLElement | null;
       setValue(o.defaultValue ?? "");
       setPending({ kind: "prompt", options: o });
+      setOpen(true);
     }),
   }), []);
 
@@ -81,8 +93,11 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
 
   return <ConfirmContext.Provider value={api}>
     {children}
-    <AlertDialog open={!!pending} onOpenChange={open => { if (!open) settle(isPrompt ? null : false); }}>
-      {pending && <AlertDialogContent onOpenAutoFocus={e => { if (hasInput) { e.preventDefault(); inputRef.current?.focus(); } }}>
+    <AlertDialog open={open} onOpenChange={next => { if (!next) settle(isPrompt ? null : false); }}>
+      {pending && <AlertDialogContent
+        onOpenAutoFocus={e => { if (hasInput) { e.preventDefault(); inputRef.current?.focus(); } }}
+        onCloseAutoFocus={e => { const el = opener.current; if (el && document.contains(el)) { e.preventDefault(); el.focus(); } }}
+      >
         <AlertDialogHeader>
           <AlertDialogTitle>{pending.options.title}</AlertDialogTitle>
           <AlertDialogDescription className={pending.options.description ? undefined : "sr-only"}>{pending.options.description ?? pending.options.title}</AlertDialogDescription>

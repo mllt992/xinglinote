@@ -1,4 +1,4 @@
-import{useEffect,useMemo,useState}from'react';import{Check,Copy,Link2,Lock,Share2,Trash2}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{useConfirm}from'./ui/confirm';
+import{useEffect,useMemo,useState}from'react';import{Check,Copy,Link2,Lock,Share2,Trash2}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{useConfirm}from'./ui/confirm';import{FormError}from'./ui/form-error';
 
 export type ShareDto={id:string;token:string;targetType:string;targetId:string;headingAnchor:string|null;hasPassword:boolean;expiresAt:string|null;allowRobots:boolean;commentsEnabled:boolean;correctionsEnabled:boolean;showBacklinks:boolean;status:string;createdAt:string};
 export type ShareTarget={kind:"note"|"folder"|"attachment";id:string;title:string;bodyMd?:string};
@@ -33,7 +33,7 @@ export function ShareDialog({target,open,onOpenChange}:{target:ShareTarget|null;
         {([["commentsEnabled","允许评论"],["correctionsEnabled","允许纠错建议"],["showBacklinks","显示反向链接"],["allowRobots","允许搜索引擎收录"]] as const).map(([k,label])=>
           <label key={k} className="flex cursor-pointer items-center gap-1.5"><input type="checkbox" className="size-3.5 accent-current" checked={opts[k]} onChange={e=>setOpts({...opts,[k]:e.target.checked})}/>{label}</label>)}
       </div>}
-      {err&&<p className="mt-2 text-sm text-destructive">{err}</p>}
+      <FormError className="mt-2">{err}</FormError>
     </div>
     {target?.kind==="note"?<div className="max-h-72 space-y-2 overflow-auto">{shares.length===0?<div className="py-10 text-center text-sm text-muted-foreground">还没有分享链接。</div>:shares.map(s=><div key={s.id} className="flex items-center gap-3 rounded-xl border border-border p-3">
       <span className={`grid size-9 place-items-center rounded-lg ${s.status==="active"?"bg-primary text-primary-foreground":"bg-muted text-muted-foreground"}`}>{s.hasPassword?<Lock className="size-4"/>:<Link2 className="size-4"/>}</span>

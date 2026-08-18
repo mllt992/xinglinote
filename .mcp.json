@@ -2,7 +2,7 @@
   "mcpServers": {
     "knowledge": {
       "type": "http",
-      "url": "http://127.0.0.1:8080/api/v1/mcp",
+      "url": "${KB_BASE_URL:-http://127.0.0.1:12098}/api/v1/mcp",
       "headers": {
         "Authorization": "Bearer ${KB_MCP_TOKEN}"
       }

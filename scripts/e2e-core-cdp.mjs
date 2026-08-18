@@ -1,6 +1,6 @@
 const targets = await fetch("http://127.0.0.1:9223/json/list").then(r => r.json());
 let t = targets.find(x => x.type === "page");
-if (!t) t = await fetch("http://127.0.0.1:9223/json/new?http://127.0.0.1:5174/app", { method: "PUT" }).then(r => r.json());
+if (!t) t = await fetch("http://127.0.0.1:9223/json/new?http://127.0.0.1:12098/app", { method: "PUT" }).then(r => r.json());
 const ws = new WebSocket(t.webSocketDebuggerUrl);
 let seq=0; const pending=new Map();
 ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id&&pending.has(m.id)){const p=pending.get(m.id);pending.delete(m.id);m.error?p.reject(new Error(m.error.message)):p.resolve(m.result)}};
@@ -17,7 +17,7 @@ const setValue = async (selector, value) => {
 };
 const clickText = (selector,text) => ex(`(()=>{const el=[...document.querySelectorAll(${JSON.stringify(selector)})].find(x=>x.textContent.trim()===${JSON.stringify(text)});if(!el)return false;el.click();return true})()`);
 try {
-  await call("Page.navigate",{url:"http://127.0.0.1:5174/app"});
+  await call("Page.navigate",{url:"http://127.0.0.1:12098/app"});
   await wait("document.body.innerText.includes('NOTEBOOKS')","workspace");
   await ex("[...document.querySelectorAll('button')].find(x=>x.textContent.includes('＋笔记')).click()");
   await wait("location.pathname.includes('/n/') && document.querySelector('.ttl')","first note");

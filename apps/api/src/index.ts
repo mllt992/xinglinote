@@ -6,6 +6,7 @@ import { fail } from "@kb/shared";
 import { seedBuiltin } from "./db/seed.ts";
 import { env } from "./env.ts";
 import { onError } from "./http.ts";
+import { mountWeb } from "./lib/static-web.ts";
 import { auth } from "./routes/auth.ts";
 import { knowledge } from "./routes/notes.ts";
 import { themeRoutes } from "./routes/themes.ts";
@@ -59,10 +60,12 @@ app.route("/api/v1", opsRoutes);
 app.route("/api/v1", workspaceLifecycleRoutes);
 app.route("/api/v1", backupRoutes);
 
+const web = mountWeb(app);
+
 await seedBuiltin().catch((e) => {
   console.warn("seed skipped (先跑 pnpm db:push):", (e as Error).message);
 });
 
 serve({ fetch: app.fetch, port: env.port }, () => {
-  console.log(`api http://127.0.0.1:${env.port}`);
+  console.log(`api http://127.0.0.1:${env.port}${web ? " (含前端静态托管)" : ""}`);
 });

@@ -1,5 +1,5 @@
 import { writeFile } from "node:fs/promises";
-const target = await fetch("http://127.0.0.1:9223/json/new?http://127.0.0.1:5174/app", { method: "PUT" }).then(r => r.json());
+const target = await fetch("http://127.0.0.1:9223/json/new?http://127.0.0.1:12098/app", { method: "PUT" }).then(r => r.json());
 const ws = new WebSocket(target.webSocketDebuggerUrl); let seq=0; const pending=new Map();
 ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id&&pending.has(m.id)){const p=pending.get(m.id);pending.delete(m.id);m.error?p.reject(new Error(m.error.message)):p.resolve(m.result)}};
 await new Promise((r,j)=>{ws.onopen=r;ws.onerror=j});

@@ -164,6 +164,7 @@ export const notes = pgTable("notes", {
   notebookId: uuid("notebook_id").notNull().references(() => notebooks.id),
   folderId: uuid("folder_id"),
   title: text("title").notNull(),
+  sortKey: integer("sort_key").notNull().default(0),
   bodyMd: text("body_md").notNull().default(""),
   published: boolean("published").notNull().default(false),
   aiIndex: boolean("ai_index").notNull().default(true),

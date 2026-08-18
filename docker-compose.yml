@@ -1,5 +1,9 @@
 name: knowledge
 
+# 开发：docker compose up -d db          只起数据库（pnpm db:up 就是这个）
+# 部署：docker compose --profile app up -d --build
+# 带 TLS：docker compose --profile app --profile tls up -d --build
+
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -8,7 +12,8 @@ services:
       POSTGRES_PASSWORD: kb
       POSTGRES_DB: knowledge
     ports:
-      - "5432:5432"
+      # 只绑本机，别把数据库暴露到公网
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -17,5 +22,73 @@ services:
       timeout: 5s
       retries: 10
 
+  migrate:
+    profiles: ["app"]
+    build: .
+    command: ["migrate"]
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://kb:kb@db:5432/knowledge
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - kbdata:/data
+    restart: "no"
+
+  api:
+    profiles: ["app"]
+    build: .
+    command: ["api"]
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://kb:kb@db:5432/knowledge
+      API_PORT: "12099"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      # 前面挂反代时保持只绑本机；不挂反代要对外就改成 "12099:12099"
+      - "127.0.0.1:12099:12099"
+    volumes:
+      - kbdata:/data
+    restart: unless-stopped
+
+  worker:
+    profiles: ["app"]
+    build: .
+    command: ["worker"]
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://kb:kb@db:5432/knowledge
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - kbdata:/data
+    restart: unless-stopped
+
+  caddy:
+    profiles: ["tls"]
+    image: caddy:2
+    depends_on: [api]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      KB_DOMAIN: ${KB_DOMAIN:-localhost}
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  kbdata:
+  caddydata:
+  caddyconfig:

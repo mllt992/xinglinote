@@ -127,6 +127,7 @@ const statements = [
     notebook_id uuid NOT NULL REFERENCES notebooks(id),
     folder_id uuid,
     title text NOT NULL,
+    sort_key integer NOT NULL DEFAULT 0,
     body_md text NOT NULL DEFAULT '',
     published boolean NOT NULL DEFAULT false,
     ai_index boolean NOT NULL DEFAULT true,
@@ -212,6 +213,7 @@ const statements = [
   `CREATE TABLE IF NOT EXISTS background_jobs (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), type text NOT NULL, payload jsonb NOT NULL DEFAULT '{}', status text NOT NULL DEFAULT 'pending', attempts integer NOT NULL DEFAULT 0, run_after timestamptz NOT NULL DEFAULT now(), locked_at timestamptz, last_error text, created_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz)`,
   `CREATE INDEX IF NOT EXISTS background_jobs_pending_idx ON background_jobs(status,run_after)`,
   `ALTER TABLE notes ADD COLUMN IF NOT EXISTS tags jsonb NOT NULL DEFAULT '[]'::jsonb`,
+  `ALTER TABLE notes ADD COLUMN IF NOT EXISTS sort_key integer NOT NULL DEFAULT 0`,
   `ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS daily_write_limit_bytes bigint NOT NULL DEFAULT 10485760`,
   // 空 = 不限写入，也是新钥匙的默认；老钥匙保留自己原来的额度
   `ALTER TABLE share_links ADD COLUMN IF NOT EXISTS corrections_enabled boolean NOT NULL DEFAULT false`,

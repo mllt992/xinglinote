@@ -3,6 +3,7 @@ import { and, count, eq } from "drizzle-orm";
 import { z } from "zod";
 import { hashPassword, validPassword, verifyPassword } from "@kb/core";
 import { HANDLE_RE, fail } from "@kb/shared";
+import { env } from "../env.ts";
 import { db } from "../db/client.ts";
 import { authTokens, backgroundJobs, instanceSettings, mcpTokens, registrationCodes, registrationCodeUsages, sessions, users, workspaceMembers, workspaces } from "../db/schema.ts";
 import { secureToken, tokenHash } from "../lib/tokens.ts";
@@ -89,7 +90,7 @@ auth.post("/auth/register", async (c) => {
   await createPersonalWorkspace(user.id, user.displayName);
   if (!verifiedNow) {
     const token=secureToken(24);await db.insert(authTokens).values({userId:user.id,tokenHash:tokenHash(token),purpose:"verify_email",expiresAt:new Date(Date.now()+86400000)});
-    const link=`${new URL(c.req.url).origin.replace(/:8080$/,":5174")}/verify-email?token=${token}`;const mail=await sendMail(user.email,"验证你的知识库账号",`请在 24 小时内打开：${link}`);
+    const link=`${env.publicUrl}/verify-email?token=${token}`;const mail=await sendMail(user.email,"验证你的知识库账号",`请在 24 小时内打开：${link}`);
     return ok(c,{id:user.id,isFirst,requiresVerification:true,mailSent:mail.sent,developmentToken:mail.sent?undefined:token},201);
   }
   await createSession(c, user.id);
@@ -97,7 +98,7 @@ auth.post("/auth/register", async (c) => {
 });
 
 auth.post("/auth/verify-email",async c=>{const body=z.object({token:z.string().min(20)}).parse(await c.req.json());const [t]=await db.select().from(authTokens).where(eq(authTokens.tokenHash,tokenHash(body.token)));if(!t||t.purpose!=="verify_email"||t.usedAt||t.expiresAt.getTime()<=Date.now())throw fail("EXPIRED","验证链接无效或已过期");await db.transaction(async tx=>{await tx.update(users).set({emailVerifiedAt:new Date()}).where(eq(users.id,t.userId));await tx.update(authTokens).set({usedAt:new Date()}).where(eq(authTokens.id,t.id));});await createSession(c,t.userId);return ok(c,{});});
-auth.post("/auth/forgot-password",async c=>{const body=z.object({email:z.string().email()}).parse(await c.req.json());const [u]=await db.select().from(users).where(eq(users.email,body.email.toLowerCase()));if(u){const token=secureToken(24);await db.insert(authTokens).values({userId:u.id,tokenHash:tokenHash(token),purpose:"reset_password",expiresAt:new Date(Date.now()+3600000)});const link=`${new URL(c.req.url).origin.replace(/:8080$/,":5174")}/reset-password?token=${token}`;await sendMail(u.email,"重置知识库密码",`请在 1 小时内打开：${link}`);}return ok(c,{message:"如果邮箱存在，重置说明已经发送"});});
+auth.post("/auth/forgot-password",async c=>{const body=z.object({email:z.string().email()}).parse(await c.req.json());const [u]=await db.select().from(users).where(eq(users.email,body.email.toLowerCase()));if(u){const token=secureToken(24);await db.insert(authTokens).values({userId:u.id,tokenHash:tokenHash(token),purpose:"reset_password",expiresAt:new Date(Date.now()+3600000)});const link=`${env.publicUrl}/reset-password?token=${token}`;await sendMail(u.email,"重置知识库密码",`请在 1 小时内打开：${link}`);}return ok(c,{message:"如果邮箱存在，重置说明已经发送"});});
 auth.post("/auth/reset-password",async c=>{const body=z.object({token:z.string().min(20),password:z.string()}).parse(await c.req.json());if(!validPassword(body.password))throw fail("VALIDATION","密码至少 10 位且含字母和数字");const [t]=await db.select().from(authTokens).where(eq(authTokens.tokenHash,tokenHash(body.token)));if(!t||t.purpose!=="reset_password"||t.usedAt||t.expiresAt.getTime()<=Date.now())throw fail("EXPIRED","重置链接无效或已过期");await db.transaction(async tx=>{await tx.update(users).set({passwordHash:await hashPassword(body.password),updatedAt:new Date()}).where(eq(users.id,t.userId));await tx.update(authTokens).set({usedAt:new Date()}).where(eq(authTokens.id,t.id));await tx.delete(sessions).where(eq(sessions.userId,t.userId));});return ok(c,{});});
 
 auth.post("/auth/login", async (c) => {

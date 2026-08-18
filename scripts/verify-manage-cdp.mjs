@@ -1,8 +1,8 @@
 // 新界面的浏览器验收：通知铃、导入按钮、备份与审计页。
-// 前提：dev 已起，Chrome 带 --remote-debugging-port=9223 且已登录 127.0.0.1:5174。
+// 前提：dev 已起，Chrome 带 --remote-debugging-port=9223 且已登录 127.0.0.1:12098。
 const targets = await fetch('http://127.0.0.1:9223/json/list').then(r => r.json());
-const t = targets.find(x => x.url.includes('127.0.0.1:5174'));
-if (!t) throw new Error('没有找到已登录的 5174 页面');
+const t = targets.find(x => x.url.includes('127.0.0.1:12098'));
+if (!t) throw new Error('没有找到已登录的 12098 页面');
 const ws = new WebSocket(t.webSocketDebuggerUrl);
 let id = 0; const pending = new Map();
 ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id); m.error ? p.j(m.error) : p.r(m.result); } };
@@ -12,7 +12,7 @@ await cmd('Runtime.enable'); await cmd('Page.enable');
 const ex = async expr => (await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true })).result.value;
 const go = async url => { await cmd('Page.navigate', { url }); await new Promise(r => setTimeout(r, 2500)); };
 
-await go('http://127.0.0.1:5174/app');
+await go('http://127.0.0.1:12098/app');
 const wsId = await ex('location.pathname.split("/")[2]||""');
 if (!wsId) throw new Error('没进到工作区，可能未登录');
 
@@ -21,7 +21,7 @@ const header = {
   importButton: await ex('[...document.querySelectorAll("aside button")].some(b=>b.querySelector("svg.lucide-upload"))'),
   manageMenuItem: false,
 };
-await go(`http://127.0.0.1:5174/w/${wsId}/manage`);
+await go(`http://127.0.0.1:12098/w/${wsId}/manage`);
 const page = await ex('document.body.innerText');
 const result = {
   bellInHeader: header.bell,
@@ -40,7 +40,7 @@ result.tabsSwitch = clicked && (await ex('document.body.innerText')).includes('�
 // 右侧面板里的附件区
 const noteId = await ex(`(async()=>{const j=async u=>(await (await fetch(u,{headers:{'X-Requested-With':'fetch'}})).json()).data;const nbs=await j('/api/v1/workspaces/${wsId}/notebooks');const tree=await j('/api/v1/notebooks/'+nbs.notebooks[0].id+'/tree');return tree.notes[0]?.id??''})()`);
 if (noteId) {
-  await go(`http://127.0.0.1:5174/w/${wsId}/n/${noteId}`);
+  await go(`http://127.0.0.1:12098/w/${wsId}/n/${noteId}`);
   const toggle = await ex('(()=>{const b=[...document.querySelectorAll("button")].find(x=>x.querySelector("svg.lucide-panel-right"));if(!b)return null;const r=b.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()');
   if (toggle) for (const type of ['mousePressed', 'mouseReleased']) await cmd('Input.dispatchMouseEvent', { type, x: toggle.x, y: toggle.y, button: 'left', clickCount: 1 });
   await new Promise(r => setTimeout(r, 700));

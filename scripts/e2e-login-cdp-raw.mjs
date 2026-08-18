@@ -1,5 +1,5 @@
 import { KB_EMAIL, KB_PASSWORD } from './creds.mjs';
-const target = await fetch("http://127.0.0.1:9223/json/new?http://127.0.0.1:5174/login", { method: "PUT" }).then(r => r.json());
+const target = await fetch("http://127.0.0.1:9223/json/new?http://127.0.0.1:12098/login", { method: "PUT" }).then(r => r.json());
 const ws = new WebSocket(target.webSocketDebuggerUrl);
 let seq = 0;
 const pending = new Map();

@@ -1,5 +1,5 @@
 const targets = await fetch("http://127.0.0.1:9223/json/list").then(r => r.json());
-const t = targets.find(x => x.url.includes("127.0.0.1:5174/w/"));
+const t = targets.find(x => x.url.includes("127.0.0.1:12098/w/"));
 if (!t) throw new Error("workspace target not found");
 const ws = new WebSocket(t.webSocketDebuggerUrl);
 let seq=0; const pending=new Map();

@@ -1,8 +1,8 @@
 // MCP 钥匙界面的浏览器验收：新建表单的各项设置、列表操作、明文弹层。
 // 前提：dev 已起，Chrome 带 --remote-debugging-port=9223 且已登录。
 const targets = await fetch('http://127.0.0.1:9223/json/list').then(r => r.json());
-const t = targets.find(x => x.url.includes('127.0.0.1:5174'));
-if (!t) throw new Error('没有找到已登录的 5174 页面');
+const t = targets.find(x => x.url.includes('127.0.0.1:12098'));
+if (!t) throw new Error('没有找到已登录的 12098 页面');
 const ws = new WebSocket(t.webSocketDebuggerUrl);
 let id = 0; const pending = new Map();
 ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id); m.error ? p.j(m.error) : p.r(m.result); } };
@@ -13,9 +13,9 @@ const ex = async expr => (await cmd('Runtime.evaluate', { expression: expr, retu
 const go = async url => { await cmd('Page.navigate', { url }); await new Promise(r => setTimeout(r, 2500)); };
 const click = async selectorExpr => { const rect = await ex(`(()=>{const el=${selectorExpr};if(!el)return null;el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`); if (!rect) return false; for (const type of ['mousePressed', 'mouseReleased']) await cmd('Input.dispatchMouseEvent', { type, x: rect.x, y: rect.y, button: 'left', clickCount: 1 }); await new Promise(r => setTimeout(r, 500)); return true; };
 
-await go('http://127.0.0.1:5174/app');
+await go('http://127.0.0.1:12098/app');
 const wsId = await ex('location.pathname.split("/")[2]||""');
-await go(`http://127.0.0.1:5174/settings/integrations?workspace=${wsId}`);
+await go(`http://127.0.0.1:12098/settings/integrations?workspace=${wsId}`);
 const result = {};
 result.mcpTabOpens = await click(`[...document.querySelectorAll('[role=tab]')].find(x=>x.textContent.trim()==='MCP 钥匙')`);
 const listText = await ex('document.body.innerText');

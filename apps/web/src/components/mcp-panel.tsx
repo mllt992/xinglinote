@@ -1,4 +1,4 @@
-import{useEffect,useState}from'react';import type{ReactNode}from'react';import{BookLock,Check,Copy,Eye,KeyRound,Pencil,Plus,RotateCcw,Trash2,Wrench}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';
+import{useEffect,useState}from'react';import type{ReactNode}from'react';import{BookLock,BookOpen,Check,Copy,Eye,KeyRound,Pencil,Plus,RotateCcw,Trash2,Wrench}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';import{McpSetupGuide}from'./mcp-setup-guide';
 
 export type McpToken={id:string;name:string;workspaceId:string;notebookMode:"inherit"|"allowlist";notebookIds:string[];rw:"read"|"write"|"manage";allowDelete:boolean;requireAiIndex:boolean;allowPrivateNotebooks:boolean;feedPublic:boolean;feedWorkspace:boolean;dailyWriteLimitBytes:number|null;expiresAt:string|null;status:string;lastUsedAt:string|null;createdAt:string};
 type Issued={name:string;secret:string;config:unknown;stdioConfig:unknown};
@@ -19,38 +19,37 @@ const fromToken=(t:McpToken):Draft=>({name:t.name,workspaceId:t.workspaceId,rw:t
 /** 设置 → MCP 钥匙。一把钥匙绑一个工作区，范围、档位、过期、写入额度都在这里定。 */
 export function McpPanel({workspaces,defaultWorkspaceId}:{workspaces:Array<{id:string;name:string}>;defaultWorkspaceId?:string}){
   const askConfirm=useConfirm();const toast=useToast();
-  const[tokens,setTokens]=useState<McpToken[]>([]);const[msg,setMsg]=useState("");const[busy,setBusy]=useState(false);
+  const[tokens,setTokens]=useState<McpToken[]>([]);const[err,setErr]=useState("");const[busy,setBusy]=useState(false);
   const[draft,setDraft]=useState<Draft|null>(null);const[editing,setEditing]=useState<McpToken|null>(null);
-  const[notebooks,setNotebooks]=useState<Nb[]>([]);const[issued,setIssued]=useState<Issued|null>(null);
+  const[notebooks,setNotebooks]=useState<Nb[]>([]);const[issued,setIssued]=useState<Issued|null>(null);const[guide,setGuide]=useState(false);
   const load=()=>api<{tokens:McpToken[]}>("/api/v1/mcp/tokens").then(d=>setTokens(d.tokens));
   useEffect(()=>{void load()},[]);
   useEffect(()=>{if(!draft?.workspaceId)return setNotebooks([]);api<{notebooks:Nb[]}>(`/api/v1/workspaces/${draft.workspaceId}/notebooks`).then(d=>setNotebooks(d.notebooks)).catch(()=>setNotebooks([]))},[draft?.workspaceId]);
 
   const wsName=(id:string)=>workspaces.find(w=>w.id===id)?.name??"已退出的工作区";
-  function openCreate(){setEditing(null);setMsg("");setDraft(blank(defaultWorkspaceId??workspaces[0]?.id??""));}
-  function openEdit(t:McpToken){setEditing(t);setMsg("");setDraft(fromToken(t));}
+  function openCreate(){setEditing(null);setErr("");setDraft(blank(defaultWorkspaceId??workspaces[0]?.id??""));}
+  function openEdit(t:McpToken){setEditing(t);setErr("");setDraft(fromToken(t));}
 
   async function submit(){
-    if(!draft)return;setBusy(true);setMsg("");
+    if(!draft)return;setBusy(true);setErr("");
     const shared={name:draft.name.trim(),rw:draft.rw,notebookMode:draft.notebookMode,notebookIds:draft.notebookMode==="allowlist"?draft.notebookIds:[],allowDelete:draft.rw==="manage"&&draft.allowDelete,requireAiIndex:draft.requireAiIndex,allowPrivateNotebooks:draft.allowPrivateNotebooks,feedPublic:draft.feedPublic,feedWorkspace:draft.feedWorkspace,dailyWriteLimitBytes:draft.limited?Math.max(1,draft.limitMb)*1048576:null,expiresInDays:draft.expiresInDays};
     try{
-      if(editing){await api(`/api/v1/mcp/tokens/${editing.id}`,{method:"PATCH",body:JSON.stringify(shared)});setMsg("已保存。改设置不会换明文，客户端里的配置继续可用。");}
+      if(editing){await api(`/api/v1/mcp/tokens/${editing.id}`,{method:"PATCH",body:JSON.stringify(shared)});toast.success("已保存","改设置不会换明文，客户端里的配置继续可用。");}
       else{const d=await api<Issued>("/api/v1/mcp/tokens",{method:"POST",body:JSON.stringify({...shared,workspaceId:draft.workspaceId})});setIssued({...d,name:shared.name});}
       setDraft(null);setEditing(null);await load();
-    }catch(e){setMsg((e as Error).message)}finally{setBusy(false)}
+    }catch(e){setErr((e as Error).message)}finally{setBusy(false)}
   }
   async function rotate(t:McpToken){
     if(!await askConfirm({title:`轮换《${t.name}》？`,description:"会立刻签发一把新明文，旧明文同时作废。所有正在用这把钥匙的客户端都要改配置才能继续访问。",confirmText:"轮换",destructive:true}))return;
-    setMsg("");try{const d=await api<Issued>(`/api/v1/mcp/tokens/${t.id}/rotate`,{method:"POST"});setIssued({...d,name:t.name});await load();}catch(e){toast.error("轮换失败",(e as Error).message)}
+    try{const d=await api<Issued>(`/api/v1/mcp/tokens/${t.id}/rotate`,{method:"POST"});setIssued({...d,name:t.name});await load();}catch(e){toast.error("轮换失败",(e as Error).message)}
   }
   async function revoke(t:McpToken){
     if(!await askConfirm({title:`吊销《${t.name}》？`,description:"这把钥匙会立刻失效且不可恢复，用它接入的客户端会全部断开。需要的话请新建一把。",confirmText:"吊销",destructive:true}))return;
-    setMsg("");try{await api(`/api/v1/mcp/tokens/${t.id}`,{method:"DELETE"});toast.success(`已吊销《${t.name}》`);await load();}catch(e){toast.error("吊销失败",(e as Error).message)}
+    try{await api(`/api/v1/mcp/tokens/${t.id}`,{method:"DELETE"});toast.success(`已吊销《${t.name}》`);await load();}catch(e){toast.error("吊销失败",(e as Error).message)}
   }
 
   return <div className="space-y-4">
-    <div className="flex items-center justify-between gap-3"><p className="text-sm text-muted-foreground">一把钥匙只活在一个工作区，权限不会超过你自己在那个区的权限。</p><Button size="sm" onClick={openCreate} disabled={!workspaces.length}><Plus/>新建钥匙</Button></div>
-    {msg&&<p className="text-sm text-muted-foreground">{msg}</p>}
+    <div className="flex items-center justify-between gap-3"><p className="text-sm text-muted-foreground">一把钥匙只活在一个工作区，权限不会超过你自己在那个区的权限。</p><div className="flex gap-2"><Button variant="outline" size="sm" onClick={()=>setGuide(true)}><BookOpen/>接入教程</Button><Button size="sm" onClick={openCreate} disabled={!workspaces.length}><Plus/>新建钥匙</Button></div></div>
 
     {tokens.length===0?<div className={`${box} py-12 text-center`}><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground"><KeyRound className="size-5"/></span><p className="mt-3 text-sm font-medium">还没有钥匙</p><p className="mt-1 text-xs text-muted-foreground">建一把就能让 Cursor、Claude Desktop 这类客户端读写你的知识库。</p></div>
     :<div className="space-y-2">{tokens.map(t=><div key={t.id} className={`${box} flex flex-wrap items-center gap-3 p-4`}>
@@ -97,17 +96,18 @@ export function McpPanel({workspaces,defaultWorkspaceId}:{workspaces:Array<{id:s
           <Check2 checked={draft.feedPublic} onChange={v=>setDraft({...draft,feedPublic:v})} title="可发广场动态" desc="发到全实例可见的广场，谨慎打开。"/>
         </div>
 
+        <FormError>{err}</FormError>
         <div className="flex justify-end gap-2"><Button variant="ghost" onClick={()=>{setDraft(null);setEditing(null)}}>取消</Button><Button disabled={busy||!draft.name.trim()||!draft.workspaceId||(draft.notebookMode==="allowlist"&&!draft.notebookIds.length)} onClick={submit}>{busy?"提交中…":editing?"保存":"创建并显示明文"}</Button></div>
       </div>}
     </DialogContent></Dialog>
 
+    <Dialog open={guide} onOpenChange={setGuide}><DialogContent className="max-h-[86vh] max-w-2xl overflow-auto">
+      <DialogHeader><DialogTitle className="flex items-center gap-2"><BookOpen className="size-5"/>把知识库接进 AI 客户端</DialogTitle><DialogDescription>选你在用的客户端，照着做完就能让它读写这个知识库。</DialogDescription></DialogHeader>
+      <McpSetupGuide/>
+    </DialogContent></Dialog>
+
     <SecretDialog issued={issued} onClose={()=>setIssued(null)}/>
   </div>;
-}
-
-function CopyBlock({title,hint,value}:{title:string;hint:string;value:string}){
-  const[done,setDone]=useState(false);
-  return <div className={box}><div className="flex items-center gap-2 border-b px-3 py-2"><p className="flex-1 text-xs font-medium">{title}</p><Button variant="ghost" size="sm" onClick={()=>{void navigator.clipboard.writeText(value);setDone(true);setTimeout(()=>setDone(false),1500)}}>{done?<Check/>:<Copy/>}{done?"已复制":"复制"}</Button></div><pre className="max-h-40 overflow-auto p-3 text-[11px] leading-5">{value}</pre><p className="border-t px-3 py-2 text-[11px] text-muted-foreground">{hint}</p></div>;
 }
 
 function SecretDialog({issued,onClose}:{issued:Issued|null;onClose:()=>void}){
@@ -117,8 +117,7 @@ function SecretDialog({issued,onClose}:{issued:Issued|null;onClose:()=>void}){
     <DialogHeader><DialogTitle className="flex items-center gap-2"><Wrench className="size-5"/>{issued?.name} 的明文</DialogTitle><DialogDescription>只显示这一次。关掉之后只能轮换，拿不回来。</DialogDescription></DialogHeader>
     {issued&&<div className="grid gap-3">
       <div className="flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 p-3"><code className="min-w-0 flex-1 break-all font-mono text-xs">{shown?issued.secret:`${issued.secret.slice(0,12)}${"•".repeat(24)}`}</code><Button variant="ghost" size="icon" aria-label="显示明文" onClick={()=>setShown(v=>!v)}><Eye/></Button><Button variant="outline" size="sm" onClick={()=>void navigator.clipboard.writeText(issued.secret)}><Copy/>复制</Button></div>
-      <CopyBlock title="Cursor / 支持 HTTP 的客户端" hint="粘进客户端的 mcp.json。" value={JSON.stringify(issued.config,null,2)}/>
-      <CopyBlock title="Claude Desktop（stdio 桥接）" hint="只支持 stdio 的客户端用这份，需要本机有 npx。" value={JSON.stringify(issued.stdioConfig,null,2)}/>
+      <McpSetupGuide secret={issued.secret}/>
       <div className="flex justify-end"><Button onClick={onClose}><Check/>我已保存</Button></div>
     </div>}
   </DialogContent></Dialog>;

@@ -13,7 +13,7 @@ page.on("pageerror", (err) => log.push(`pageerror:${err.message}`));
 page.on("requestfailed", (req) => log.push(`failed:${req.url()}:${req.failure()?.errorText}`));
 
 try {
-  await page.goto("http://127.0.0.1:5174/login", { waitUntil: "domcontentloaded", timeout: 10000 });
+  await page.goto("http://127.0.0.1:12098/login", { waitUntil: "domcontentloaded", timeout: 10000 });
   await page.getByRole("heading", { name: "登录" }).waitFor({ timeout: 10000 });
   await page.getByLabel("邮箱").fill(KB_EMAIL);
   await page.getByLabel("密码").fill(KB_PASSWORD);

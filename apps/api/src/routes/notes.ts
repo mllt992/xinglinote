@@ -1,8 +1,8 @@
 import { Hono } from "hono";
-import { and, asc, eq, ilike, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 import { canEditNote, canReadNote, type WsRole } from "@kb/core";
-import { fail } from "@kb/shared";
+import { fail, nextSortKey } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { auditLogs, folders, notebookMembers, notebooks, notes, noteVersions, users, workspaceMembers, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
@@ -70,11 +70,29 @@ knowledge.get("/notebooks/:id/tree", async (c) => {
     .select()
     .from(notes)
     .where(and(eq(notes.notebookId, nb.id), isNull(notes.trashedAt)))
-    .orderBy(asc(notes.title));
+    .orderBy(asc(notes.sortKey), desc(notes.createdAt));
+  let canEdit = true;
+  try { await notebookAccess(nb.id, user.id, "edit"); } catch { canEdit = false; }
   return ok(c, {
     folders: dirs,
-    notes: ns.map((n) => ({ id: n.id, title: n.title, folderId: n.folderId, updatedAt: n.updatedAt })),
+    canEdit,
+    notes: ns.map((n) => ({ id: n.id, title: n.title, folderId: n.folderId, sortKey: n.sortKey, createdAt: n.createdAt, updatedAt: n.updatedAt })),
   });
+});
+
+knowledge.patch("/notebooks/:id/notes/order", async (c) => {
+  const user = await requireUser(c);
+  const { notebook: nb } = await notebookAccess(c.req.param("id"), user.id, "edit");
+  const body = z.object({ noteIds: z.array(z.string().uuid()).min(1).max(2000) }).parse(await c.req.json());
+  if (new Set(body.noteIds).size !== body.noteIds.length) throw fail("VALIDATION", "笔记顺序不能重复");
+  const rows = await db.select({ id: notes.id }).from(notes).where(and(eq(notes.notebookId, nb.id), isNull(notes.trashedAt), inArray(notes.id, body.noteIds)));
+  if (rows.length !== body.noteIds.length) throw fail("VALIDATION", "只能排列当前笔记本里的笔记");
+  await db.transaction(async (tx) => {
+    for (let i = 0; i < body.noteIds.length; i++) {
+      await tx.update(notes).set({ sortKey: i }).where(eq(notes.id, body.noteIds[i]!));
+    }
+  });
+  return ok(c, { noteIds: body.noteIds });
 });
 
 knowledge.post("/notes", async (c) => {
@@ -83,12 +101,14 @@ knowledge.post("/notes", async (c) => {
   const {notebook:nb,workspace:ws}=await notebookAccess(body.notebookId,user.id,"edit");
   const title = body.title?.trim() || "未命名";
   await assertUserStorage(user.id, textBytes(title, ""));
+  const existing = await db.select({ sortKey: notes.sortKey }).from(notes).where(and(eq(notes.notebookId, nb.id), isNull(notes.trashedAt)));
   const [note] = await db
     .insert(notes)
     .values({
       workspaceId: ws.id,
       notebookId: nb.id,
       folderId: body.folderId ?? null,
+      sortKey: nextSortKey(existing.map((n) => n.sortKey)),
       title,
       bodyMd: "",
       aiIndex: nb.defaultAiIndex,
@@ -245,7 +265,7 @@ knowledge.delete("/notes/:id", async (c) => {
 });
 
 knowledge.get("/notes/:id/versions", async (c) => {
-  const user = await requireUser(c); const {note}=await noteAccess(c.req.param("id"),user.id,"read"); const rows=await db.select().from(noteVersions).where(eq(noteVersions.noteId,note.id)).orderBy(asc(noteVersions.version)); return ok(c,{versions:rows.reverse().slice(0,100).map(v=>({id:v.id,version:v.version,title:v.title,bodyMd:v.bodyMd,source:v.source,createdAt:v.createdAt}))});
+  const user = await requireUser(c); const {note}=await noteAccess(c.req.param("id"),user.id,"read"); const rows=await db.select().from(noteVersions).where(eq(noteVersions.noteId,note.id)).orderBy(asc(noteVersions.version)); return ok(c,{total:rows.length,versions:rows.reverse().slice(0,100).map(v=>({id:v.id,version:v.version,title:v.title,bodyMd:v.bodyMd,source:v.source,createdAt:v.createdAt}))});
 });
 knowledge.post("/notes/:id/versions/:version/restore", async (c) => {
   const user=await requireUser(c);const {note}=await noteAccess(c.req.param("id"),user.id,"edit");const version=Number(c.req.param("version"));const [old]=await db.select().from(noteVersions).where(and(eq(noteVersions.noteId,note.id),eq(noteVersions.version,version)));if(!old)throw fail("NOT_FOUND","版本不存在");await assertUserStorage(note.createdBy,textBytes(old.title,old.bodyMd)-textBytes(note.title,note.bodyMd));const [saved]=await db.update(notes).set({title:old.title,bodyMd:old.bodyMd,version:note.version+1,updatedBy:user.id,updatedAt:new Date()}).where(eq(notes.id,note.id)).returning();await db.insert(noteVersions).values({noteId:note.id,version:saved.version,title:saved.title,bodyMd:saved.bodyMd,editorId:user.id,source:"restore"});await writeNoteFile({...saved,noteId:saved.id});await rebuildLinks(saved.id,saved.workspaceId,saved.bodyMd);return ok(c,saved);

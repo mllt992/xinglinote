@@ -18,9 +18,10 @@ const repoRoot = existsSync(resolve(process.cwd(), "pnpm-workspace.yaml"))
 
 export const env = {
   appSecret: process.env.APP_SECRET ?? "dev-only-change-me",
-  publicUrl: process.env.PUBLIC_URL ?? "http://127.0.0.1:5173",
-  port: Number(process.env.API_PORT ?? 8080),
+  publicUrl: process.env.PUBLIC_URL ?? "http://127.0.0.1:12098",
+  port: Number(process.env.API_PORT ?? 12099),
   databaseUrl: process.env.DATABASE_URL ?? "postgres://kb:kb@127.0.0.1:5432/knowledge",
   dataDir: resolve(process.env.DATA_DIR ?? resolve(repoRoot, "data")),
+  webDist: resolve(process.env.WEB_DIST ?? resolve(repoRoot, "apps/web/dist")),
   repoRoot,
 };

@@ -1,0 +1,12 @@
+# KB_DOMAIN 在 .env 里设成你的域名，Caddy 会自动签 Let's Encrypt 证书。
+# PUBLIC_URL 必须同步设成 https://<同一个域名>，否则 cookie 的 Secure 标志和
+# MCP/OAuth 对外地址会算错。
+{$KB_DOMAIN} {
+	encode gzip zstd
+
+	reverse_proxy api:12099 {
+		# 关闭响应缓冲：AI 问答、SSE 这类长响应要能边出边发
+		flush_interval -1
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

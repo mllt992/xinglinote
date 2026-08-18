@@ -1,5 +1,5 @@
 import { KB_EMAIL, KB_PASSWORD } from './creds.mjs';
-const base="http://127.0.0.1:5174/api/v1";
+const base="http://127.0.0.1:12098/api/v1";
 async function request(path,options={},cookie=""){const r=await fetch(base+path,{...options,headers:{"content-type":"application/json",...(cookie?{cookie}:{}),...(options.headers||{})}});const set=r.headers.get("set-cookie");const json=await r.json();if(!r.ok||!json.ok){const e=new Error(json.error?.message||`HTTP ${r.status}`);e.status=r.status;throw e;}return{data:json.data,cookie:set?.split(";")[0]||cookie};}
 const login=await request("/auth/login",{method:"POST",body:JSON.stringify({email:KB_EMAIL,password:KB_PASSWORD})});const adminCookie=login.cookie;
 let spaces=(await request("/workspaces",{},adminCookie)).data.workspaces;let ws=spaces.find(x=>x.kind==="normal");if(!ws)ws=(await request("/workspaces",{method:"POST",body:JSON.stringify({name:"ACL验收区"})},adminCookie)).data.workspace;

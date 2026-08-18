@@ -1,4 +1,4 @@
-# 知识库
+# 星璃笔记
 
 自托管的 Markdown 知识库：笔记三栏 + 可分享文档站 + MCP 大脑。  
 产品规格与设计在 `docs/`。一期 P0 九条与 P1 三条都已落地：账号与注册码、工作区成员与笔记本 ACL、
@@ -20,8 +20,8 @@ pnpm test
 pnpm dev
 ```
 
-- 前端：http://127.0.0.1:5174（固定监听 IPv4）
-- API：http://127.0.0.1:8080/api/healthz
+- 前端：http://127.0.0.1:12098（固定监听 IPv4）
+- API：http://127.0.0.1:12099/api/healthz
 
 第一个注册的用户是实例管理员，并自动拥有个人工作区。
 
@@ -42,9 +42,11 @@ node scripts/verify-manage.mjs      # 备份 / 导出 / 审计 / 冻结 / 通知
 node scripts/verify-mcp-keys.mjs    # MCP 钥匙的额度、范围、档位、轮换、吊销
 node scripts/verify-gaps.mjs        # 分享类型、分享总览、回收站销毁、搜索、标签
 node scripts/verify-feed.mjs        # 圈子动态、泄漏检查、转正、公开主页、评论
+node --experimental-strip-types scripts/verify-transfer.mjs   # 导入向导、zip 导出、版本裁剪
 node scripts/verify-manage-cdp.mjs
 node scripts/verify-gaps-cdp.mjs
 node scripts/verify-feed-cdp.mjs
+node scripts/verify-transfer-cdp.mjs
 node --experimental-strip-types scripts/verify-zip.mjs   # 不需要账号
 ```
 

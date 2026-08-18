@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import type { Context } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { db } from "../db/client.ts";
+import { env } from "../env.ts";
 import { sessions, users } from "../db/schema.ts";
 
 const COOKIE = "kb_session";
@@ -20,7 +21,7 @@ export async function createSession(c: Context, userId: string) {
     httpOnly: true,
     path: "/",
     sameSite: "Lax",
-    secure: new URL(c.req.url).protocol === "https:",
+    secure: env.publicUrl.startsWith("https:"),
     maxAge: DAYS * 86400,
   });
 }

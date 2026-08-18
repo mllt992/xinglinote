@@ -1,8 +1,8 @@
 // 本轮界面补齐的浏览器验收：搜索过滤条、分享对话框、回收站销毁、工作区管理的分享页。
 // 前提：dev 已起，Chrome 带 --remote-debugging-port=9223 且已登录。
 const targets = await fetch('http://127.0.0.1:9223/json/list').then(r => r.json());
-const t = targets.find(x => x.url.includes('127.0.0.1:5174'));
-if (!t) throw new Error('没有找到已登录的 5174 页面');
+const t = targets.find(x => x.url.includes('127.0.0.1:12098'));
+if (!t) throw new Error('没有找到已登录的 12098 页面');
 const ws = new WebSocket(t.webSocketDebuggerUrl);
 let id = 0; const pending = new Map();
 ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id); m.error ? p.j(m.error) : p.r(m.result); } };
@@ -14,7 +14,7 @@ const go = async url => { await cmd('Page.navigate', { url }); await new Promise
 const click = async selectorExpr => { const rect = await ex(`(()=>{const el=${selectorExpr};if(!el)return null;el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`); if (!rect) return false; for (const type of ['mousePressed', 'mouseReleased']) await cmd('Input.dispatchMouseEvent', { type, x: rect.x, y: rect.y, button: 'left', clickCount: 1 }); await new Promise(r => setTimeout(r, 600)); return true; };
 const type = async text => { for (const ch of text) await cmd('Input.dispatchKeyEvent', { type: 'char', text: ch }); await new Promise(r => setTimeout(r, 900)); };
 
-await go('http://127.0.0.1:5174/app');
+await go('http://127.0.0.1:12098/app');
 const wsId = await ex('location.pathname.split("/")[2]||""');
 const result = {};
 
@@ -28,7 +28,7 @@ result.searchScopeSwitched = (await ex(`(()=>{const el=[...document.querySelecto
 await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' });
 
 // 工作区管理：分享页
-await go(`http://127.0.0.1:5174/w/${wsId}/manage`);
+await go(`http://127.0.0.1:12098/w/${wsId}/manage`);
 const manage = await ex('document.body.innerText');
 result.manageHasSharesTab = manage.includes('分享') && manage.includes('工作区管理');
 result.sharesTabOpens = await click(`[...document.querySelectorAll('[role=tab]')].find(x=>x.textContent.trim()==='分享')`);
@@ -36,7 +36,7 @@ const sharesText = await ex('document.body.innerText');
 result.sharesPanelRenders = sharesText.includes('分享链接') || sharesText.includes('全部分享') || sharesText.includes('自己创建');
 
 // 回收站：销毁按钮与删除人信息
-await go(`http://127.0.0.1:5174/w/${wsId}/trash`);
+await go(`http://127.0.0.1:12098/w/${wsId}/trash`);
 result.trashHasPurge = await ex(`!!document.querySelector('button[aria-label="立即销毁"]') || document.body.innerText.includes('回收站是空的')`);
 
 // 笔记页：分享对话框的单节选项与标签区
@@ -47,7 +47,7 @@ const noteId = await ex(`(async()=>{const call=async(u,o)=>(await (await fetch(u
   await call('/api/v1/notes/'+n.id,{method:'PATCH',body:JSON.stringify({expectedVersion:n.version,bodyMd:'# 第一节'+String.fromCharCode(10)+'正文。'+String.fromCharCode(10,10)+'## 第二节'+String.fromCharCode(10)+'更多正文。'})});
   return n.id})()`);
 if (noteId) {
-  await go(`http://127.0.0.1:5174/w/${wsId}/n/${noteId}`);
+  await go(`http://127.0.0.1:12098/w/${wsId}/n/${noteId}`);
   await click(`[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='分享')`);
   const dialog = await ex(`document.querySelector('[role=dialog]')?.innerText||''`);
   result.shareDialogHasToggles = dialog.includes('允许纠错建议') && dialog.includes('显示反向链接');
