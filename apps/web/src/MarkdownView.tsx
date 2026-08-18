@@ -1,10 +1,8 @@
-import { useMemo } from "react";
-import DOMPurify, { type Config as PurifyConfig } from "dompurify";
-import { renderMarkdown, toggleTaskAt, type RenderMode, type WikiResolver } from "@kb/shared/markdown";
-import "katex/dist/katex.min.css";
-
-/** KaTeX 会输出 MathML 与带 style 的 span，双链与任务列表靠 data-* 传参，这些都要留住。 */
-const PURIFY: PurifyConfig = { ADD_ATTR: ["target", "rel", "tabindex", "role"] };
+import { useEffect, useMemo, useRef } from "react";
+import { toggleTaskAt, type RenderMode, type WikiResolver } from "@kb/shared/markdown";
+import { toSafeHtml } from "./lib/render-html";
+import { hydrateMath } from "./lib/katex-hydrate";
+import { hydrateDiagrams } from "./lib/mermaid-hydrate";
 
 export function MarkdownView({
   source,
@@ -25,12 +23,13 @@ export function MarkdownView({
   sourceLines?: boolean;
 }) {
   const html = useMemo(
-    () => DOMPurify.sanitize(
-      renderMarkdown(source || "_空白笔记_", { mode, resolveWiki, interactiveTasks: !!onToggleTask, sourceLines }),
-      PURIFY,
-    ),
+    () => toSafeHtml(source || "_空白笔记_", { mode, resolveWiki, interactiveTasks: !!onToggleTask, sourceLines }),
     [source, mode, resolveWiki, onToggleTask, sourceLines],
   );
+
+  const host = useRef<HTMLDivElement | null>(null);
+  // 公式与图在这里补：KaTeX 和 mermaid 都按需加载，没用到的笔记根本不会去下它们。
+  useEffect(() => { void hydrateMath(host.current); void hydrateDiagrams(host.current); }, [html]);
 
   function follow(target: HTMLElement) {
     const el = target.closest<HTMLElement>("[data-wiki]");
@@ -42,6 +41,7 @@ export function MarkdownView({
 
   return (
     <div
+      ref={host}
       className="markdown"
       dangerouslySetInnerHTML={{ __html: html }}
       onClick={event => {

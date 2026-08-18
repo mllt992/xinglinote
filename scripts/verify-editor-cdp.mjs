@@ -29,6 +29,8 @@ const source = async () => { await press('a', 'KeyA', 65, true); const text = aw
 const call = async (path, init = '{}') => ex(`fetch(${JSON.stringify(path)},{credentials:'include',headers:{'X-Requested-With':'fetch','content-type':'application/json'},...${init}}).then(r=>r.json()).then(j=>j.data)`);
 /** 自动保存是 850ms debounce，等状态条落到「已保存」再断言。 */
 const settle = async () => { for (let i = 0; i < 14; i++) { if (await ex(`document.body.innerText.includes('已保存 · v')`)) return true; await wait(400); } return false; };
+/** KaTeX 是按需加载的，跟公式有关的断言要能等它下完。 */
+const until = async expr => { for (let i = 0; i < 12; i++) { if (await ex(expr)) return true; await wait(400); } return false; };
 
 const NL = String.fromCharCode(10);
 const PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
@@ -54,6 +56,11 @@ const SEED = [
   '',
   '```js',
   'const a = 1;',
+  '```',
+  '',
+  '```mermaid',
+  'flowchart TD',
+  '  A[开始] --> B[结束]',
   '```',
   '',
   ...Array.from({ length: 60 }, (_, i) => `第 ${i + 1} 段填充正文，用来把编辑器撑出滚动条。`),
@@ -87,12 +94,12 @@ result.hidesMarkersWhenIdle = !idle.includes('# 验收标题') && idle.includes(
 await press('Home', 'Home', 36, true);          // Ctrl+Home 回到第一行
 const onHeading = await shown();
 result.revealsMarkersOnCursorLine = onHeading.includes('# 验收标题');
-result.rendersInlineMath = await ex(`!!document.querySelector('.cm-content .cm-md-math .katex')`);
+result.rendersInlineMath = await until(`!!document.querySelector('.cm-content .cm-md-math .katex')`);
 result.rendersImage = await ex(`!!document.querySelector('.cm-content img.cm-md-image')`);
 result.rendersTaskCheckbox = await ex(`document.querySelectorAll('.cm-content input.cm-md-task').length === 2`);
 result.rendersWikiChip = await ex(`!!document.querySelector('.cm-content .cm-md-wiki')`);
 result.rendersBullet = await ex(`!!document.querySelector('.cm-content .cm-md-bullet')`);
-result.rendersBlockMath = await ex(`!!document.querySelector('.cm-content .cm-md-math-block .katex')`);
+result.rendersBlockMath = await until(`!!document.querySelector('.cm-content .cm-md-math-block .katex')`);
 
 // —— 四、勾选任务：只翻一个字符 ——
 const beforeTask = (await call(`/api/v1/notes/${noteId}`)).bodyMd;
@@ -134,6 +141,22 @@ result.wikiCompletionOpens = await ex(`!!document.querySelector('.cm-tooltip-aut
 result.wikiCompletionHitsTitle = await ex(`[...document.querySelectorAll('.cm-tooltip-autocomplete li')].some(li=>li.textContent.includes('编辑器验收'))`);
 await press('Escape', 'Escape', 27);
 for (let i = 0; i < 8; i++) await press('z', 'KeyZ', 90, true);
+
+// —— 八点五、斜杠菜单：只在行首触发，选中后把这一行变成对应标记 ——
+await click(`document.querySelector('.cm-content')`);
+await toEnd();
+await press('Enter', 'Enter', 13);
+await type('/二级');
+await wait(700);
+result.slashMenuOpens = await ex(`!!document.querySelector('.cm-tooltip-autocomplete li')`);
+await press('Enter', 'Enter', 13);
+await wait(400);
+result.slashMenuInserts = (await shown()).trimEnd().endsWith('## ');
+// 句子中间的斜杠不该弹菜单
+await type('路径 a/b');
+await wait(600);
+result.slashMenuIgnoresMidLine = await ex(`!document.querySelector('.cm-tooltip-autocomplete li')`);
+for (let i = 0; i < 10; i++) await press('z', 'KeyZ', 90, true);
 
 // —— 九、查找替换面板 ——
 await click(`document.querySelector('.cm-content')`);
@@ -190,10 +213,55 @@ await press('Escape', 'Escape', 27);
 await wait(700);
 result.fullscreenExits = await ex(`!!document.querySelector('.notebook-panel')`);
 
+// —— 十点六、即时渲染（Typora 模式）：元素粒度、表格就地渲染、比例字体 ——
+await click(`document.querySelector('.cm-content')`);
+await press('Home', 'Home', 36, true);
+result.wysiwygOnByDefault = await ex(`!!document.querySelector('[data-editor="markdown"][data-wysiwyg="1"]')`);
+// 光标停在第一行（标题），同一行之外的表格该已经渲成真表格
+result.wysiwygRendersTable = await until(`!!document.querySelector('.cm-content .cm-md-table table')`);
+result.wysiwygProportionalFont = await ex(`(()=>{const el=document.querySelector('[data-wysiwyg="1"] .cm-scroller');if(!el)return false;const f=getComputedStyle(el).fontFamily;return !/mono/i.test(f)})()`);
+result.wysiwygCodeStaysMono = await ex(`(()=>{const el=document.querySelector('.cm-md-code-line');return !!el && /mono/i.test(getComputedStyle(el).fontFamily)})()`);
+// 元素粒度：光标在标题行，同一行里的行内标记该露出；换到别处该重新藏起来
+result.wysiwygRevealsByElement = await ex(`!document.querySelector('.cm-content').innerText.includes('**')`);
+// 切回源码模式后表格该回到源码
+await ex(`(()=>{const el=document.querySelector('button[aria-label="切换即时渲染"]');el&&el.click()})()`);
+await wait(700);
+result.sourceModeDropsTable = await ex(`!document.querySelector('.cm-content .cm-md-table')`);
+await ex(`(()=>{const el=document.querySelector('button[aria-label="切换即时渲染"]');el&&el.click()})()`);
+await wait(600);
+
+// —— 十点七、正文栏宽：表格吃满整栏、表头不换行、正文保持易读行宽、左边缘对齐 ——
+await click(`[...document.querySelectorAll('[role=tab]')].find(x=>x.textContent.trim()==='预览')`);
+await wait(600);
+const layout = await ex(`(()=>{
+  const box=document.querySelector('[data-note-preview]');
+  const wrap=document.querySelector('.markdown .table-scroll');
+  const table=document.querySelector('.markdown table');
+  const th=document.querySelector('.markdown th');
+  const p=document.querySelector('.markdown > p');
+  if(!box||!wrap||!table||!th||!p) return null;
+  const cs=getComputedStyle(th);
+  const lines=Math.round((th.getBoundingClientRect().height-parseFloat(cs.paddingTop)-parseFloat(cs.paddingBottom))/parseFloat(cs.lineHeight));
+  return {box:box.getBoundingClientRect().width, table:table.getBoundingClientRect().width,
+    para:p.getBoundingClientRect().width, headerLines:lines,
+    sameLeft:Math.abs(table.getBoundingClientRect().left-p.getBoundingClientRect().left)<2,
+    pageOverflows:document.documentElement.scrollWidth>window.innerWidth+1};
+})()`);
+result.tableUsesFullColumn = !!layout && layout.table > layout.box * 0.9;
+result.tableHeaderNotWrapped = !!layout && layout.headerLines === 1;
+result.proseKeepsMeasure = !!layout && layout.para <= 760 && layout.para < layout.table;
+result.contentSharesLeftEdge = !!layout && layout.sameLeft;
+result.noHorizontalPageScroll = !!layout && !layout.pageOverflows;
+
 // —— 十一、预览侧的闭集渲染 ——
 await click(`[...document.querySelectorAll('[role=tab]')].find(x=>x.textContent.trim()==='预览')`);
 await wait(700);
-result.previewRendersMath = await ex(`!!document.querySelector('.markdown .katex')`);
+result.previewRendersMath = await until(`!!document.querySelector('.markdown .math[data-math-done] .katex')`);
+result.katexLoadedLazily = await ex(`performance.getEntriesByType('resource').some(r=>r.name.includes('katex'))`);
+result.previewRendersDiagram = await until(`!!document.querySelector('.markdown .diagram[data-diagram-theme] svg')`);
+result.mermaidLoadedLazily = await ex(`performance.getEntriesByType('resource').some(r=>/mermaid/i.test(r.name))`);
+// 图画出来了，源码仍是原样那段 fence —— 渲染绝不回写正文（设计 17 §2）。
+result.diagramKeepsSource = (await call(`/api/v1/notes/${noteId}`)).bodyMd.includes('```mermaid');
 result.previewRendersTaskList = await ex(`document.querySelectorAll('.markdown input.task-checkbox').length === 2`);
 result.previewRendersTable = await ex(`!!document.querySelector('.markdown table')`);
 result.previewRendersWiki = await ex(`!!document.querySelector('.markdown .wiki')`);

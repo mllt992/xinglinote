@@ -4,6 +4,10 @@ export type LayoutPrefs = {
   treeWidth: number;
   showNotebooks: boolean;
   showTree: boolean;
+  /** 打字机滚动：光标行钉在视口中间。 */
+  typewriter: boolean;
+  /** 即时渲染（Typora 那套）：标记按元素显隐、表格就地渲染、正文比例字体。 */
+  wysiwyg: boolean;
 };
 
 const KEY = "kb.layout";
@@ -13,6 +17,8 @@ export const DEFAULT_LAYOUT: LayoutPrefs = {
   treeWidth: 288,
   showNotebooks: true,
   showTree: true,
+  typewriter: false,
+  wysiwyg: true,
 };
 
 export const NOTEBOOKS_MIN = 160, NOTEBOOKS_MAX = 420;
@@ -29,6 +35,8 @@ export function loadLayout(): LayoutPrefs {
       treeWidth: clamp(Number(raw.treeWidth) || DEFAULT_LAYOUT.treeWidth, TREE_MIN, TREE_MAX),
       showNotebooks: raw.showNotebooks !== false,
       showTree: raw.showTree !== false,
+      typewriter: raw.typewriter === true,
+      wysiwyg: raw.wysiwyg !== false,
     };
   } catch { return DEFAULT_LAYOUT; }
 }

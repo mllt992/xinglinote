@@ -1,13 +1,21 @@
 import { syntaxTree } from "@codemirror/language";
-import { type EditorState, type Extension, type Range, RangeSet } from "@codemirror/state";
+import { type EditorState, type Extension, type Range, RangeSet, StateField } from "@codemirror/state";
+import type { SyntaxNodeRef } from "@lezer/common";
 import {
   Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType,
 } from "@codemirror/view";
-import katex from "katex";
+import { diagramBlockAt } from "@kb/shared/markdown";
+import { hydrateMath, loadKatex } from "../lib/katex-hydrate";
+import { renderDiagram } from "../lib/mermaid-hydrate";
+import { toSafeHtml } from "../lib/render-html";
 
 /**
- * Obsidian 式 Live Preview：标记（`#`、`**`、`[]()`）平时藏起来只显示内容，
- * 光标落到那一行就把原样式子露出来。
+ * 就地渲染。标记（`#`、`**`、`[]()`、`[[]]`）平时藏起来只显示内容，光标凑近了才露出原文。
+ *
+ * 两档粒度：
+ * - **整行**（默认，Obsidian 那套）：光标落在哪一行，那一行整行露出原文。
+ * - **元素**（即时渲染 / Typora 那套）：只有光标真正进到那个 `**粗体**` 里才露出星号，
+ *   同一行别的标记继续保持渲染态；外加表格就地渲成真表格、正文用比例字体。
  *
  * 铁律（设计 17 §4.1）：**这里全部是 view-only 装饰**，一个字节都不改文档。
  * 唯一会写文档的是复选框，而它只翻 `[ ]` 中间那一个字符。
@@ -71,45 +79,139 @@ class MathWidget extends WidgetType {
   toDOM() {
     const span = document.createElement("span");
     span.className = this.display ? "cm-md-math cm-md-math-block" : "cm-md-math";
-    try {
-      // trust 默认 false，KaTeX 不吐原始 HTML；内容也只来自作者自己的文档。
-      span.innerHTML = katex.renderToString(this.source, { throwOnError: true, strict: false, displayMode: this.display });
-    } catch {
-      span.classList.add("cm-md-math-error");
-      span.textContent = this.display ? `$$${this.source}$$` : `$${this.source}$`;
-    }
+    // 先摆源码，KaTeX 到位再替换。按需加载，第一条公式出现前不会去下这几百 KB。
+    span.textContent = this.display ? `$$${this.source}$$` : `$${this.source}$`;
+    void loadKatex().then(({ default: katex }) => {
+      try {
+        // trust 默认 false，KaTeX 不吐原始 HTML；内容也只来自作者自己的文档。
+        span.innerHTML = katex.renderToString(this.source, { throwOnError: true, strict: false, displayMode: this.display });
+      } catch {
+        span.classList.add("cm-md-math-error");
+      }
+    });
     return span;
   }
   ignoreEvent() { return false; }
 }
 
-const hide = Decoration.replace({});
-
-/** 有光标或选区落在上面的行要露出原文，用户才改得动。以行为单位，不以字符为单位。 */
-function revealedLines(state: EditorState): Set<number> {
-  const lines = new Set<number>();
-  for (const range of state.selection.ranges) {
-    const first = state.doc.lineAt(range.from).number;
-    const last = state.doc.lineAt(range.to).number;
-    for (let n = first; n <= last; n++) lines.add(n);
+/** 表格：光标不在里面时渲成真表格，进去了就回源码——改的还是 Markdown，一个字节不动。 */
+class TableWidget extends WidgetType {
+  constructor(readonly source: string) { super(); }
+  eq(other: TableWidget) { return other.source === this.source; }
+  toDOM() {
+    const box = document.createElement("div");
+    box.className = "cm-md-table markdown";
+    box.innerHTML = toSafeHtml(this.source);
+    void hydrateMath(box);
+    return box;
   }
-  return lines;
+  ignoreEvent() { return false; }
 }
 
-/** 跨多行的块，只要有任意一行被光标碰到就整块露出原文。 */
-function rangeRevealed(state: EditorState, revealed: Set<number>, from: number, to: number): boolean {
-  const first = state.doc.lineAt(from).number;
-  const last = state.doc.lineAt(to).number;
-  for (let n = first; n <= last; n++) if (revealed.has(n)) return true;
-  return false;
+/** ```mermaid：光标不在块里就画成图，进去了就回源码。和表格同一个口径。 */
+class DiagramWidget extends WidgetType {
+  constructor(readonly source: string) { super(); }
+  eq(other: DiagramWidget) { return other.source === this.source; }
+  toDOM() {
+    const box = document.createElement("div");
+    box.className = "cm-md-diagram";
+    // 先摆源码，mermaid 到位再替换。画错了就停在源码上，光标进去照常改。
+    const pre = document.createElement("pre");
+    pre.textContent = this.source;
+    box.append(pre);
+    void renderDiagram(this.source)
+      .then(svg => { box.innerHTML = svg; })
+      .catch(() => box.classList.add("cm-md-diagram-error"));
+    return box;
+  }
+  ignoreEvent() { return false; }
 }
+
+const hide = Decoration.replace({});
+const codeLine = Decoration.line({ class: "cm-md-code-line" });
+const quoteLine = Decoration.line({ class: "cm-md-quote-line" });
 
 type Built = { decorations: DecorationSet; atomic: DecorationSet };
 
-function build(view: EditorView): Built {
+/**
+ * 这段标记要不要露出原文。
+ * 元素粒度看光标是否落在这个构件里（贴边也算，不然刚打完 `**` 就立刻藏起来，
+ * 想接着改还得倒回去）；整行粒度看光标在不在同一行。
+ */
+function revealer(state: EditorState, wysiwyg: boolean) {
+  const selection = state.selection.ranges;
+  return (from: number, to: number): boolean => {
+    if (wysiwyg) return selection.some(r => r.from <= to && r.to >= from);
+    const first = state.doc.lineAt(from).number;
+    const last = state.doc.lineAt(to).number;
+    return selection.some(r => state.doc.lineAt(r.from).number <= last && state.doc.lineAt(r.to).number >= first);
+  };
+}
+
+/** 块级替换必须严格盖住整行，否则 CodeMirror 直接抛异常。对不齐就不渲染。 */
+function wholeLines(state: EditorState, from: number, to: number): boolean {
+  return state.doc.lineAt(from).from === from && state.doc.lineAt(to).to === to;
+}
+
+/**
+ * 块级装饰（块级公式、表格）**只能走 StateField**：CodeMirror 明令
+ * 「Block decorations may not be specified via plugins」，跨行的替换同理。
+ * 所以这里跟下面的行内装饰分成两套，别再合回去。
+ */
+function blockField(wysiwyg: boolean) {
+  const build = (state: EditorState): DecorationSet => {
+    const ranges: Range<Decoration>[] = [];
+    const revealed = revealer(state, wysiwyg);
+    syntaxTree(state).iterate({
+      enter: node => {
+        if (node.name === "FencedCode") {
+          // 图只在即时渲染模式下就地画：整行粒度里光标一进块就整块跳回源码，
+          // 而一张图通常有好几行，跳来跳去比不画还难用（同表格）。
+          if (!wysiwyg || revealed(node.from, node.to) || !wholeLines(state, node.from, node.to)) return false;
+          // 用共享的那份识别逻辑，别在这里再写一套围栏解析。
+          const block = diagramBlockAt(state.doc.sliceString(node.from, node.to), 0);
+          if (block?.source.trim()) {
+            ranges.push(Decoration.replace({ widget: new DiagramWidget(block.source), block: true }).range(node.from, node.to));
+          }
+          return false;
+        }
+        // 行内内容占了语法树的绝大部分，而块级公式与表格都不会长在段落或代码块里面。
+        if (node.name === "Paragraph" || node.name === "CodeBlock") return false;
+        if (node.name === "BlockMath") {
+          if (revealed(node.from, node.to) || !wholeLines(state, node.from, node.to)) return false;
+          const raw = state.doc.sliceString(node.from, node.to).trim();
+          // 没闭合就别渲染，不然刚敲下 `$$` 后面半篇文章会突然变成一坨公式。
+          if (!raw.endsWith("$$") || raw.length <= 4) return false;
+          const body = raw.slice(2, -2).trim();
+          if (body) ranges.push(Decoration.replace({ widget: new MathWidget(body, true), block: true }).range(node.from, node.to));
+          return false;
+        }
+        if (node.name === "Table") {
+          // 表格只在即时渲染模式下就地渲染：整行粒度里光标一进表格就整块跳回源码，
+          // 而表格通常有好几行，跳来跳去比不渲染还难用。
+          if (!wysiwyg || revealed(node.from, node.to) || !wholeLines(state, node.from, node.to)) return;
+          ranges.push(Decoration.replace({ widget: new TableWidget(state.doc.sliceString(node.from, node.to)), block: true }).range(node.from, node.to));
+          return false;
+        }
+        return;
+      },
+    });
+    return Decoration.set(ranges, true);
+  };
+  return StateField.define<DecorationSet>({
+    create: build,
+    update: (value, tr) => (tr.docChanged || tr.selection || syntaxTree(tr.state) !== syntaxTree(tr.startState)) ? build(tr.state) : value,
+    provide: field => [
+      EditorView.decorations.from(field),
+      EditorView.atomicRanges.of(view => view.state.field(field, false) ?? RangeSet.empty),
+    ],
+  });
+}
+
+function build(view: EditorView, wysiwyg: boolean): Built {
   const marks: Range<Decoration>[] = [];
   // 只有「被替换掉的」区间该是原子的：方向键要能一步跨过藏起来的标记。
-  // 样式类的 mark 装饰绝不能进这里，否则链接和双链的文字就没法把光标放进去改。
+  // 样式类的 mark 与整行装饰绝不能进这里，否则那段文字就没法把光标放进去改。
   const atoms: Range<Decoration>[] = [];
   const replace = (deco: Decoration, from: number, to: number) => {
     if (from >= to) return;
@@ -118,8 +220,24 @@ function build(view: EditorView): Built {
   };
 
   const { state } = view;
-  const revealed = revealedLines(state);
   const tree = syntaxTree(state);
+  const revealed = revealer(state, wysiwyg);
+  /** 标记归属的构件范围：元素粒度下判定要以整个 `**粗体**` 为准，而不是那两个星号。 */
+  const owner = (node: SyntaxNodeRef) => {
+    const parent = node.node.parent;
+    return parent ? { from: parent.from, to: parent.to } : { from: node.from, to: node.to };
+  };
+  /** 给一个多行块的每一行挂整行装饰，范围裁到可视区，别为屏幕外的几千行做无用功。 */
+  const lineDecos = (from: number, to: number, deco: Decoration, limit: { from: number; to: number }) => {
+    let pos = Math.max(from, limit.from);
+    const end = Math.min(to, limit.to);
+    while (pos <= end) {
+      const line = state.doc.lineAt(pos);
+      marks.push(deco.range(line.from));
+      if (line.to >= end) break;
+      pos = line.to + 1;
+    }
+  };
 
   for (const visible of view.visibleRanges) {
     tree.iterate({
@@ -127,11 +245,11 @@ function build(view: EditorView): Built {
       to: visible.to,
       enter: node => {
         const line = state.doc.lineAt(node.from);
-        const open = revealed.has(line.number);
 
         switch (node.name) {
           case "HeaderMark": {
-            if (open) return;
+            const scope = wysiwyg ? owner(node) : { from: line.from, to: line.to };
+            if (revealed(scope.from, scope.to)) return;
             // 连同后面的空格一起藏，不然标题会顶着一格缩进。
             let to = node.to;
             while (to < line.to && state.doc.sliceString(to, to + 1) === " ") to++;
@@ -139,34 +257,52 @@ function build(view: EditorView): Built {
             return;
           }
           case "EmphasisMark":
-          case "StrikethroughMark":
-            if (!open) replace(hide, node.from, node.to);
+          case "StrikethroughMark": {
+            const scope = wysiwyg ? owner(node) : { from: line.from, to: line.to };
+            if (!revealed(scope.from, scope.to)) replace(hide, node.from, node.to);
             return;
-          case "CodeMark":
+          }
+          case "CodeMark": {
             // 只藏行内代码的反引号；围栏代码块的 ``` 留着，不然看不出块边界。
-            if (!open && node.node.parent?.name === "InlineCode") replace(hide, node.from, node.to);
+            if (node.node.parent?.name !== "InlineCode") return;
+            const scope = wysiwyg ? owner(node) : { from: line.from, to: line.to };
+            if (!revealed(scope.from, scope.to)) replace(hide, node.from, node.to);
             return;
+          }
           case "QuoteMark":
-            if (!open) replace(hide, node.from, node.to);
+            // 引用标记一律按行判定：一段长引用不该因为光标在末行就整段露出。
+            if (!revealed(line.from, line.to)) replace(hide, node.from, node.to);
+            return;
+          case "Blockquote":
+            lineDecos(node.from, node.to, quoteLine, visible);
+            return;
+          case "FencedCode":
+          case "CodeBlock":
+            lineDecos(node.from, node.to, codeLine, visible);
             return;
           case "LinkMark":
           case "URL":
-          case "LinkTitle":
-            if (!open && node.node.parent?.name === "Link") replace(hide, node.from, node.to);
+          case "LinkTitle": {
+            if (node.node.parent?.name !== "Link") return;
+            const scope = wysiwyg ? owner(node) : { from: line.from, to: line.to };
+            if (!revealed(scope.from, scope.to)) replace(hide, node.from, node.to);
             return;
-          case "Link":
-            if (!open) {
+          }
+          case "Link": {
+            const scope = wysiwyg ? { from: node.from, to: node.to } : { from: line.from, to: line.to };
+            if (!revealed(scope.from, scope.to)) {
               marks.push(Decoration.mark({ class: "cm-md-link", attributes: { title: "Ctrl/⌘ + 单击打开" } }).range(node.from, node.to));
             }
             return;
+          }
           case "Image": {
-            if (open) return false;
+            if (revealed(node.from, node.to)) return false;
             const parsed = /^!\[([^\]]*)\]\(([^)\s]+)/.exec(state.doc.sliceString(node.from, node.to));
             if (parsed) replace(Decoration.replace({ widget: new ImageWidget(parsed[2], parsed[1]) }), node.from, node.to);
             return false;
           }
           case "WikiLink": {
-            if (open) return false;
+            if (revealed(node.from, node.to)) return false;
             const embed = state.doc.sliceString(node.from, node.from + 1) === "!";
             const innerFrom = node.from + (embed ? 3 : 2);
             const innerTo = node.to - 2;
@@ -182,37 +318,33 @@ function build(view: EditorView): Built {
             }).range(pipe >= 0 ? innerFrom + pipe + 1 : innerFrom, innerTo));
             return false;
           }
-          case "BlockMath": {
-            if (rangeRevealed(state, revealed, node.from, node.to)) return false;
-            const raw = state.doc.sliceString(node.from, node.to).trim();
-            // 没闭合就别渲染，不然刚敲下 `$$` 后面半篇文章会突然变成一坨公式。
-            if (!raw.endsWith("$$") || raw.length <= 4) return false;
-            const body = raw.slice(2, -2).trim();
-            if (!body) return false;
-            replace(Decoration.replace({ widget: new MathWidget(body, true), block: true }), node.from, node.to);
-            return false;
-          }
           case "InlineMath": {
-            if (open) return false;
+            if (revealed(node.from, node.to)) return false;
             replace(Decoration.replace({ widget: new MathWidget(state.doc.sliceString(node.from + 1, node.to - 1)) }), node.from, node.to);
             return false;
           }
+          // 块级公式与表格在 blockField 里处理：跨行替换不能由 ViewPlugin 提供。
+          case "BlockMath":
+            return false;
+          case "Table":
+            // 已经渲成表格小部件的，里面的行内标记不必再装饰；回到源码态时照常往里走。
+            return wysiwyg && !revealed(node.from, node.to) ? false : undefined;
           case "TaskMarker": {
-            // 复选框一直是复选框（Obsidian 同款），光标在这一行也不退回 `[ ]`。
+            // 复选框一直是复选框（Obsidian、Typora 都这样），光标在这一行也不退回 `[ ]`。
             const checked = state.doc.sliceString(node.from + 1, node.to - 1).trim().toLowerCase() === "x";
             replace(Decoration.replace({ widget: new CheckboxWidget(checked, node.from) }), node.from, node.to);
             return false;
           }
           case "ListMark": {
-            if (open) return;
             const mark = state.doc.sliceString(node.from, node.to);
-            if (mark === "-" || mark === "*" || mark === "+") {
-              replace(Decoration.replace({ widget: new TextWidget("•", "cm-md-bullet") }), node.from, node.to);
-            }
+            if (mark !== "-" && mark !== "*" && mark !== "+") return;
+            // 即时渲染下圆点一直是圆点；整行粒度下光标进来要能改标记。
+            if (!wysiwyg && revealed(line.from, line.to)) return;
+            replace(Decoration.replace({ widget: new TextWidget("•", "cm-md-bullet") }), node.from, node.to);
             return;
           }
           case "HorizontalRule":
-            if (!open) replace(Decoration.replace({ widget: new RuleWidget() }), node.from, node.to);
+            if (!revealed(line.from, line.to)) replace(Decoration.replace({ widget: new RuleWidget() }), node.from, node.to);
             return;
           default:
             return;
@@ -223,22 +355,24 @@ function build(view: EditorView): Built {
   return { decorations: Decoration.set(marks, true), atomic: Decoration.set(atoms, true) };
 }
 
-const livePreviewPlugin = ViewPlugin.fromClass(
-  class {
-    built: Built;
-    constructor(view: EditorView) { this.built = build(view); }
-    update(update: ViewUpdate) {
-      if (update.docChanged || update.viewportChanged || update.selectionSet
-        || syntaxTree(update.startState) !== syntaxTree(update.state)) {
-        this.built = build(update.view);
+function decorator(wysiwyg: boolean) {
+  return ViewPlugin.fromClass(
+    class {
+      built: Built;
+      constructor(view: EditorView) { this.built = build(view, wysiwyg); }
+      update(update: ViewUpdate) {
+        if (update.docChanged || update.viewportChanged || update.selectionSet
+          || syntaxTree(update.startState) !== syntaxTree(update.state)) {
+          this.built = build(update.view, wysiwyg);
+        }
       }
-    }
-  },
-  {
-    decorations: plugin => plugin.built.decorations,
-    provide: plugin => EditorView.atomicRanges.of(view => view.plugin(plugin)?.built.atomic ?? RangeSet.empty),
-  },
-);
+    },
+    {
+      decorations: p => p.built.decorations,
+      provide: p => EditorView.atomicRanges.of(view => view.plugin(p)?.built.atomic ?? RangeSet.empty),
+    },
+  );
+}
 
 /** 从某个位置起把整条 `[[…]]` 抠出来。比在语法树里向上爬稳，也不怕 resolveInner 落在标记上。 */
 function wikiAt(state: EditorState, from: number) {
@@ -284,6 +418,6 @@ function followHandler(onWiki?: (title: string, section?: string) => void): Exte
   });
 }
 
-export function livePreview(onWiki?: (title: string, section?: string) => void): Extension {
-  return [livePreviewPlugin, followHandler(onWiki)];
+export function livePreview(onWiki: ((title: string, section?: string) => void) | undefined, wysiwyg: boolean): Extension {
+  return [blockField(wysiwyg), decorator(wysiwyg), followHandler(onWiki)];
 }

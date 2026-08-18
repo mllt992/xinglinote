@@ -9,6 +9,9 @@
 双向同步（块锚定位，勾选回写正文）、拖拽改期与拉伸改时长、撤销、提醒、重复规则、今天页与日记入口、
 ICS 订阅与导出，以及 `list_tasks` / `list_events` / `create_task` / `complete_task` 四个 MCP 工具。
 
+画图（[设计 17 §3.0](docs/设计/17-编辑器方案.md)）走 ` ```mermaid ` 代码块：预览与编辑器里就地渲染、
+渲染库按需加载，外加「AI 画图」——说一句话生成或改一张图，画得出来才让插进正文。
+
 ## 启动
 
 需要 Node 22、pnpm、Docker。
@@ -62,7 +65,7 @@ node scripts/verify-gaps-cdp.mjs
 node scripts/verify-feed-cdp.mjs
 node scripts/verify-transfer-cdp.mjs
 node scripts/verify-calendar-cdp.mjs
-node scripts/verify-editor-cdp.mjs      # 编辑器内核、字节保真、快捷键、公式与任务列表
+node scripts/verify-editor-cdp.mjs      # 编辑器内核、字节保真、快捷键、公式、图与任务列表
 node --experimental-strip-types scripts/verify-zip.mjs   # 不需要账号
 ```
 

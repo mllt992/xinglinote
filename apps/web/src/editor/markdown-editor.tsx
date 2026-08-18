@@ -5,7 +5,7 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { bracketMatching, indentOnInput } from "@codemirror/language";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
 import {
   EditorView, crosshairCursor, drawSelection, dropCursor, highlightActiveLine,
   keymap, placeholder as placeholderExt, rectangularSelection,
@@ -14,10 +14,14 @@ import { fileDrop, type FileUploader } from "./attachments";
 import { insertLink, insertWikiLink, toggleLinePrefix, toggleTask, toggleWrap } from "./commands";
 import { livePreview } from "./live-preview";
 import { markdownSyntaxExtensions } from "./markdown-syntax";
+import { slashCompletion } from "./slash-menu";
+import { typewriterScroll } from "./typewriter";
 import { editorHighlighting, editorTheme } from "./theme";
 import { wikiCompletion, type WikiCompleteOptions } from "./wiki-complete";
 
 const readOnlyCompartment = new Compartment();
+// 即时渲染要换掉整个装饰插件，用隔间热替换，省得为一个开关重建编辑器。
+const livePreviewCompartment = new Compartment();
 
 export type MarkdownEditorHandle = {
   /** 把某一源码行滚到视口顶部（0 基，和预览的 `data-line` 同一套编号）。 */
@@ -27,6 +31,10 @@ export type MarkdownEditorHandle = {
   getSelection: () => { text: string; from: number; to: number } | null;
   /** 选中一段并滚过去，用来把「这条纠错说的是哪句」指出来。 */
   selectRange: (from: number, to: number) => void;
+  /** 光标位置（字符偏移，和正文字符串同一套坐标）。编辑器没挂载时是 null。 */
+  getCursorPos: () => number | null;
+  /** 就地替换一段，光标落在插入内容末尾。`from === to` 就是纯插入。 */
+  replaceRange: (from: number, to: number, text: string) => void;
 };
 
 /**
@@ -44,6 +52,8 @@ export function MarkdownEditor({
   onScrollLine,
   onCursor,
   completion,
+  typewriter = false,
+  wysiwyg = false,
   readOnly = false,
   placeholder = "",
   resetKey,
@@ -65,6 +75,10 @@ export function MarkdownEditor({
   onCursor?: (info: { line: number; col: number; selected: number }) => void;
   /** `[[` 补全的数据来源。每次触发都会重新读，所以传当前值即可。 */
   completion?: WikiCompleteOptions;
+  /** 打字机滚动：光标行钉在视口中间。 */
+  typewriter?: boolean;
+  /** 即时渲染（Typora 那套）：标记按元素显隐、表格就地渲染、正文比例字体。 */
+  wysiwyg?: boolean;
   readOnly?: boolean;
   placeholder?: string;
   /** 换一篇笔记时传新的 key，光标与滚动位置会重置。 */
@@ -76,8 +90,8 @@ export function MarkdownEditor({
   const host = useRef<HTMLDivElement | null>(null);
   const view = useRef<EditorView | null>(null);
   // 这些回调每次渲染都是新函数，用 ref 兜住，免得为了它们重建整个编辑器。
-  const latest = useRef({ onChange, onSave, onWiki, onUpload, onScrollLine, onCursor, completion });
-  latest.current = { onChange, onSave, onWiki, onUpload, onScrollLine, onCursor, completion };
+  const latest = useRef({ onChange, onSave, onWiki, onUpload, onScrollLine, onCursor, completion, typewriter });
+  latest.current = { onChange, onSave, onWiki, onUpload, onScrollLine, onCursor, completion, typewriter };
   const mine = useRef(value);
 
   useImperativeHandle(ref, () => ({
@@ -104,6 +118,20 @@ export function MarkdownEditor({
       const { from, to } = instance.state.selection.main;
       return from === to ? null : { text: instance.state.sliceDoc(from, to), from, to };
     },
+    getCursorPos: () => view.current?.state.selection.main.head ?? null,
+    replaceRange: (from, to, text) => {
+      const instance = view.current;
+      if (!instance || instance.state.readOnly) return;
+      const max = instance.state.doc.length;
+      const start = Math.min(Math.max(from, 0), max);
+      const end = Math.min(Math.max(to, start), max);
+      instance.dispatch({
+        changes: { from: start, to: end, insert: text },
+        selection: EditorSelection.cursor(start + text.length),
+        userEvent: "input.replace",
+      });
+      instance.focus();
+    },
   }), []);
 
   useEffect(() => {
@@ -126,13 +154,14 @@ export function MarkdownEditor({
           autocompletion({
             activateOnTyping: true,
             icons: false,
-            override: [wikiCompletion(() => latest.current.completion ?? {})],
+            override: [wikiCompletion(() => latest.current.completion ?? {}), slashCompletion()],
           }),
           search({ top: true }),
           EditorView.lineWrapping,
           EditorState.allowMultipleSelections.of(true),
           markdown({ base: markdownLanguage, codeLanguages: languages, extensions: markdownSyntaxExtensions }),
-          livePreview((title, section) => latest.current.onWiki?.(title, section)),
+          livePreviewCompartment.of(livePreview((title, section) => latest.current.onWiki?.(title, section), wysiwyg)),
+          typewriterScroll(() => latest.current.typewriter === true),
           fileDrop(file => latest.current.onUpload?.(file) ?? Promise.resolve(null)),
           editorHighlighting,
           editorTheme,
@@ -215,5 +244,11 @@ export function MarkdownEditor({
     view.current?.dispatch({ effects: readOnlyCompartment.reconfigure(EditorState.readOnly.of(readOnly)) });
   }, [readOnly]);
 
-  return <div ref={host} className={className} data-editor="markdown" />;
+  useEffect(() => {
+    view.current?.dispatch({
+      effects: livePreviewCompartment.reconfigure(livePreview((title, section) => latest.current.onWiki?.(title, section), wysiwyg)),
+    });
+  }, [wysiwyg]);
+
+  return <div ref={host} className={className} data-editor="markdown" data-wysiwyg={wysiwyg ? "1" : undefined} />;
 }

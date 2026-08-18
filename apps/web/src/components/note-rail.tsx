@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { History, List, MessageSquare, Paperclip, PanelRight, Share2, Sparkles, Trash2, Upload, X } from "lucide-react";
-import { outlineOf } from "@kb/shared/markdown";
+import { History, List, MessageSquare, Paperclip, PanelRight, Share2, Sparkles, Trash2, Upload, Workflow, X } from "lucide-react";
+import { outlineOf, type DiagramBlock } from "@kb/shared/markdown";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
 import { Separator } from "./ui/separator";
 import { Tooltip } from "./ui/tooltip";
 import { VersionsTab } from "./version-panel";
+import { AiDiagramTab } from "./ai-diagram-tab";
 import { AiWriteTab, type Selection } from "./ai-write-tab";
 import { ReviewTab } from "./review-tab";
 
-export const RAIL_TABS = ["outline", "links", "attachments", "versions", "review", "ai"] as const;
+export const RAIL_TABS = ["outline", "links", "attachments", "versions", "review", "ai", "diagram"] as const;
 export type RailTab = (typeof RAIL_TABS)[number];
 
 const TAB_META: Record<RailTab, { label: string; icon: ReactNode }> = {
@@ -21,6 +22,7 @@ const TAB_META: Record<RailTab, { label: string; icon: ReactNode }> = {
   versions: { label: "版本历史", icon: <History /> },
   review: { label: "评论与纠错", icon: <MessageSquare /> },
   ai: { label: "AI 写作", icon: <Sparkles /> },
+  diagram: { label: "AI 画图", icon: <Workflow /> },
 };
 
 const WIDTH_KEY = "kb.note-rail.width";
@@ -279,6 +281,8 @@ export function NoteRail({
   onRestored,
   workspaceId,
   getSelection,
+  getDiagramTarget,
+  onInsertDiagram,
   onApplyAi,
   onReviewApplied,
   onLocate,
@@ -300,6 +304,9 @@ export function NoteRail({
   onRestored: (note: { id: string; title: string; bodyMd: string; version: number }) => void;
   workspaceId?: string;
   getSelection: () => Selection;
+  /** 光标所在的 mermaid 图块，供 AI 画图判断是「改图」还是「新图」。 */
+  getDiagramTarget: () => DiagramBlock | null;
+  onInsertDiagram: (fence: string, target: DiagramBlock | null) => void;
   onApplyAi: (bodyMd: string, baseVersion: number) => Promise<void>;
   onReviewApplied: () => void;
   onLocate: (excerpt: string) => void;
@@ -374,6 +381,7 @@ export function NoteRail({
       {tab === "versions" && <VersionsTab note={note} onRestored={onRestored} />}
       {tab === "review" && <ReviewTab note={note} onLocate={onLocate} onApplied={onReviewApplied} />}
       {tab === "ai" && <AiWriteTab note={note} workspaceId={workspaceId} getSelection={getSelection} onApply={onApplyAi} />}
+      {tab === "diagram" && <AiDiagramTab note={note} workspaceId={workspaceId} getTarget={getDiagramTarget} onInsert={onInsertDiagram} />}
     </aside>
   );
 }

@@ -66,7 +66,10 @@ button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
   .notebook-panel, .tree-panel { display: none; }
 }
 
-.markdown { color: var(--foreground); font-size: 15px; line-height: 1.8; }
+/* 正文保持易读的行宽，表格 / 代码块 / 图片 / 图表则允许占满整栏——
+   宽屏和全屏下不该为了迁就一段文字，把一张五列的表也锁在 46rem 里。 */
+.markdown { --measure: 46rem; color: var(--foreground); font-size: 15px; line-height: 1.8; }
+.markdown > :is(p, ul, ol, blockquote, h1, h2, h3, h4, h5, h6, hr) { max-width: var(--measure); }
 .markdown > *:first-child { margin-top: 0; }
 .markdown h1,.markdown h2,.markdown h3 { margin: 1.5em 0 .6em; font-family: var(--font-title); font-weight: 700; letter-spacing: -.035em; line-height: 1.25; }
 .markdown h1 { font-size: 1.85em; } .markdown h2 { font-size: 1.45em; } .markdown h3 { font-size: 1.18em; }
@@ -77,7 +80,13 @@ button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
 .markdown pre { overflow: auto; border: 1px solid var(--border-ui); border-radius: 10px; background: var(--muted); padding: 1rem; }
 .markdown pre code { padding: 0; background: transparent; }
 .markdown blockquote { margin: 1em 0; border-left: 3px solid var(--primary); padding-left: 1em; color: var(--muted-foreground); }
-.markdown table { width: 100%; border-collapse: collapse; } .markdown th,.markdown td { border: 1px solid var(--border-ui); padding: .5em .7em; text-align: left; }
+/* 表格：外层容器负责横向滚动，表格自己算列宽。
+   别给 <table> 直接加 display:block —— 那样它不再是表格盒，列宽会被容器压扁，
+   中文表头会被挤成一列一个字。渲染器已经套好 .table-scroll 了。 */
+.markdown .table-scroll { max-width: 100%; overflow-x: auto; margin: 1em 0; }
+.markdown table { width: 100%; min-width: 34rem; border-collapse: collapse; }
+.markdown th,.markdown td { border: 1px solid var(--border-ui); padding: .5em .7em; text-align: left; }
+.markdown th { white-space: nowrap; }
 .markdown .wiki { cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--primary) 50%, transparent); color: var(--primary); font-weight: 600; }
 .markdown .wiki.embed { display: inline-block; border: 0; border-radius: 6px; background: var(--accent-ui); padding: .15em .45em; }
 
@@ -88,7 +97,6 @@ button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
 .markdown :is(h1,h2,h3,h4,h5,h6) { scroll-margin-top: 4rem; }
 .markdown img { max-width: 100%; border-radius: 10px; }
 .markdown hr { margin: 2em 0; border: 0; border-top: 1px solid var(--border-ui); }
-.markdown table { display: block; overflow-x: auto; }
 .markdown ul.task-list { padding-left: .2em; list-style: none; }
 .markdown li.task-item { display: flex; align-items: baseline; gap: .55em; }
 .markdown li.task-item.done { color: var(--muted-foreground); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--muted-foreground) 60%, transparent); }
@@ -96,6 +104,11 @@ button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
 .markdown input.task-checkbox:not([disabled]) { cursor: pointer; }
 .markdown .math-block { overflow-x: auto; margin: 1em 0; }
 .markdown .math-error { border: 1px dashed var(--destructive); color: var(--destructive); }
+/* 图：画好之前（和画错之后）显示的是 pre 里的源码，所以两种状态共用一套盒子。 */
+.markdown .diagram { margin: 1em 0; overflow-x: auto; text-align: center; }
+.markdown .diagram svg { max-width: 100%; height: auto; }
+.markdown .diagram .diagram-source { margin: 0; text-align: left; color: var(--muted-foreground); font-family: var(--font-mono); font-size: 13px; }
+.markdown .diagram-error .diagram-source { border-color: var(--destructive); color: var(--destructive); }
 .markdown .wiki.plain { cursor: text; border: 0; color: inherit; font-weight: inherit; }
 .markdown .wiki.missing { border-bottom-style: dashed; color: var(--muted-foreground); }
 .markdown .wiki:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 3px; }
@@ -136,3 +149,21 @@ html[data-mode="dark"] {
 
 /* 全屏写作：浏览器真全屏时补上底色，被拒时靠上面的条件渲染退化成占满窗口。 */
 :fullscreen { background: var(--background); }
+
+/* 即时渲染（Typora 模式）：正文用比例字体，只有代码还是等宽。 */
+[data-wysiwyg="1"] .cm-scroller { font-family: var(--font-ui); font-size: 15px; }
+[data-wysiwyg="1"] .cm-line { padding-block: 1px; }
+.cm-md-code-line { background: color-mix(in srgb, var(--muted) 70%, transparent); font-family: var(--font-mono); font-size: 13.5px; }
+.cm-md-quote-line { border-left: 3px solid color-mix(in srgb, var(--primary) 45%, transparent); padding-left: .8em; color: var(--muted-foreground); }
+/* 编辑器里的表格小部件：列宽规则跟预览栏共用 .markdown 那套，这里只收一下外边距。 */
+.cm-md-table { margin: .35em 0; }
+.cm-md-table .table-scroll { margin: 0; }
+.cm-md-table > *:last-child { margin-bottom: 0; }
+.cm-md-diagram { margin: .35em 0; overflow-x: auto; text-align: center; }
+.cm-md-diagram svg { max-width: 100%; height: auto; }
+.cm-md-diagram pre { margin: 0; padding: .6em .8em; border: 1px solid var(--border-ui); border-radius: 8px; background: var(--muted); text-align: left; font-family: var(--font-mono); font-size: 13px; white-space: pre-wrap; }
+.cm-md-diagram-error pre { border-color: var(--destructive); color: var(--destructive); }
+
+/* 编辑器与预览的正文栏宽。全屏是为了要地方，就别再锁在 1400px。 */
+.editor-measure { width: 100%; max-width: 1400px; }
+[data-zen="1"] .editor-measure { max-width: min(100%, 1760px); }

@@ -93,3 +93,76 @@ opsRoutes.get("/notes/:id/export.zip",async c=>{
   const {note}=await noteAccess(c.req.param("id"),user.id,"read");
   return sendZip(c,`${note.title}.zip`,await packNotes([note],()=>[]));
 });
+
+// —— 工作区设置页的两块地基：改名 + 概览统计 ——
+import { count,gte,isNotNull } from "drizzle-orm";
+import { backupRuns,backupTargets,mcpTokens,shareLinks,users,workspaceInvites } from "../db/schema.ts";
+
+/** 改工作区名字。个人工作区也能改（它就是「我的库」的标题）；权限同其它管理动作：owner 或 admin。 */
+opsRoutes.patch("/workspaces/:id",async c=>{
+  const id=c.req.param("id");const u=await owner(c,id);
+  const b=z.object({name:z.string().trim().min(1,"名字不能为空").max(40,"名字最多 40 个字")}).parse(await c.req.json());
+  const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,id));
+  if(!ws)throw fail("NOT_FOUND","工作区不存在");
+  if(ws.deletionScheduledAt)throw fail("FORBIDDEN","注销宽限期内不能改名");
+  if(ws.name===b.name)return ok(c,{name:ws.name});
+  await db.update(workspaces).set({name:b.name}).where(eq(workspaces.id,id));
+  await db.insert(auditLogs).values({userId:u.id,workspaceId:id,actorType:"user",action:"workspace.rename",targetType:"workspace",targetId:id,result:"ok",details:{from:ws.name,to:b.name}});
+  return ok(c,{name:b.name});
+});
+
+/**
+ * 设置页概览：把散在成员 / 分享 / 备份 / 回收站各处的数字一次算完。
+ * 前端据此渲染统计卡和「该处理什么」的体检清单，不用开六个请求各拉一遍。
+ */
+opsRoutes.get("/workspaces/:id/overview",async c=>{
+  const u=await currentUser(c);if(!u)throw fail("UNAUTHENTICATED","未登录");
+  const id=c.req.param("id");const role=await memberRole(id,u.id);
+  if(!role)throw fail("FORBIDDEN","不是工作区成员");
+  const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,id));
+  if(!ws)throw fail("NOT_FOUND","工作区不存在");
+  const canManage=role==="owner"||role==="admin";
+  const week=new Date(Date.now()-7*86400000);
+  const n=async(q:Promise<{value:number}[]>)=>(await q)[0]?.value??0;
+
+  const memberRows=await db.select({role:workspaceMembers.role}).from(workspaceMembers).where(eq(workspaceMembers.workspaceId,id));
+  const roles={owner:0,admin:0,editor:0,viewer:0} as Record<string,number>;
+  for(const m of memberRows)roles[m.role]=(roles[m.role]??0)+1;
+
+  const[notebookCount,noteCount,trashedNotes,activeNotes7d]=await Promise.all([
+    n(db.select({value:count()}).from(notebooks).where(and(eq(notebooks.workspaceId,id),isNull(notebooks.trashedAt)))),
+    n(db.select({value:count()}).from(notes).where(and(eq(notes.workspaceId,id),isNull(notes.trashedAt)))),
+    n(db.select({value:count()}).from(notes).where(and(eq(notes.workspaceId,id),isNotNull(notes.trashedAt)))),
+    n(db.select({value:count()}).from(notes).where(and(eq(notes.workspaceId,id),isNull(notes.trashedAt),gte(notes.updatedAt,week)))),
+  ]);
+
+  const attachRows=await db.select({bytes:attachments.bytes}).from(attachments).where(and(eq(attachments.workspaceId,id),isNull(attachments.trashedAt)));
+  const attachBytes=attachRows.reduce((s,a)=>s+(a.bytes??0),0);
+
+  const shareRows=await db.select({expiresAt:shareLinks.expiresAt,passwordHash:shareLinks.passwordHash}).from(shareLinks).where(and(eq(shareLinks.workspaceId,id),eq(shareLinks.status,"active")));
+  const soon=Date.now()+7*86400000;
+  const shares={active:shareRows.length,expiringSoon:shareRows.filter(s=>s.expiresAt&&s.expiresAt.getTime()<=soon).length,noPassword:shareRows.filter(s=>!s.passwordHash).length};
+
+  const inviteRows=canManage?await db.select({expiresAt:workspaceInvites.expiresAt,status:workspaceInvites.status}).from(workspaceInvites).where(and(eq(workspaceInvites.workspaceId,id),eq(workspaceInvites.status,"active"))):[];
+  const activeInvites=inviteRows.filter(i=>i.expiresAt.getTime()>Date.now()).length;
+
+  const mcpActive=await n(db.select({value:count()}).from(mcpTokens).where(and(eq(mcpTokens.workspaceId,id),eq(mcpTokens.status,"active"))));
+
+  let backup:{targets:number;lastRunAt:string|null;lastStatus:string|null;scheduled:number}|null=null;
+  if(canManage){
+    const targets=await db.select({id:backupTargets.id,schedule:backupTargets.schedule,enabled:backupTargets.enabled}).from(backupTargets).where(eq(backupTargets.workspaceId,id));
+    const[lastRun]=await db.select({status:backupRuns.status,createdAt:backupRuns.createdAt}).from(backupRuns).where(eq(backupRuns.workspaceId,id)).orderBy(desc(backupRuns.createdAt)).limit(1);
+    backup={targets:targets.length,scheduled:targets.filter(t=>t.enabled&&t.schedule!=="manual").length,lastRunAt:lastRun?new Date(lastRun.createdAt).toISOString():null,lastStatus:lastRun?.status??null};
+  }
+
+  const recentAudit=canManage?await db.select({id:auditLogs.id,action:auditLogs.action,result:auditLogs.result,actorType:auditLogs.actorType,createdAt:auditLogs.createdAt,actorName:users.displayName}).from(auditLogs).leftJoin(users,eq(users.id,auditLogs.userId)).where(eq(auditLogs.workspaceId,id)).orderBy(desc(auditLogs.createdAt)).limit(6):[];
+
+  const[ownerRow]=await db.select({displayName:users.displayName,handle:users.handle}).from(users).where(eq(users.id,ws.ownerId));
+  return ok(c,{
+    workspace:{id:ws.id,name:ws.name,slug:ws.slug,kind:ws.kind,frozen:ws.frozen,deletionScheduledAt:ws.deletionScheduledAt,createdAt:ws.createdAt,ownerName:ownerRow?.displayName??"",ownerHandle:ownerRow?.handle??""},
+    myRole:role,canManage,
+    roles,
+    stats:{members:memberRows.length,notebooks:notebookCount,notes:noteCount,notesActive7d:activeNotes7d,attachments:attachRows.length,attachmentBytes:attachBytes,mcpActive,activeInvites,trashedNotes},
+    shares,backup,recentAudit,
+  });
+});

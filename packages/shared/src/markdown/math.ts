@@ -1,18 +1,18 @@
-import katex from "katex";
 import type { MarkdownIt, StateBlock, StateInline } from "markdown-it";
 
 const isSpace = (code: number) => code === 0x20 || code === 0x09 || code === 0x0a;
 const isDigit = (code: number) => code >= 0x30 && code <= 0x39;
 
-/** 渲染失败不炸页面，退回显示源码（设计 03 §4.6）。 */
-function renderMath(source: string, display: boolean, escapeHtml: (s: string) => string): string {
-  try {
-    return katex.renderToString(source, { displayMode: display, throwOnError: true, strict: false });
-  } catch (err) {
-    const raw = display ? `$$${source}$$` : `$${source}$`;
-    const why = err instanceof Error ? err.message : "公式解析失败";
-    return `<code class="math-error" title="${escapeHtml(why)}">${escapeHtml(raw)}</code>`;
-  }
+/**
+ * 公式只渲染成占位元素，真正排版交给宿主在客户端补（`hydrateMath`）。
+ *
+ * 这么做是为了让 KaTeX 能按需加载：它压缩后仍有几百 KB，而大多数笔记里一条公式都没有。
+ * 占位元素里先放原始源码，没加载完（或加载失败）时看到的是 `$E=mc^2$`，不是一片空白。
+ */
+function placeholder(source: string, display: boolean, escapeHtml: (s: string) => string): string {
+  const raw = display ? `$$${source}$$` : `$${source}$`;
+  const attrs = `class="math math-${display ? "block" : "inline"}" data-math="${escapeHtml(source)}"${display ? ' data-math-display="1"' : ""}`;
+  return display ? `<div ${attrs}>${escapeHtml(raw)}</div>\n` : `<span ${attrs}>${escapeHtml(raw)}</span>`;
 }
 
 /** `$...$`。左界符后不能跟空白，右界符前不能是空白、后不能是数字，避免把「$5 到 $8」吃成公式。 */
@@ -79,8 +79,6 @@ function mathBlock(state: StateBlock, startLine: number, endLine: number, silent
 export function mathPlugin(md: MarkdownIt) {
   md.inline.ruler.before("escape", "math_inline", mathInline);
   md.block.ruler.before("fence", "math_block", mathBlock, { alt: ["paragraph", "reference", "blockquote", "list"] });
-  md.renderer.rules.math_inline = (tokens, idx) =>
-    `<span class="math math-inline">${renderMath(tokens[idx].content, false, md.utils.escapeHtml)}</span>`;
-  md.renderer.rules.math_block = (tokens, idx) =>
-    `<div class="math math-block">${renderMath(tokens[idx].content, true, md.utils.escapeHtml)}</div>\n`;
+  md.renderer.rules.math_inline = (tokens, idx) => placeholder(tokens[idx].content, false, md.utils.escapeHtml);
+  md.renderer.rules.math_block = (tokens, idx) => placeholder(tokens[idx].content, true, md.utils.escapeHtml);
 }

@@ -3,10 +3,10 @@ import { Link, Navigate, Route, Routes, useNavigate, useParams } from "react-rou
 import * as Avatar from "@radix-ui/react-avatar";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
-  AlertCircle, Archive, BookOpen, Bot, CalendarDays, Check, ChevronDown, ChevronRight, Circle, FilePlus2, Folder,
-  FolderPlus, Globe2, LayoutGrid, List, MessageSquare, Link2, Lock, LogOut, MoreHorizontal, Notebook, NotebookPen, Paintbrush, PanelRight,
+  AlertCircle, Archive, Bot, CalendarDays, Check, ChevronDown, ChevronRight, Circle, FilePlus2, Folder,
+  FolderPlus, Globe2, List, MessageSquare, Link2, Lock, LogOut, MoreHorizontal, Notebook, Paintbrush, PanelRight,
   Pencil, Plus, RotateCcw, Search, Star, Settings, Share2, Sparkles, Sun, Trash2, Users, X, Copy, ExternalLink, Upload, Paperclip, Download,
-  Maximize2, Minimize2, PanelLeft, PenLine, Terminal, Type,
+  Maximize2, Minimize2, PanelLeft, PenLine, Terminal, Type, Workflow,
 } from "lucide-react";
 import { api, type Me } from "./api";
 import { MarkdownView } from "./MarkdownView";
@@ -41,11 +41,14 @@ import { NoteList, NoteSortMenu } from "./components/note-list";
 import { NoteRail, loadRailTab, saveRailTab, type Attachment, type RailTab } from "./components/note-rail";
 import { CalendarPage, TodayPage } from "./components/calendar";
 import { sortNotes } from "@kb/shared";
+import { diagramBlockAt } from "@kb/shared/markdown";
 import { loadNotebookNoteSort, saveNotebookNoteSort, type NoteSortMode } from "./lib/note-sort-pref";
 import { AuditPanel, BackupPanel, DangerPanel, SharesPanel, TransferPanel } from "./components/manage-panels";
 import { AdminPage } from "./components/admin-page";
 import { readMarkdownZip } from "./lib/zip";
 import { QuickOpen, useQuickOpenHotkey } from "./components/quick-open";
+import { AppNav, loadLastWorkspace, saveLastWorkspace, useSquareEnabled, type NavPlace } from "./components/app-nav";
+import { CircleRail, SquareRail } from "./components/feed-rail";
 
 /** 导出接口回的是二进制，不能走 api() 的 JSON 解析。 */
 async function downloadZip(path: string) {
@@ -242,6 +245,14 @@ function NotebookAccessDialog({notebook,workspaceId,open,onOpenChange,onSaved}:{
   </DialogContent></Dialog>;
 }
 
+/** 顶栏账号菜单。笔记、圈子、广场三处挂的是同一个，换个页面不会突然少掉半套入口。
+    广场没有 wsId，就退回最近待过的工作区；连那个都没有时，跟工作区绑定的几项直接不出现，而不是给一个点了报错的链接。 */
+function AccountMenu({ me, wsId }: { me: Me | null | undefined; wsId?: string }) {
+  const nav = useNavigate(); const askText = usePrompt(); const toast = useToast();
+  const home = wsId ?? loadLastWorkspace() ?? me?.personalWorkspaceId ?? undefined;
+  return <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="rounded-full"><Avatar.Root className="grid size-8 place-items-center rounded-full bg-foreground text-xs font-semibold text-background"><Avatar.Fallback>{me?.displayName?.slice(0, 1) ?? "U"}</Avatar.Fallback></Avatar.Root></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-56"><div className="px-2.5 py-2"><p className="text-sm font-medium">{me?.displayName}</p><p className="truncate text-xs text-muted-foreground">{me?.email}</p>{me?.storage&&<div className="mt-2"><div className="mb-1 flex justify-between text-[10px] text-muted-foreground"><span>存储空间</span><span>{(me.storage.usedBytes/1048576).toFixed(1)} MB / {(me.storage.quotaBytes/1073741824).toFixed(1)} GB</span></div><div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{width:`${Math.min(100,me.storage.usedBytes/me.storage.quotaBytes*100)}%`}}/></div></div>}</div><DropdownMenuSeparator />{home && <><DropdownMenuItem onSelect={() => nav(`/w/${home}/trash`)}><Archive />回收站</DropdownMenuItem><DropdownMenuItem onSelect={() => nav(`/w/${home}/members`)}><Users />成员管理</DropdownMenuItem><DropdownMenuItem onSelect={() => nav(`/w/${home}/manage`)}><Archive />工作区管理</DropdownMenuItem><DropdownMenuItem onSelect={() => nav(`/settings/integrations?workspace=${home}`)}><Bot />AI 与 MCP</DropdownMenuItem></>}<DropdownMenuItem onSelect={() => nav("/settings/appearance")}><Settings />外观设置</DropdownMenuItem>{me?.instanceRole === "admin" && <DropdownMenuItem onSelect={() => nav("/admin")}><Settings />实例后台</DropdownMenuItem>}<DropdownMenuSeparator />{me?.status==="pending_deletion"?<DropdownMenuItem onSelect={async()=>{await api('/api/v1/account/cancel-deletion',{method:'POST'});location.reload()}}><RotateCcw/>撤销账号注销</DropdownMenuItem>:<DropdownMenuItem className="text-destructive" onSelect={async()=>{const password=await askText({title:'申请注销账号',description:'提交后账号进入注销流程，7 天内可以登录回来撤销；超过 7 天数据会被彻底删除。请输入当前密码确认。',label:'当前密码',type:'password',autoComplete:'current-password',confirmText:'申请注销',destructive:true});if(!password)return;try{await api('/api/v1/account/request-deletion',{method:'POST',body:JSON.stringify({password})});location.assign('/login')}catch(e){toast.error('申请注销失败',(e as Error).message)}}}><Trash2/>申请注销账号</DropdownMenuItem>}<DropdownMenuItem className="text-destructive" onSelect={async () => { await api("/api/v1/auth/logout", { method: "POST" }); window.location.assign("/login"); }}><LogOut />退出登录</DropdownMenuItem></DropdownMenuContent></DropdownMenu>;
+}
+
 function Workspace() {
   const askConfirm = useConfirm(); const askText = usePrompt(); const toast = useToast();
   const me = useMe(); const nav = useNavigate(); const { wsId, noteId } = useParams();
@@ -257,6 +268,7 @@ function Workspace() {
 
   useQuickOpenHotkey(setQuickOpen);
   useEffect(() => { if (me === null) nav("/login"); }, [me, nav]);
+  useEffect(() => { if (wsId) saveLastWorkspace(wsId); }, [wsId]);
   useEffect(() => { api<{ workspaces: Ws[] }>("/api/v1/workspaces").then(d => { setSpaces(d.workspaces); if (!wsId && me?.personalWorkspaceId) nav(`/w/${me.personalWorkspaceId}`, { replace: true }); }); }, [me, wsId, nav]);
   useEffect(() => { if (!wsId) return; api<{ notebooks: Nb[] }>(`/api/v1/workspaces/${wsId}/notebooks`).then(d => { setNbs(d.notebooks); setNbId(d.notebooks[0]?.id); }); }, [wsId]);
   async function refreshTree(id = nbId): Promise<TreeNote[]> { if (!id) return []; const d = await api<{ folders: FolderDto[]; notes: TreeNote[]; canEdit?: boolean }>(`/api/v1/notebooks/${id}/tree`); setFolders(d.folders); setTree(d.notes); setTreeCanEdit(!!d.canEdit); return d.notes; }
@@ -504,6 +516,7 @@ function Workspace() {
       { id: "import", group: "笔记本", label: "导入 Markdown 或 zip", icon: <Upload />, run: () => setShowImport(true) },
     ];
     if (note) list.push(
+      { id: "diagram", group: "笔记", label: "AI 画图", icon: <Workflow />, run: () => openRail("diagram") },
       { id: "outline", group: "笔记", label: "大纲", icon: <List />, run: () => openRail("outline") },
       { id: "links", group: "笔记", label: "反向链接", icon: <PanelRight />, run: () => openRail("links") },
       { id: "attachments", group: "笔记", label: "附件", icon: <Paperclip />, run: () => openRail("attachments") },
@@ -524,7 +537,7 @@ function Workspace() {
       <WorkspaceSwitcher spaces={spaces} wsId={wsId} onPick={id => nav(`/w/${id}`)} onCreate={() => setCreate("workspace")} />
       <Tooltip content={layout.showNotebooks || layout.showTree ? "折叠左侧栏（Ctrl+\\）" : "展开左侧栏（Ctrl+\\）"}><Button variant="ghost" size="icon" aria-label="折叠或展开左侧栏" onClick={() => setLayout(v => v.showNotebooks || v.showTree ? { ...v, showNotebooks: false, showTree: false } : { ...v, showNotebooks: true, showTree: true })}><PanelLeft /></Button></Tooltip>
       <Separator orientation="vertical" className="h-5" />
-      <nav className="hidden items-center gap-1 md:flex"><Button variant="ghost" size="sm" className="text-muted-foreground"><BookOpen />笔记</Button><Button variant="ghost" size="sm" className="text-muted-foreground" onClick={()=>setShowAsk(true)}><Sparkles/>问知识库</Button><Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => nav(`/w/${wsId}/feed`)}><Users />圈子</Button><Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => nav("/")}><LayoutGrid />广场</Button></nav>
+      <AppNav wsId={wsId} active="notes" />
       <div className="relative mx-auto w-full max-w-md"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input className="h-9 bg-muted/70 pl-9 shadow-none" value={search} onChange={e => void runSearch(e.target.value)} placeholder="搜索这个工作区…" />{search && <Button variant="ghost" size="icon" className="absolute right-0 top-0 size-9" onClick={() => { setSearch(""); setHits([]); }}><X /></Button>}{search.trim() && <div className="absolute left-0 right-0 top-11 z-40 rounded-xl border border-border bg-popover p-1.5 shadow-2xl">
         <div className="flex items-center gap-1 border-b border-border px-1.5 pb-1.5">
           <Button variant={allSpaces ? "secondary" : "ghost"} size="sm" onClick={() => { const v = !allSpaces; setAllSpaces(v); void runSearch(search, { all: v }); }}>{allSpaces ? "全部工作区" : "仅本工作区"}</Button>
@@ -532,10 +545,11 @@ function Workspace() {
           <span className="ml-auto pr-1 text-[11px] text-muted-foreground">{hits.length} 条</span>
         </div>
         {hits.length === 0 ? <p className="px-3 py-6 text-center text-xs text-muted-foreground">没有匹配的笔记。</p> : hits.map(h => <button key={h.id} className="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left text-sm hover:bg-muted" onClick={() => { nav(`/w/${h.workspaceId}/n/${h.id}`); setSearch(""); setHits([]); }}><Search className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1"><span className="block truncate">{h.title}</span><span className="block truncate text-[11px] text-muted-foreground">{h.workspaceId !== wsId ? `${spaces.find(w => w.id === h.workspaceId)?.name ?? "其他工作区"} · ` : ""}{h.snippet}</span></span></button>)}</div>}</div>
+      <Tooltip content="用 AI 问这个工作区"><Button variant="ghost" size="sm" className="hidden text-muted-foreground lg:inline-flex" onClick={() => setShowAsk(true)}><Sparkles />问知识库</Button></Tooltip>
       <Tooltip content="快速打开（Ctrl+K）"><Button variant="ghost" size="icon" aria-label="快速打开" onClick={() => setQuickOpen(true)}><Search /></Button></Tooltip>
       <NotificationBell />
       <Tooltip content="外观"><Button variant="ghost" size="icon" onClick={() => nav("/settings/appearance")}><Paintbrush /></Button></Tooltip>
-      <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="rounded-full"><Avatar.Root className="grid size-8 place-items-center rounded-full bg-foreground text-xs font-semibold text-background"><Avatar.Fallback>{me?.displayName?.slice(0, 1) ?? "U"}</Avatar.Fallback></Avatar.Root></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-56"><div className="px-2.5 py-2"><p className="text-sm font-medium">{me?.displayName}</p><p className="truncate text-xs text-muted-foreground">{me?.email}</p>{me?.storage&&<div className="mt-2"><div className="mb-1 flex justify-between text-[10px] text-muted-foreground"><span>存储空间</span><span>{(me.storage.usedBytes/1048576).toFixed(1)} MB / {(me.storage.quotaBytes/1073741824).toFixed(1)} GB</span></div><div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{width:`${Math.min(100,me.storage.usedBytes/me.storage.quotaBytes*100)}%`}}/></div></div>}</div><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => nav(`/w/${wsId}/trash`)}><Archive />回收站</DropdownMenuItem><DropdownMenuItem onSelect={() => nav(`/w/${wsId}/members`)}><Users />成员管理</DropdownMenuItem><DropdownMenuItem onSelect={() => nav(`/w/${wsId}/manage`)}><Archive />工作区管理</DropdownMenuItem><DropdownMenuItem onSelect={() => nav(`/settings/integrations?workspace=${wsId}`)}><Bot />AI 与 MCP</DropdownMenuItem><DropdownMenuItem onSelect={() => nav("/settings/appearance")}><Settings />外观设置</DropdownMenuItem>{me?.instanceRole === "admin" && <DropdownMenuItem onSelect={() => nav("/admin")}><Settings />实例后台</DropdownMenuItem>}<DropdownMenuSeparator />{me?.status==="pending_deletion"?<DropdownMenuItem onSelect={async()=>{await api('/api/v1/account/cancel-deletion',{method:'POST'});location.reload()}}><RotateCcw/>撤销账号注销</DropdownMenuItem>:<DropdownMenuItem className="text-destructive" onSelect={async()=>{const password=await askText({title:'申请注销账号',description:'提交后账号进入注销流程，7 天内可以登录回来撤销；超过 7 天数据会被彻底删除。请输入当前密码确认。',label:'当前密码',type:'password',autoComplete:'current-password',confirmText:'申请注销',destructive:true});if(!password)return;try{await api('/api/v1/account/request-deletion',{method:'POST',body:JSON.stringify({password})});location.assign('/login')}catch(e){toast.error('申请注销失败',(e as Error).message)}}}><Trash2/>申请注销账号</DropdownMenuItem>}<DropdownMenuItem className="text-destructive" onSelect={async () => { await api("/api/v1/auth/logout", { method: "POST" }); window.location.assign("/login"); }}><LogOut />退出登录</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+      <AccountMenu me={me} wsId={wsId} />
     </header>
 
     <main className="app-grid grid min-h-0 flex-1" style={{ gridTemplateColumns: [!zen && layout.showNotebooks ? `${layout.notebooksWidth}px` : null, !zen && layout.showTree ? `${layout.treeWidth}px` : null, "minmax(0, 1fr)"].filter(Boolean).join(" ") }}>
@@ -549,7 +563,7 @@ function Workspace() {
         <input id="note-attachment-input" className="hidden" type="file" onChange={async e=>{const f=e.target.files?.[0];if(!f)return;const md=await uploadAttachment(f);const current=noteRef.current;if(md&&current)changeNote({bodyMd:`${current.bodyMd}\n\n${md}`});e.target.value=''}} />
         <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-4"><div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"><span>{activeNb?.title}</span><ChevronRight className="size-3" /><span className="truncate text-foreground">{note.title || "未命名"}</span></div><div className="ml-auto flex items-center gap-1">{viewers.length > 0 && <Tooltip content={`${viewers.join("、")} 也打开着这篇`}><Badge className="mr-1 gap-1"><Users className="size-3" />{viewers.length === 1 ? `${viewers[0]} 在看` : `${viewers.length} 人在看`}</Badge></Tooltip>}
 <Tooltip content={favorited ? "取消收藏" : "收藏这篇"}><Button variant="ghost" size="icon" aria-label={favorited ? "取消收藏" : "收藏"} onClick={async () => { const next = !favorited; setFavorited(next); try { await api(`/api/v1/notes/${note.id}/favorite`, { method: next ? "PUT" : "DELETE" }); } catch (e) { setFavorited(!next); setStatus((e as Error).message); } }}><Star className={favorited ? "fill-current" : ""} /></Button></Tooltip>
-<Button size="sm" onClick={() => setShareTarget({ kind: "note", id: note.id, title: note.title, bodyMd: note.bodyMd })}><Share2 /> <span className="hidden sm:inline">分享</span></Button><Tooltip content={note.aiIndex ? "AI 可读取此笔记" : "AI 无法读取此笔记"}><Button variant={note.aiIndex ? "secondary" : "ghost"} size="sm" onClick={() => changeNote({ aiIndex: !note.aiIndex }, true)}><Bot /> <span className="hidden sm:inline">AI 可读</span></Button></Tooltip><Tooltip content={rail ? "收起右栏" : "展开右栏（大纲 / 反向链接 / 附件 / 版本）"}><Button variant={rail ? "secondary" : "ghost"} size="icon" aria-label="右栏" onClick={() => openRail(rail ? null : "outline")}><PanelRight /></Button></Tooltip><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => openRail("ai")}><Sparkles />AI 写作建议</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("outline")}><List />大纲</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("versions")}><RotateCcw />版本历史</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("attachments")}><Paperclip />附件 {atts.length > 0 && <Badge className="ml-auto">{atts.length}</Badge>}</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("review")}><MessageSquare />评论与纠错</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("links")}><PanelRight />反向链接 <Badge className="ml-auto">{backlinks.length}</Badge></DropdownMenuItem><DropdownMenuItem onSelect={() => changeNote({ published: !note.published }, true)}><Globe2 />{note.published ? "从文档站隐藏此页" : "在文档站发布此页"}</DropdownMenuItem><DropdownMenuItem onSelect={async () => { if (!nbId) return; const next = !site?.published; const d = await api<{ published: boolean; slug: string }>(`/api/v1/notebooks/${nbId}/site`, { method: "PATCH", body: JSON.stringify({ published: next }) }); setSite(d); }}><Globe2 />{site?.published ? "下线文档站" : "发布笔记本为文档站"}</DropdownMenuItem>{site?.published && <DropdownMenuItem onSelect={() => window.open(site.slug, "_blank")}><ExternalLink />打开文档站</DropdownMenuItem>}<DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onSelect={() => void deleteCurrent()}><Trash2 />移到回收站</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div></div>
+<Button size="sm" onClick={() => setShareTarget({ kind: "note", id: note.id, title: note.title, bodyMd: note.bodyMd })}><Share2 /> <span className="hidden sm:inline">分享</span></Button><Tooltip content={note.aiIndex ? "AI 可读取此笔记" : "AI 无法读取此笔记"}><Button variant={note.aiIndex ? "secondary" : "ghost"} size="sm" onClick={() => changeNote({ aiIndex: !note.aiIndex }, true)}><Bot /> <span className="hidden sm:inline">AI 可读</span></Button></Tooltip><Tooltip content={rail ? "收起右栏" : "展开右栏（大纲 / 反向链接 / 附件 / 版本）"}><Button variant={rail ? "secondary" : "ghost"} size="icon" aria-label="右栏" onClick={() => openRail(rail ? null : "outline")}><PanelRight /></Button></Tooltip><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => openRail("ai")}><Sparkles />AI 写作建议</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("diagram")}><Workflow />AI 画图</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("outline")}><List />大纲</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("versions")}><RotateCcw />版本历史</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("attachments")}><Paperclip />附件 {atts.length > 0 && <Badge className="ml-auto">{atts.length}</Badge>}</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("review")}><MessageSquare />评论与纠错</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("links")}><PanelRight />反向链接 <Badge className="ml-auto">{backlinks.length}</Badge></DropdownMenuItem><DropdownMenuItem onSelect={() => changeNote({ published: !note.published }, true)}><Globe2 />{note.published ? "从文档站隐藏此页" : "在文档站发布此页"}</DropdownMenuItem><DropdownMenuItem onSelect={async () => { if (!nbId) return; const next = !site?.published; const d = await api<{ published: boolean; slug: string }>(`/api/v1/notebooks/${nbId}/site`, { method: "PATCH", body: JSON.stringify({ published: next }) }); setSite(d); }}><Globe2 />{site?.published ? "下线文档站" : "发布笔记本为文档站"}</DropdownMenuItem>{site?.published && <DropdownMenuItem onSelect={() => window.open(site.slug, "_blank")}><ExternalLink />打开文档站</DropdownMenuItem>}<DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onSelect={() => void deleteCurrent()}><Trash2 />移到回收站</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div></div>
         <div className="relative flex min-h-0 flex-1"><div className="min-h-0 min-w-0 flex-1"><Tabs.Root defaultValue="split" className="flex h-full flex-col"><div className="flex items-center justify-between px-6 pt-6"><Tabs.List className="inline-flex rounded-lg bg-muted p-1"><Tabs.Trigger value="write" className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">编辑</Tabs.Trigger><Tabs.Trigger value="preview" className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">预览</Tabs.Trigger><Tabs.Trigger value="split" className="hidden rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm sm:block">分栏</Tabs.Trigger></Tabs.List><div className="flex items-center gap-1"><Tooltip content={layout.wysiwyg ? "即时渲染：开（点击显示 Markdown 标记）" : "即时渲染：关（点击隐藏标记）"}><Button variant={layout.wysiwyg ? "secondary" : "ghost"} size="icon" className="size-8" aria-label="切换即时渲染" onClick={() => setLayout(v => ({ ...v, wysiwyg: !v.wysiwyg }))}><Type /></Button></Tooltip><Tooltip content="命令面板（Ctrl+Shift+P）"><Button variant="ghost" size="icon" className="size-8" aria-label="命令面板" onClick={() => setPalette(true)}><Terminal /></Button></Tooltip><Tooltip content={zen ? "退出全屏（Esc）" : "编辑器全屏"}><Button variant="ghost" size="icon" className="size-8" aria-label={zen ? "退出全屏" : "编辑器全屏"} onClick={() => void toggleZen()}>{zen ? <Minimize2 /> : <Maximize2 />}</Button></Tooltip></div></div><div className="editor-measure mx-auto flex min-h-0 flex-1 flex-col px-6 pb-6 pt-4"><input className="mb-4 w-full border-0 bg-transparent font-[var(--font-title)] text-3xl font-semibold tracking-[-.045em] outline-none placeholder:text-muted-foreground/40 md:text-4xl" value={note.title} onChange={e => changeNote({ title: e.target.value })} placeholder="无标题" /><Tabs.Content value="write" className="min-h-0 flex-1 overflow-hidden"><MarkdownEditor ref={editorRef} className="h-full" resetKey={note.id} value={note.bodyMd} readOnly={!note.canEdit} onChange={bodyMd => changeNote({ bodyMd })} onSave={() => void save()} onWiki={openWiki} onUpload={uploadAttachment} onCursor={setCursor} typewriter={layout.typewriter} wysiwyg={layout.wysiwyg} completion={{ workspaceId: wsId, excludeNoteId: note.id, notebookNames: Object.fromEntries(nbs.map(n => [n.id, n.title])) }} autoFocus placeholder="开始写作，或输入 [[笔记标题]] 建立双链…" /></Tabs.Content><Tabs.Content value="preview" className="min-h-0 flex-1 overflow-auto"><div data-note-preview className="w-full py-2"><MarkdownView source={note.bodyMd} onWiki={openWiki} onToggleTask={note.canEdit ? bodyMd => changeNote({ bodyMd }, true) : undefined} /></div></Tabs.Content><Tabs.Content value="split" className="min-h-0 flex-1"><div className="grid h-full min-h-0 grid-cols-1 divide-x divide-border overflow-hidden rounded-xl border border-border md:grid-cols-2"><MarkdownEditor ref={editorRef} className="h-full min-h-0 overflow-hidden bg-muted/25 p-5" resetKey={note.id} value={note.bodyMd} readOnly={!note.canEdit} onChange={bodyMd => changeNote({ bodyMd })} onSave={() => void save()} onWiki={openWiki} onUpload={uploadAttachment} onScrollLine={syncPreview} onCursor={setCursor} typewriter={layout.typewriter} wysiwyg={layout.wysiwyg} completion={{ workspaceId: wsId, excludeNoteId: note.id, notebookNames: Object.fromEntries(nbs.map(n => [n.id, n.title])) }} placeholder="开始写作，或输入 [[笔记标题]] 建立双链…" /><ScrollArea className="h-full" viewportRef={bindPreview}><div data-note-preview className="p-6"><MarkdownView source={note.bodyMd} sourceLines onWiki={openWiki} onToggleTask={note.canEdit ? bodyMd => changeNote({ bodyMd }, true) : undefined} /></div></ScrollArea></div></Tabs.Content></div></Tabs.Root></div>
           {rail && <NoteRail
             note={note}
@@ -571,6 +585,16 @@ ${a.mime.startsWith("image/") ? "!" : ""}[${a.filename}](${a.url})` }, true)}
             onRestored={n => { const next = { ...note, ...n }; setNote(next); noteRef.current = next; say(`已恢复 · v${n.version}`); }}
             workspaceId={wsId}
             getSelection={() => editorRef.current?.getSelection() ?? null}
+            getDiagramTarget={() => { const at = editorRef.current?.getCursorPos(); return at == null ? null : diagramBlockAt(note.bodyMd, at); }}
+            onInsertDiagram={(fence, target) => {
+              const editor = editorRef.current;
+              const block = ["", "", fence, ""].join("\n");
+              // 编辑器开着就就地替换 / 插到光标处；只开预览时退化成接在文末。
+              if (!editor) { changeNote({ bodyMd: note.bodyMd + block }); return; }
+              if (target) { editor.replaceRange(target.from, target.to, fence); return; }
+              const at = editor.getCursorPos() ?? note.bodyMd.length;
+              editor.replaceRange(at, at, block);
+            }}
             onApplyAi={async (bodyMd, baseVersion) => {
               const saved = await api<NoteDto>(`/api/v1/notes/${note.id}`, { method: "PATCH", body: JSON.stringify({ expectedVersion: baseVersion, title: note.title, bodyMd, aiIndex: note.aiIndex, published: note.published, source: "ai_accept" }) });
               setNote(saved); noteRef.current = saved; say(`已保存 · v${saved.version}`);
@@ -665,73 +689,78 @@ function Appearance() {
   return <PageShell title="外观" subtitle="选择明暗模式、强调色和已安装的主题包。" back={() => nav("/app")}><div className="space-y-8"><section><h2 className="text-sm font-semibold">显示模式</h2><p className="mt-1 text-xs text-muted-foreground">跟随操作系统，或固定为浅色、深色。</p><div className="mt-4 grid grid-cols-3 gap-3">{(["system", "light", "dark"] as const).map(mode => <button key={mode} onClick={() => { setMe(me && { ...me, appearance: mode }); void patch({ appearance: mode }); }} className={cn("rounded-xl border p-3 text-left transition hover:border-foreground/30", me?.appearance === mode && "border-primary ring-2 ring-primary/10")}><div className={cn("mb-3 h-20 rounded-lg border p-2", mode === "dark" ? "bg-zinc-900" : mode === "light" ? "bg-white" : "bg-gradient-to-r from-white to-zinc-900")}><div className="h-2 w-1/2 rounded bg-zinc-400/40" /><div className="mt-2 h-8 rounded border border-zinc-400/20" /></div><span className="text-sm font-medium">{mode === "system" ? "跟随系统" : mode === "light" ? "浅色" : "深色"}</span></button>)}</div></section><Separator /><section><h2 className="text-sm font-semibold">强调色</h2><p className="mt-1 text-xs text-muted-foreground">用于按钮、链接和选中状态。</p><div className="mt-4 flex items-center gap-3">{colors.map(c => <button key={c} aria-label={c} onClick={() => { setAccent(c); void patch({ accent: c }); }} className={cn("size-8 rounded-full border-2 border-background shadow-sm ring-offset-2", accent === c && "ring-2 ring-foreground")} style={{ backgroundColor: c }} />)}<label className="relative grid size-8 cursor-pointer place-items-center rounded-full border border-dashed border-border"><Plus className="size-3.5" /><input className="absolute inset-0 opacity-0" type="color" value={accent} onChange={e => { setAccent(e.target.value); void patch({ accent: e.target.value }); }} /></label></div></section><Separator /><section><h2 className="text-sm font-semibold">主题包</h2><p className="mt-1 text-xs text-muted-foreground">主题包只能定义安全的 JSON 设计令牌。</p><div className="mt-4 grid gap-3 sm:grid-cols-2">{themes.map(t => <button key={t.id} onClick={() => { setMe(me && { ...me, themeId: t.id }); void patch({ themeId: t.id }); }} className={cn("flex items-center gap-3 rounded-xl border p-4 text-left hover:bg-muted/50", me?.themeId === t.id && "border-primary ring-2 ring-primary/10")}><span className="grid size-10 place-items-center rounded-lg bg-foreground text-background"><Paintbrush className="size-4" /></span><span><b className="block text-sm">{t.name}</b><small className="text-muted-foreground">{t.author ?? "本地主题"}</small></span>{me?.themeId === t.id && <Check className="ml-auto" />}</button>)}</div><details className="mt-4 rounded-xl border border-border p-4"><summary className="cursor-pointer text-sm font-medium">导入 theme.json</summary><div className="mt-4 space-y-3"><Textarea className="min-h-40 font-mono text-xs" value={raw} onChange={e => setRaw(e.target.value)} placeholder="粘贴主题 JSON…" /><Button size="sm" onClick={async () => { setErr(""); try { await api("/api/v1/themes/import", { method: "POST", body: JSON.stringify(JSON.parse(raw)) }); const d = await api<{ themes: typeof themes }>("/api/v1/themes"); setThemes(d.themes); toast.success("主题已安装"); } catch (x) { setErr((x as Error).message); } }}>导入主题</Button><FormError>{err}</FormError></div></details></section></div></PageShell>;
 }
 
-/** 广场右栏。内容全部从已加载的时间线里推出来，不额外打接口。 */
-function SquareRail({ posts, me, onOpenNote, onNav }: { posts: FeedPost[]; me: Me | null | undefined; onOpenNote: (workspaceId: string, noteId: string) => void; onNav: (to: string) => void }) {
-  const authors = useMemo(() => {
-    const seen = new Map<string, { handle: string; displayName: string; count: number }>();
-    for (const p of posts) { if (!p.author) continue; const hit = seen.get(p.author.handle); if (hit) hit.count += 1; else seen.set(p.author.handle, { ...p.author, count: 1 }); }
-    return [...seen.values()].sort((a, b) => b.count - a.count).slice(0, 6);
-  }, [posts]);
-  const cited = useMemo(() => {
-    const seen = new Set<string>(); const out: Array<{ id: string; title: string; workspaceId: string }> = [];
-    for (const p of posts) { if (!p.note || !p.workspaceId || seen.has(p.note.id)) continue; seen.add(p.note.id); out.push({ id: p.note.id, title: p.note.title, workspaceId: p.workspaceId }); }
-    return out.slice(0, 5);
-  }, [posts]);
-  const card = "rounded-2xl border bg-background p-4";
-  return <div className="sticky top-[4.5rem] space-y-4">
-    {me === null && <section className={card}>
-      <h2 className="text-sm font-semibold">加入这个实例</h2>
-      <p className="mt-1.5 text-xs leading-5 text-muted-foreground">登录后可以发动态、点赞，也能把值得留下的想法转正成笔记。</p>
-      <div className="mt-3 flex gap-2"><Button size="sm" onClick={() => onNav("/login")}>登录</Button><Button size="sm" variant="ghost" onClick={() => onNav("/register")}>注册</Button></div>
-    </section>}
-    {authors.length > 0 && <section className={card}>
-      <h2 className="text-xs font-semibold text-muted-foreground">最近活跃</h2>
-      <ul className="mt-3 space-y-1">{authors.map(a => <li key={a.handle}>
-        <a href={`/u/${a.handle}`} className="-mx-1.5 flex items-center gap-2.5 rounded-lg px-1.5 py-1.5 hover:bg-muted">
-          <span className="grid size-8 shrink-0 place-items-center rounded-full bg-foreground text-xs font-semibold text-background">{a.displayName.slice(0, 1)}</span>
-          <span className="min-w-0 flex-1"><b className="block truncate text-sm font-medium">{a.displayName}</b><small className="block truncate text-xs text-muted-foreground">@{a.handle}</small></span>
-          <span className="shrink-0 text-xs text-muted-foreground">{a.count} 条</span>
-        </a></li>)}</ul>
-    </section>}
-    {cited.length > 0 && <section className={card}>
-      <h2 className="text-xs font-semibold text-muted-foreground">动态里提到的笔记</h2>
-      <ul className="mt-3 space-y-1">{cited.map(n => <li key={n.id}>
-        <button className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-2 rounded-lg px-1.5 py-1.5 text-left text-sm hover:bg-muted" onClick={() => onOpenNote(n.workspaceId, n.id)}><NotebookPen className="size-3.5 shrink-0 text-muted-foreground" /><span className="truncate">{n.title}</span></button>
-      </li>)}</ul>
-    </section>}
-    <section className={card}>
-      <h2 className="text-xs font-semibold text-muted-foreground">关于广场</h2>
-      <ul className="mt-3 space-y-2 text-xs leading-5 text-muted-foreground">
-        <li className="flex gap-2"><Globe2 className="mt-0.5 size-3.5 shrink-0" /><span>发到这里的动态，实例里所有人都看得到。</span></li>
-        <li className="flex gap-2"><Link2 className="mt-0.5 size-3.5 shrink-0" /><span>可以用 [[双链]] 引用已公开的笔记；没公开的会退化成纯文本。</span></li>
-        <li className="flex gap-2"><NotebookPen className="mt-0.5 size-3.5 shrink-0" /><span>值得留下的动态，随时可以转正成一篇笔记。</span></li>
-      </ul>
-    </section>
+/** 圈子和广场共用的外壳：同一条顶栏（身份 + 三处导航 + 通知 + 账号）、同一套两栏。
+    圈子原来套的是 PageShell，进去只剩一个「返回工作区」，看着像跳出了产品；现在它和笔记页是同一个系统的三个页签，
+    退出靠顶栏的「笔记」，不再需要一个专门的返回按钮。 */
+function FeedShell({ identity, active, wsId, me, title, subtitle, notice, rail, children }: {
+  identity: ReactNode; active: NavPlace; wsId?: string; me: Me | null | undefined;
+  title: string; subtitle: ReactNode; notice?: ReactNode; rail: ReactNode; children: ReactNode;
+}) {
+  const nav = useNavigate();
+  return <div className="flex h-full min-h-0 flex-col bg-muted/25">
+    <header className="sticky top-0 z-30 shrink-0 border-b border-border bg-background">
+      <div className="mx-auto flex h-14 w-full max-w-[1180px] items-center gap-2 px-4 sm:gap-3 sm:px-6">
+        {identity}
+        <Separator orientation="vertical" className="hidden h-5 sm:block" />
+        <AppNav wsId={wsId} active={active} />
+        <div className="ml-auto flex items-center gap-1">
+          {me ? <><NotificationBell /><Button variant="ghost" size="icon" aria-label="外观设置" onClick={() => nav("/settings/appearance")}><Paintbrush /></Button><AccountMenu me={me} wsId={wsId} /></>
+            : me === null ? <><Button variant="ghost" size="sm" onClick={() => nav("/login")}>登录</Button><Button size="sm" onClick={() => nav("/register")}>注册</Button></> : null}
+        </div>
+      </div>
+    </header>
+    <main className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto w-full max-w-[1180px] px-4 py-8 sm:px-6">
+        <h1 className="text-2xl font-semibold tracking-[-.035em]">{title}</h1>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">{subtitle}</p>
+        {notice}
+        <div className="mt-6 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="min-w-0">{children}</div>
+          <aside>{rail}</aside>
+        </div>
+      </div>
+    </main>
   </div>;
 }
 
-function Square() { const me=useMe(); const nav=useNavigate(); const [spaces,setSpaces]=useState<Ws[]>([]); const [posts,setPosts]=useState<FeedPost[]>([]);
-  useEffect(()=>{ if(me) api<{workspaces:Ws[]}>("/api/v1/workspaces").then(d=>setSpaces(d.workspaces)).catch(()=>setSpaces([])); },[me]);
-  const openNote=(ws:string,note:string)=>nav(`/w/${ws}/n/${note}`);
-  return <div className="min-h-full bg-muted/25">
-    <header className="sticky top-0 z-20 border-b bg-background/90 backdrop-blur"><div className="mx-auto flex h-14 w-full max-w-[1160px] items-center px-4 sm:px-6"><Brand /><nav className="ml-8 flex gap-1"><Button variant="secondary" size="sm">广场</Button><Button variant="ghost" size="sm" onClick={() => location.assign("/app")}>我的知识库</Button></nav>{me?<a className="ml-auto text-xs text-muted-foreground hover:underline" href={`/u/${me.handle}`}>我的主页</a>:me===null?<Button className="ml-auto" size="sm" onClick={()=>nav("/login")}>登录</Button>:null}</div></header>
-    <main className="mx-auto w-full max-w-[1160px] px-4 py-8 sm:px-6"><div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-      <div className="min-w-0">
-        <h1 className="text-2xl font-semibold tracking-[-.035em]">广场</h1>
-        <p className="mt-1 text-sm text-muted-foreground">整个实例的公开时间线。</p>
-        <div className="mt-5"><FeedView scope="public" workspaces={spaces} canPost={!!me} onOpenNote={openNote} onLoaded={setPosts} /></div>
-      </div>
-      <aside className="hidden lg:block"><SquareRail posts={posts} me={me} onOpenNote={openNote} onNav={to=>nav(to)} /></aside>
-    </div></main></div>;
+function Square() {
+  const me = useMe(); const nav = useNavigate();
+  const [spaces, setSpaces] = useState<Ws[]>([]); const [posts, setPosts] = useState<FeedPost[]>([]);
+  useEffect(() => { if (me) api<{ workspaces: Ws[] }>("/api/v1/workspaces").then(d => setSpaces(d.workspaces)).catch(() => setSpaces([])); }, [me]);
+  /** 顶栏的「笔记 / 圈子」要有个落点：优先最后待过的库，其次个人库。都没有（还没加载完 / 未登录）就只剩「广场」一项。 */
+  const last = loadLastWorkspace();
+  const home = spaces.find(w => w.id === last)?.id ?? me?.personalWorkspaceId ?? spaces[0]?.id;
+  const openNote = (ws: string, note: string) => nav(`/w/${ws}/n/${note}`);
+  return <FeedShell
+    identity={home ? <button className="-mx-1 flex items-center gap-2.5 rounded-lg px-1.5 py-1.5 hover:bg-muted" aria-label="回到我的知识库" onClick={() => nav(`/w/${home}`)}><Brand /></button> : <Brand />}
+    active="square" wsId={home} me={me}
+    title="广场" subtitle="整个实例的公开时间线。这里发的东西谁都看得到，写给自己人的用圈子。"
+    rail={<SquareRail posts={posts} me={me} homeWsId={home} onOpenNote={openNote} onNav={to => nav(to)} />}
+  >
+    <FeedView scope="public" workspaces={spaces} canPost={!!me} onOpenNote={openNote} onLoaded={setPosts} />
+  </FeedShell>;
 }
 
-function WorkspaceFeed() { const { wsId } = useParams(); const nav = useNavigate(); const me = useMe(); const [spaces,setSpaces]=useState<Ws[]>([]);
-  useEffect(()=>{ api<{workspaces:Ws[]}>("/api/v1/workspaces").then(d=>setSpaces(d.workspaces)).catch(()=>setSpaces([])); },[]);
-  const here=spaces.find(w=>w.id===wsId);
-  if(!wsId) return null;
-  return <PageShell title="圈子动态" subtitle={`${here?.name??"工作区"}的成员时间线。碎片想法先发这里，值得留的再转正为笔记。`} back={()=>nav(`/w/${wsId}`)}>
-    <FeedView scope="workspace" workspaceId={wsId} workspaces={spaces} canPost={!!me&&here?.role!=="viewer"&&!here?.frozen} onOpenNote={(ws,note)=>nav(`/w/${ws}/n/${note}`)} />
-  </PageShell>;
+function WorkspaceFeed() {
+  const { wsId } = useParams(); const nav = useNavigate(); const me = useMe(); const squareOn = useSquareEnabled();
+  const [spaces, setSpaces] = useState<Ws[]>([]); const [posts, setPosts] = useState<FeedPost[]>([]); const [create, setCreate] = useState<CreateKind>(null);
+  useEffect(() => { api<{ workspaces: Ws[] }>("/api/v1/workspaces").then(d => setSpaces(d.workspaces)).catch(() => setSpaces([])); }, []);
+  useEffect(() => { if (wsId) saveLastWorkspace(wsId); }, [wsId]);
+  const here = spaces.find(w => w.id === wsId);
+  if (!wsId) return null;
+  /** 只读的两种理由要分开说：冻结是工作区的状态，Viewer 是自己的角色，混成一句「不能发」用户不知道该找谁。 */
+  const readOnly = here ? here.role === "viewer" || !!here.frozen : false;
+  const openNote = (ws: string, note: string) => nav(`/w/${ws}/n/${note}`);
+  return <FeedShell
+    identity={<WorkspaceSwitcher spaces={spaces} wsId={wsId} onPick={id => nav(`/w/${id}/feed`)} onCreate={() => setCreate("workspace")} />}
+    active="circle" wsId={wsId} me={me}
+    title="圈子动态" subtitle={<>只有 <b className="font-medium text-foreground">{here?.name ?? "这个工作区"}</b> 的成员看得到。碎片想法先发这里，值得留的再转正为笔记。</>}
+    notice={readOnly ? <p className="mt-4 rounded-xl border border-dashed px-3 py-2 text-xs text-muted-foreground">{here?.frozen ? "工作区已冻结，圈子现在只能看。" : "你在这个工作区是 Viewer，可以看动态但不能发。"}</p> : undefined}
+    rail={<CircleRail wsId={wsId} wsName={here?.name ?? "这个工作区"} wsKind={here?.kind ?? ""} canInvite={here?.kind !== "personal" && (here?.role === "owner" || here?.role === "admin")} posts={posts} squareEnabled={squareOn} onOpenNote={openNote} onNav={to => nav(to)} />}
+  >
+    <FeedView scope="workspace" workspaceId={wsId} workspaces={spaces} canPost={!!me && !readOnly} onOpenNote={openNote} onLoaded={setPosts} />
+    <CreateDialog kind={create} onOpenChange={v => !v && setCreate(null)} onSubmit={async name => { const d = await api<{ workspace: Ws }>("/api/v1/workspaces", { method: "POST", body: JSON.stringify({ name }) }); nav(`/w/${d.workspace.id}/feed`); }} />
+  </FeedShell>;
 }
 
 function PublicProfile() { const { handle } = useParams();

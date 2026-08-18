@@ -1,12 +1,15 @@
 import MarkdownIt from "markdown-it";
+import { diagramPlugin } from "./diagram.js";
 import { headingAnchorPlugin, outlineFromTokens, type OutlineItem } from "./headings.js";
 import { mathPlugin } from "./math.js";
 import { sourceLinePlugin } from "./source-lines.js";
 import { taskListPlugin } from "./tasklist.js";
 import { wikilinkPlugin, type WikiResolver } from "./wikilink.js";
 
+export type { DiagramBlock } from "./diagram.js";
 export type { OutlineItem } from "./headings.js";
 export type { WikiRef, WikiResolution, WikiResolver } from "./wikilink.js";
+export { diagramBlockAt, diagramFence } from "./diagram.js";
 export { slugifyHeading } from "./headings.js";
 export { toggleTaskAt } from "./tasklist.js";
 export { parseWikiRef } from "./wikilink.js";
@@ -28,13 +31,15 @@ export type MarkdownEnv = {
  * 全站唯一的 Markdown 解析器（架构 05 §5）。App 预览、文档站、分享页、广场帖、MCP 返回
  * 必须都走这里，禁止任何地方再 new 一个 markdown-it，否则 wikilink 行为会漂。
  *
- * 语法闭集见规格 §9.2：CommonMark + GFM（表格 / 删除线 / 任务列表）+ `$公式$` + `[[双链]]`。
+ * 语法闭集见规格 §9.2：CommonMark + GFM（表格 / 删除线 / 任务列表）+ `$公式$` + `[[双链]]`
+ * + ```` ```mermaid ```` 图块。
  * `html: false` —— 用户 HTML 一律不解析。
  */
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographer: false })
   .use(wikilinkPlugin)
   .use(mathPlugin)
   .use(taskListPlugin)
+  .use(diagramPlugin)
   .use(headingAnchorPlugin)
   .use(sourceLinePlugin);
 
@@ -48,6 +53,17 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   }
   return defaultLinkOpen(tokens, idx, options, env, self);
 };
+
+/**
+ * 表格套一层横向滚动容器。
+ *
+ * 别改成给 `<table>` 自己加 `display: block; overflow-x: auto`——那样表格不再是表格盒，
+ * 列宽会被容器压扁，中文表头会被挤成一列一个字。容器负责滚动，表格负责自己的列宽。
+ */
+md.renderer.rules.table_open = (tokens, idx, options, _env, self) =>
+  `<div class="table-scroll">${self.renderToken(tokens, idx, options)}`;
+md.renderer.rules.table_close = (tokens, idx, options, _env, self) =>
+  `${self.renderToken(tokens, idx, options)}</div>`;
 
 /** 渲染成 HTML。注意：**调用方仍须自行 sanitize**（浏览器端用 DOMPurify）。 */
 export function renderMarkdown(source: string, env: MarkdownEnv = {}): string {
