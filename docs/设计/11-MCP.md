@@ -26,7 +26,7 @@
 | allow_private_notebooks | 默认 false |
 | feed_public / feed_workspace | 默认 false |
 | expires_at | 可空 |
-| daily_write_bytes | 默认 2MB |
+| daily_write_bytes | **默认空 = 不限**。想给跑飞的 Agent 兜底时才填一个每日上限 |
 | status | `active` / `revoked` |
 | last_used_at | |
 | created_at | |
@@ -45,7 +45,11 @@ Viewer 只能建 `rw=read`。Editor+ 可 write。manage 建议 Editor+ 都能建
 
 「新建」：选工作区、档位（只读/写作/管理）、模式 inherit 或勾选多个笔记本、过期、高级开关。提交后弹层显示明文 + 「复制 Cursor 配置」「复制 Claude Desktop 配置」「我已保存」。关弹层后不再给明文。
 
-列表：名称、区、范围摘要、档、最后使用、过期。操作：复制配置（**不含 secret**，提示先轮换或当时已保存）、轮换、吊销。
+列表：名称、区、范围摘要、档、每日额度、最后使用、过期。**只列 active**；轮换掉的旧钥匙与吊销的钥匙不再占位，查历史用 `?includeRevoked=1`。
+操作：编辑、轮换、吊销。
+
+编辑：改档位、笔记本范围、过期、额度与三个高级开关，校验与新建同一套（不能超过本人 ACL，allow_delete 仅 manage）。
+**不换明文**，客户端配置继续可用；**不能换绑工作区**，要换就新建一把。
 
 轮换：旧 secret 立刻 401；新 secret 只显示一次，权限克隆。
 
@@ -79,7 +83,7 @@ Owner/Admin 看本区：时间、token 名、user、tool、target note、结果�
    **拍板：search/get/ask 遵守 require_ai_index；create 跟随本默认；update/append/move 只看 ACL+范围，不看 ai_index。** 这样「关掉 AI 读取」不会挡住人用 Agent 改一篇已知 id 的日记——若担心，用户不要把日记放进 allowlist。
 5. `update_note` 必须 `expected_version`，禁止 force。
 6. `delete` 默认无工具暴露；仅 `allow_delete` 时注册 `trash_note`（进回收站）。
-7. 日写入字节按 UTC 日加总 body。超限 QUOTA。
+7. 日写入字节按 UTC 日加总 body。未设上限则只记账不设卡；设了上限，超限 QUOTA。
 8. 每把钥匙 60 次/分钟。超限 429。
 9. 用户被移出工作区、封禁、注销、钥匙吊销：立即失败。缓存 TTL ≤ 30s，吊销走主动失效。
 10. 动态工具仅当 feed_* 打开才注册，默认清单里没有。
