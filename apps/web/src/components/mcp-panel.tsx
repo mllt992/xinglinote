@@ -1,6 +1,6 @@
 import{useEffect,useState}from'react';import type{ReactNode}from'react';import{BookLock,Check,Copy,Eye,KeyRound,Pencil,Plus,RotateCcw,Trash2,Wrench}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';
 
-export type McpToken={id:string;name:string;workspaceId:string;notebookMode:"inherit"|"allowlist";notebookIds:string[];rw:"read"|"write"|"manage";allowDelete:boolean;requireAiIndex:boolean;allowPrivateNotebooks:boolean;dailyWriteLimitBytes:number|null;expiresAt:string|null;status:string;lastUsedAt:string|null;createdAt:string};
+export type McpToken={id:string;name:string;workspaceId:string;notebookMode:"inherit"|"allowlist";notebookIds:string[];rw:"read"|"write"|"manage";allowDelete:boolean;requireAiIndex:boolean;allowPrivateNotebooks:boolean;feedPublic:boolean;feedWorkspace:boolean;dailyWriteLimitBytes:number|null;expiresAt:string|null;status:string;lastUsedAt:string|null;createdAt:string};
 type Issued={name:string;secret:string;config:unknown;stdioConfig:unknown};
 type Nb={id:string;title:string};
 const RW=[{v:"read",title:"只读",desc:"检索、读取、问答。不能改任何内容。"},{v:"write",title:"读写",desc:"在只读之上，可新建、追加、修改笔记。"},{v:"manage",title:"全部",desc:"在读写之上，可移动、打标签；勾选后还能删到回收站。"}] as const;
@@ -12,9 +12,9 @@ function Check2({checked,onChange,title,desc,disabled}:{checked:boolean;onChange
   return <label className={`flex items-start gap-2.5 rounded-lg border p-3 ${disabled?"opacity-50":"cursor-pointer hover:bg-muted/50"}`}><input type="checkbox" className="mt-0.5 size-4 accent-current" checked={checked} disabled={disabled} onChange={e=>onChange(e.target.checked)}/><span className="min-w-0"><span className="block text-sm font-medium">{title}</span><span className="block text-xs text-muted-foreground">{desc}</span></span></label>;
 }
 
-type Draft={name:string;workspaceId:string;rw:"read"|"write"|"manage";notebookMode:"inherit"|"allowlist";notebookIds:string[];expiresInDays:number|null;limited:boolean;limitMb:number;allowDelete:boolean;requireAiIndex:boolean;allowPrivateNotebooks:boolean};
-const blank=(workspaceId:string):Draft=>({name:"",workspaceId,rw:"read",notebookMode:"inherit",notebookIds:[],expiresInDays:null,limited:false,limitMb:10,allowDelete:false,requireAiIndex:true,allowPrivateNotebooks:false});
-const fromToken=(t:McpToken):Draft=>({name:t.name,workspaceId:t.workspaceId,rw:t.rw,notebookMode:t.notebookMode,notebookIds:t.notebookIds??[],expiresInDays:null,limited:t.dailyWriteLimitBytes!=null,limitMb:Math.max(1,Math.round((t.dailyWriteLimitBytes??10485760)/1048576)),allowDelete:t.allowDelete,requireAiIndex:t.requireAiIndex,allowPrivateNotebooks:t.allowPrivateNotebooks});
+type Draft={name:string;workspaceId:string;rw:"read"|"write"|"manage";notebookMode:"inherit"|"allowlist";notebookIds:string[];expiresInDays:number|null;limited:boolean;limitMb:number;allowDelete:boolean;requireAiIndex:boolean;allowPrivateNotebooks:boolean;feedPublic:boolean;feedWorkspace:boolean};
+const blank=(workspaceId:string):Draft=>({name:"",workspaceId,rw:"read",notebookMode:"inherit",notebookIds:[],expiresInDays:null,limited:false,limitMb:10,allowDelete:false,requireAiIndex:true,allowPrivateNotebooks:false,feedPublic:false,feedWorkspace:false});
+const fromToken=(t:McpToken):Draft=>({name:t.name,workspaceId:t.workspaceId,rw:t.rw,notebookMode:t.notebookMode,notebookIds:t.notebookIds??[],expiresInDays:null,limited:t.dailyWriteLimitBytes!=null,limitMb:Math.max(1,Math.round((t.dailyWriteLimitBytes??10485760)/1048576)),allowDelete:t.allowDelete,requireAiIndex:t.requireAiIndex,allowPrivateNotebooks:t.allowPrivateNotebooks,feedPublic:t.feedPublic,feedWorkspace:t.feedWorkspace});
 
 /** 设置 → MCP 钥匙。一把钥匙绑一个工作区，范围、档位、过期、写入额度都在这里定。 */
 export function McpPanel({workspaces,defaultWorkspaceId}:{workspaces:Array<{id:string;name:string}>;defaultWorkspaceId?:string}){
@@ -31,7 +31,7 @@ export function McpPanel({workspaces,defaultWorkspaceId}:{workspaces:Array<{id:s
 
   async function submit(){
     if(!draft)return;setBusy(true);setMsg("");
-    const shared={name:draft.name.trim(),rw:draft.rw,notebookMode:draft.notebookMode,notebookIds:draft.notebookMode==="allowlist"?draft.notebookIds:[],allowDelete:draft.rw==="manage"&&draft.allowDelete,requireAiIndex:draft.requireAiIndex,allowPrivateNotebooks:draft.allowPrivateNotebooks,dailyWriteLimitBytes:draft.limited?Math.max(1,draft.limitMb)*1048576:null,expiresInDays:draft.expiresInDays};
+    const shared={name:draft.name.trim(),rw:draft.rw,notebookMode:draft.notebookMode,notebookIds:draft.notebookMode==="allowlist"?draft.notebookIds:[],allowDelete:draft.rw==="manage"&&draft.allowDelete,requireAiIndex:draft.requireAiIndex,allowPrivateNotebooks:draft.allowPrivateNotebooks,feedPublic:draft.feedPublic,feedWorkspace:draft.feedWorkspace,dailyWriteLimitBytes:draft.limited?Math.max(1,draft.limitMb)*1048576:null,expiresInDays:draft.expiresInDays};
     try{
       if(editing){await api(`/api/v1/mcp/tokens/${editing.id}`,{method:"PATCH",body:JSON.stringify(shared)});setMsg("已保存。改设置不会换明文，客户端里的配置继续可用。");}
       else{const d=await api<Issued>("/api/v1/mcp/tokens",{method:"POST",body:JSON.stringify({...shared,workspaceId:draft.workspaceId})});setIssued({...d,name:shared.name});}
@@ -55,7 +55,7 @@ export function McpPanel({workspaces,defaultWorkspaceId}:{workspaces:Array<{id:s
     :<div className="space-y-2">{tokens.map(t=><div key={t.id} className={`${box} flex flex-wrap items-center gap-3 p-4`}>
       <span className="grid size-10 place-items-center rounded-lg bg-muted"><KeyRound className="size-4"/></span>
       <div className="min-w-0 flex-1">
-        <p className="flex flex-wrap items-center gap-2 text-sm font-medium">{t.name}<Badge>{rwLabel(t.rw)}</Badge>{t.allowDelete&&<Badge>可删除</Badge>}{t.allowPrivateNotebooks&&<Badge>含私密本</Badge>}</p>
+        <p className="flex flex-wrap items-center gap-2 text-sm font-medium">{t.name}<Badge>{rwLabel(t.rw)}</Badge>{t.allowDelete&&<Badge>可删除</Badge>}{t.allowPrivateNotebooks&&<Badge>含私密本</Badge>}{(t.feedPublic||t.feedWorkspace)&&<Badge>可发动态</Badge>}</p>
         <p className="text-xs text-muted-foreground">{wsName(t.workspaceId)} · {t.notebookMode==="inherit"?"跟随我的权限":`指定 ${t.notebookIds?.length??0} 个笔记本`} · 每日写入{t.dailyWriteLimitBytes==null?"不限":` ${Math.round(t.dailyWriteLimitBytes/1048576)} MB`} · {t.lastUsedAt?`最后使用 ${new Date(t.lastUsedAt).toLocaleString()}`:"从未使用"}{t.expiresAt?` · ${new Date(t.expiresAt).toLocaleDateString()} 过期`:""}</p>
       </div>
       <Button variant="ghost" size="sm" onClick={()=>openEdit(t)}><Pencil/>编辑</Button>
@@ -92,6 +92,8 @@ export function McpPanel({workspaces,defaultWorkspaceId}:{workspaces:Array<{id:s
           <Check2 checked={draft.allowDelete} disabled={draft.rw!=="manage"} onChange={v=>setDraft({...draft,allowDelete:v})} title="允许删除" desc={draft.rw==="manage"?"注册 trash_note，删到回收站。":"只有「全部」档位能开。"}/>
           <Check2 checked={draft.requireAiIndex} onChange={v=>setDraft({...draft,requireAiIndex:v})} title="遵守 AI 索引开关" desc="关掉 ai_index 的笔记对这把钥匙隐形。"/>
           <Check2 checked={draft.allowPrivateNotebooks} onChange={v=>setDraft({...draft,allowPrivateNotebooks:v})} title="允许私密笔记本" desc="默认不给，即使你本人能看。"/>
+          <Check2 checked={draft.feedWorkspace} onChange={v=>setDraft({...draft,feedWorkspace:v})} title="可发工作区动态" desc="开了才注册 post_to_feed 工具。"/>
+          <Check2 checked={draft.feedPublic} onChange={v=>setDraft({...draft,feedPublic:v})} title="可发广场动态" desc="发到全实例可见的广场，谨慎打开。"/>
         </div>
 
         <div className="flex justify-end gap-2"><Button variant="ghost" onClick={()=>{setDraft(null);setEditing(null)}}>取消</Button><Button disabled={busy||!draft.name.trim()||!draft.workspaceId||(draft.notebookMode==="allowlist"&&!draft.notebookIds.length)} onClick={submit}>{busy?"提交中…":editing?"保存":"创建并显示明文"}</Button></div>

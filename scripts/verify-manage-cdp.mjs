@@ -26,8 +26,8 @@ const page = await ex('document.body.innerText');
 const result = {
   bellInHeader: header.bell,
   importButtonInTree: header.importButton,
-  managePageLoads: page.includes('备份与审计'),
-  hasFourTabs: ['备份', '导出与恢复', '审计日志', '冻结'].every(x => page.includes(x)),
+  managePageLoads: page.includes('工作区管理'),
+  hasAllTabs: ['备份', '分享', '导出与恢复', '审计日志', '冻结'].every(x => page.includes(x)),
   backupPanelRenders: page.includes('新增目标') && (page.includes('还没有备份目标') || page.includes('运行记录')),
   tabsSwitch: false,
 };

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { canEditNote, canReadNote, type WsRole } from "@kb/core";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { folders, notebookMembers, notebooks, notes, noteVersions, workspaceMembers, workspaces } from "../db/schema.ts";
+import { auditLogs, folders, notebookMembers, notebooks, notes, noteVersions, users, workspaceMembers, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { writeNoteFile } from "../lib/files.ts";
 import { currentUser } from "../lib/session.ts";
@@ -13,7 +13,7 @@ import { backlinksFor, rebuildLinks, snippetAround } from "../lib/links.ts";
 import { assertUserStorage, textBytes } from "../lib/quota.ts";
 import { noteAccess } from "../lib/note-access.ts";
 import { notebookAccess } from "../lib/notebook-access.ts";
-import { restoreFolder,restoreNotebook,trashFolder,trashNotebook } from "../lib/trash.ts";
+import { purgeFolder,purgeNotebook,purgeNotes,restoreFolder,restoreFolderId,restoreNotebook,restoreTitle,trashFolder,trashNotebook } from "../lib/trash.ts";
 
 export const knowledge = new Hono();
 
@@ -124,6 +124,7 @@ knowledge.patch("/notes/:id", async (c) => {
       title: z.string().min(1).max(200).optional(),
       published: z.boolean().optional(),
       aiIndex: z.boolean().optional(),
+      tags: z.array(z.string().min(1).max(40)).max(30).optional(),
       force: z.boolean().optional(),
       source:z.enum(["ui","ai_accept"]).optional(),
     })
@@ -131,6 +132,10 @@ knowledge.patch("/notes/:id", async (c) => {
   const {note}=await noteAccess(c.req.param("id"),user.id,"edit");
   if (note.version !== body.expectedVersion && !body.force) {
     throw fail("CONFLICT_VERSION", "别人刚保存了更新");
+  }
+  if (note.version !== body.expectedVersion && body.force) {
+    const [already] = await db.select().from(noteVersions).where(and(eq(noteVersions.noteId, note.id), eq(noteVersions.version, note.version)));
+    if (!already) await db.insert(noteVersions).values({ noteId: note.id, version: note.version, title: note.title, bodyMd: note.bodyMd, editorId: note.updatedBy, source: "ui" });
   }
   const nextTitle = body.title ?? note.title;
   const nextBody = body.bodyMd ?? note.bodyMd;
@@ -140,6 +145,7 @@ knowledge.patch("/notes/:id", async (c) => {
     bodyMd: nextBody,
     published: body.published ?? note.published,
     aiIndex: body.aiIndex ?? note.aiIndex,
+    tags: body.tags ? [...new Set(body.tags.map(t => t.trim()).filter(Boolean))] : (note.tags as string[]),
     version: note.version + 1,
     updatedBy: user.id,
     updatedAt: new Date(),
@@ -256,12 +262,41 @@ knowledge.get("/notes/:id/backlinks", async (c) => {
 
 knowledge.get("/search", async (c) => {
   const user = await requireUser(c);
-  const q = (c.req.query("q") ?? "").trim();
-  const workspaceId = c.req.query("workspaceId");
-  if (!q) return ok(c, { hits: [] });
-  const memberships=await db.select().from(workspaceMembers).where(eq(workspaceMembers.userId,user.id));const ids=workspaceId?[workspaceId]:memberships.map(m=>m.workspaceId);if(workspaceId&&!ids.some(id=>memberships.some(m=>m.workspaceId===id)))throw fail("FORBIDDEN","不是工作区成员");
-  const hits=[];for(const id of ids){const rows=await db.select().from(notes).where(and(eq(notes.workspaceId,id),isNull(notes.trashedAt),or(ilike(notes.title,`%${q}%`),ilike(notes.bodyMd,`%${q}%`))));for(const n of rows){try{await noteAccess(n.id,user.id,"read");hits.push({id:n.id,title:n.title,snippet:n.bodyMd.slice(0,180),notebookId:n.notebookId,workspaceId:id});}catch{}}}
-  return ok(c, { hits: hits.slice(0, 50) });
+  const q = (c.req.query("q") ?? "").trim().slice(0, 200);
+  if (!q) return ok(c, { hits: [], total: 0 });
+  const workspaceId = c.req.query("workspaceId"), notebookId = c.req.query("notebookId"), tag = c.req.query("tag");
+  const titleOnly = c.req.query("titleOnly") === "1";
+  const aiIndex = c.req.query("aiIndex");                       // "1" 只看进大脑的，"0" 只看没进的
+  const limit = Math.min(100, Math.max(1, Number(c.req.query("limit") ?? 20)));
+  const offset = Math.max(0, Number(c.req.query("offset") ?? 0));
+  const memberships = await db.select().from(workspaceMembers).where(eq(workspaceMembers.userId, user.id));
+  const ids = workspaceId ? [workspaceId] : memberships.map(m => m.workspaceId);
+  if (workspaceId && !memberships.some(m => m.workspaceId === workspaceId)) throw fail("FORBIDDEN", "不是工作区成员");
+  const terms = q.toLowerCase().split(/s+/).filter(Boolean);
+  const scored = [];
+  for (const id of ids) {
+    const where = [eq(notes.workspaceId, id), isNull(notes.trashedAt)];
+    if (notebookId) where.push(eq(notes.notebookId, notebookId));
+    if (aiIndex === "1" || aiIndex === "0") where.push(eq(notes.aiIndex, aiIndex === "1"));
+    const rows = await db.select().from(notes).where(and(...where));
+    for (const n of rows) {
+      const title = n.title.toLowerCase(), body = titleOnly ? "" : n.bodyMd.toLowerCase();
+      const tags = ((n.tags as string[]) ?? []).map(t => t.toLowerCase());
+      if (tag && !tags.includes(tag.toLowerCase())) continue;
+      if (!terms.every(t => title.includes(t) || tags.some(x => x.includes(t)) || body.includes(t))) continue;
+      const age = (Date.now() - new Date(n.updatedAt).getTime()) / 86400000;
+      const score = terms.reduce((sum, t) => sum + (title.includes(t) ? 8 : 0) + (tags.some(x => x.includes(t)) ? 3 : 0) + (body.includes(t) ? 1 : 0), 0) + Math.pow(0.5, age / 90);
+      const at = body.indexOf(terms[0]);
+      scored.push({ note: n, score, snippet: at >= 0 ? n.bodyMd.slice(Math.max(0, at - 60), at + 180) : n.bodyMd.slice(0, 180) });
+    }
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const hits = [];
+  for (const s of scored) {
+    if (hits.length >= offset + limit) break;
+    try { await noteAccess(s.note.id, user.id, "read"); hits.push({ id: s.note.id, title: s.note.title, snippet: s.snippet, notebookId: s.note.notebookId, workspaceId: s.note.workspaceId, tags: s.note.tags, score: Math.round(s.score * 100) / 100 }); } catch { /* 无权就当不存在 */ }
+  }
+  return ok(c, { hits: hits.slice(offset, offset + limit), total: hits.length, hasMore: hits.length >= offset + limit });
 });
 
 knowledge.get("/workspaces/:id/trash", async (c) => {
@@ -270,7 +305,11 @@ knowledge.get("/workspaces/:id/trash", async (c) => {
   const role = await memberRole(workspaceId, user.id);
   if (!role) throw fail("FORBIDDEN", "不是工作区成员");
   const canAll=role==="owner"||role==="admin";const allNotes=await db.select().from(notes).where(eq(notes.workspaceId,workspaceId));const allFolders=await db.select().from(folders).where(eq(folders.workspaceId,workspaceId));const allNotebooks=await db.select().from(notebooks).where(eq(notebooks.workspaceId,workspaceId));const own=<T extends {trashedAt:Date|null;trashedBy:string|null}>(rows:T[])=>rows.filter(x=>x.trashedAt&&(canAll||x.trashedBy===user.id));
-  return ok(c,{notes:own(allNotes).map(n=>({id:n.id,title:n.title,trashedAt:n.trashedAt,trashedBy:n.trashedBy})),folders:own(allFolders).map(f=>({id:f.id,title:f.title,trashedAt:f.trashedAt,trashedBy:f.trashedBy})),notebooks:own(allNotebooks).map(n=>({id:n.id,title:n.title,trashedAt:n.trashedAt,trashedBy:n.trashedBy}))});
+  const people=await db.select({id:users.id,displayName:users.displayName}).from(users);const who=(id:string|null)=>people.find(p=>p.id===id)?.displayName??"已注销用户";
+  const nbTitle=(id:string)=>allNotebooks.find(x=>x.id===id)?.title??"已销毁的笔记本";
+  const path=(n:typeof allNotes[number])=>{const parts=[nbTitle(n.notebookId)];let cur=n.folderId?allFolders.find(f=>f.id===n.folderId):undefined;const guard=new Set<string>();while(cur&&!guard.has(cur.id)){guard.add(cur.id);parts.splice(1,0,cur.title);cur=cur.parentId?allFolders.find(f=>f.id===cur!.parentId):undefined;}return parts.join(" / ");};
+  const meta=(x:{trashedAt:Date|null;trashedBy:string|null})=>({trashedAt:x.trashedAt,trashedBy:x.trashedBy,trashedByName:who(x.trashedBy),purgeAt:x.trashedAt?new Date(x.trashedAt.getTime()+30*86400000):null});
+  return ok(c,{notes:own(allNotes).map(n=>({id:n.id,title:n.title,path:path(n),...meta(n)})),folders:own(allFolders).map(f=>({id:f.id,title:f.title,path:nbTitle(f.notebookId),...meta(f)})),notebooks:own(allNotebooks).map(n=>({id:n.id,title:n.title,path:"整本",...meta(n)}))});
 });
 
 knowledge.post("/trash/note/:id/restore", async (c) => {
@@ -281,9 +320,23 @@ knowledge.post("/trash/note/:id/restore", async (c) => {
   if (!role || role === "viewer") throw fail("FORBIDDEN", "无权恢复");
   await assertUserStorage(note.createdBy,textBytes(note.title,note.bodyMd));
   if(role!=="owner"&&role!=="admin"&&note.trashedBy!==user.id)throw fail("FORBIDDEN","只能恢复自己删除的内容");
-  await db.update(notes).set({ trashedAt: null,trashedBy:null,trashBatchId:null }).where(eq(notes.id, note.id));
+  const title=await restoreTitle(note),folderId=await restoreFolderId(note);
+  await db.update(notes).set({ trashedAt: null,trashedBy:null,trashBatchId:null,title,folderId }).where(eq(notes.id, note.id));
   await rebuildLinks(note.id, note.workspaceId, note.bodyMd);
-  return ok(c, {});
+  return ok(c, { title, folderId, renamed: title !== note.title, movedToRoot: !!note.folderId && !folderId });
 });
 knowledge.post("/trash/folder/:id/restore",async c=>{const user=await requireUser(c);const[f]=await db.select().from(folders).where(eq(folders.id,c.req.param("id")));if(!f?.trashedAt||!f.trashBatchId)throw fail("NOT_FOUND","回收站中没有此目录");const role=await memberRole(f.workspaceId,user.id);if(!role||(role!=="owner"&&role!=="admin"&&f.trashedBy!==user.id))throw fail("FORBIDDEN","无权恢复");const affected=await db.select().from(notes).where(eq(notes.trashBatchId,f.trashBatchId));for(const n of affected)await assertUserStorage(n.createdBy,textBytes(n.title,n.bodyMd));await restoreFolder(f.id,f.trashBatchId);for(const n of affected)await rebuildLinks(n.id,n.workspaceId,n.bodyMd);return ok(c,{});});
 knowledge.post("/trash/notebook/:id/restore",async c=>{const user=await requireUser(c);const[nb]=await db.select().from(notebooks).where(eq(notebooks.id,c.req.param("id")));if(!nb?.trashedAt||!nb.trashBatchId)throw fail("NOT_FOUND","回收站中没有此笔记本");const role=await memberRole(nb.workspaceId,user.id);if(role!=="owner"&&role!=="admin")throw fail("FORBIDDEN","只有管理员能恢复笔记本");const affected=await db.select().from(notes).where(eq(notes.trashBatchId,nb.trashBatchId));for(const n of affected)await assertUserStorage(n.createdBy,textBytes(n.title,n.bodyMd));await restoreNotebook(nb.id,nb.trashBatchId);for(const n of affected)await rebuildLinks(n.id,n.workspaceId,n.bodyMd);return ok(c,{});});
+
+async function purgeTarget(c:any,kind:"note"|"folder"|"notebook"){const user=await requireUser(c);const id=c.req.param("id");
+  const [row]=kind==="note"?await db.select().from(notes).where(eq(notes.id,id)):kind==="folder"?await db.select().from(folders).where(eq(folders.id,id)):await db.select().from(notebooks).where(eq(notebooks.id,id));
+  if(!row||!row.trashedAt)throw fail("NOT_FOUND","回收站里没有这一项");
+  const role=await memberRole(row.workspaceId,user.id);
+  if(!role||role==="viewer")throw fail("FORBIDDEN","无权销毁");
+  if(role!=="owner"&&role!=="admin"&&row.trashedBy!==user.id)throw fail("FORBIDDEN","只能销毁自己删除的内容");
+  if(kind==="note")await purgeNotes([id]);else if(kind==="folder")await purgeFolder(id);else await purgeNotebook(id);
+  await db.insert(auditLogs).values({userId:user.id,workspaceId:row.workspaceId,actorType:"user",action:`${kind}.purge`,result:"ok",targetType:kind,targetId:id});
+  return ok(c,{});}
+knowledge.delete("/trash/note/:id",c=>purgeTarget(c,"note"));
+knowledge.delete("/trash/folder/:id",c=>purgeTarget(c,"folder"));
+knowledge.delete("/trash/notebook/:id",c=>purgeTarget(c,"notebook"));

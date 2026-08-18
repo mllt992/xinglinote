@@ -1,4 +1,4 @@
-import{useEffect,useState}from'react';import type{ReactNode}from'react';import{Archive,CloudUpload,Download,FileClock,Play,Plug,Plus,ShieldAlert,Snowflake,Upload}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';
+import{useEffect,useState}from'react';import type{ReactNode}from'react';import{Archive,CloudUpload,Download,FileClock,Link2 as Link2Icon,Lock,Play,Plug,Plus,ShieldAlert,Snowflake,Trash2 as Trash2Icon,Upload}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';
 const box="rounded-xl border bg-background";
 function Field({title,children}:{title:string;children:ReactNode}){return <label className="grid gap-1.5"><span className="text-xs font-medium text-muted-foreground">{title}</span>{children}</label>;}
 function Hollow({icon,text}:{icon:ReactNode;text:string}){return <div className="py-12 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground">{icon}</span><p className="mt-3 text-xs text-muted-foreground">{text}</p></div>;}
@@ -102,5 +102,31 @@ export function DangerPanel({workspaceId,frozen,onChanged}:{workspaceId:string;f
       <div className="min-w-0 flex-1"><p className="text-sm font-medium">{frozen?"工作区已冻结":"冻结工作区"}</p><p className="text-xs text-muted-foreground">冻结后所有人只能读，写入、AI 写作与 MCP 写档都会被拒绝；随时可以解冻。</p></div>
       <Button variant={frozen?"outline":"destructive"} disabled={busy} onClick={async()=>{if(!frozen&&!confirm("冻结后这个工作区的所有人都只能读，确定吗？"))return;setBusy(true);setMsg("");try{await api(`/api/v1/workspaces/${workspaceId}/freeze`,{method:"PATCH",body:JSON.stringify({frozen:!frozen})});onChanged()}catch(e){setMsg((e as Error).message)}finally{setBusy(false)}}}>{frozen?"解冻":"冻结"}</Button></div>
     {msg&&<p className="mt-3 text-sm text-destructive">{msg}</p>}
+  </div>;
+}
+
+type WsShare={id:string;token:string;targetType:string;targetTitle:string;hasPassword:boolean;expiresAt:string|null;commentsEnabled:boolean;correctionsEnabled:boolean;status:string;createdAt:string;mine:boolean};
+const shareType:Record<string,string>={note:"整篇",heading:"某一节",folder:"目录",attachment:"附件"};
+
+/** 本区分享总览：Admin/Owner 能收掉别人建的链接。 */
+export function SharesPanel({workspaceId}:{workspaceId:string}){
+  const[data,setData]=useState<{canManageAll:boolean;shares:WsShare[]}>({canManageAll:false,shares:[]});const[msg,setMsg]=useState("");const[copied,setCopied]=useState("");
+  const load=()=>api<typeof data>(`/api/v1/workspaces/${workspaceId}/shares`).then(setData);
+  useEffect(()=>{void load()},[workspaceId]);
+  const live=data.shares.filter(s=>s.status==="active");
+  async function patch(s:WsShare,body:Record<string,unknown>,okText:string){setMsg("");try{await api(`/api/v1/shares/${s.id}`,{method:"PATCH",body:JSON.stringify(body)});setMsg(okText);await load()}catch(e){setMsg((e as Error).message)}}
+  return <div className="space-y-3">
+    <p className="text-sm text-muted-foreground">{data.canManageAll?"你是管理员，这里是本工作区的全部分享链接。":"这里是你自己创建的分享链接。"}</p>
+    {msg&&<p className="text-sm text-muted-foreground">{msg}</p>}
+    {live.length===0?<div className={box}><Hollow icon={<Link2Icon/>} text="本工作区还没有生效中的分享链接。"/></div>
+    :<div className="space-y-2">{live.map(s=><div key={s.id} className={`${box} flex flex-wrap items-center gap-3 p-4`}>
+      <span className="grid size-10 place-items-center rounded-lg bg-muted">{s.hasPassword?<Lock className="size-4"/>:<Link2Icon className="size-4"/>}</span>
+      <div className="min-w-0 flex-1"><p className="flex flex-wrap items-center gap-2 text-sm font-medium">{s.targetTitle}<Badge>{shareType[s.targetType]??s.targetType}</Badge>{!s.mine&&<Badge>他人创建</Badge>}</p>
+        <p className="truncate text-xs text-muted-foreground">{s.hasPassword?"有密码":"无密码"} · {s.expiresAt?`到期 ${new Date(s.expiresAt).toLocaleDateString()}`:"永不过期"}{s.correctionsEnabled?" · 可纠错":""} · 建于 {new Date(s.createdAt).toLocaleDateString()}</p></div>
+      <Button variant="ghost" size="sm" onClick={()=>{void navigator.clipboard.writeText(`${location.origin}/p/${s.token}`);setCopied(s.id);setTimeout(()=>setCopied(""),1200)}}>{copied===s.id?"已复制":"复制链接"}</Button>
+      <select className="h-8 rounded-lg border bg-background px-2 text-xs" value="" onChange={e=>{const v=e.target.value;e.target.value="";if(v==="pw"){const p=prompt("设置新密码（留空表示取消密码）");if(p===null)return;void patch(s,{password:p||null},p?"已改密码":"已取消密码");}else if(v)void patch(s,{expiresInDays:v==="never"?null:Number(v)},"已更新有效期");}}>
+        <option value="">改设置…</option><option value="pw">改 / 取消密码</option><option value="7">续期 7 天</option><option value="30">续期 30 天</option><option value="never">改为永不过期</option></select>
+      <Button variant="ghost" size="icon" aria-label="撤销" className="text-destructive" onClick={async()=>{if(!confirm(`撤销《${s.targetTitle}》的这条链接？立刻失效且不可恢复。`))return;setMsg("");try{await api(`/api/v1/shares/${s.id}`,{method:"DELETE"});await load()}catch(e){setMsg((e as Error).message)}}}><Trash2Icon/></Button>
+    </div>)}</div>}
   </div>;
 }

@@ -38,8 +38,11 @@ pnpm test
 
 ```bash
 $env:KB_EMAIL="你的邮箱"; $env:KB_PASSWORD="你的密码"   # PowerShell
-node scripts/verify-manage.mjs
+node scripts/verify-manage.mjs      # 备份 / 导出 / 审计 / 冻结 / 通知 / 导入
+node scripts/verify-mcp-keys.mjs    # MCP 钥匙的额度、范围、档位、轮换、吊销
+node scripts/verify-gaps.mjs        # 分享类型、分享总览、回收站销毁、搜索、标签
 node scripts/verify-manage-cdp.mjs
+node scripts/verify-gaps-cdp.mjs
 node --experimental-strip-types scripts/verify-zip.mjs   # 不需要账号
 ```
 
