@@ -22,7 +22,7 @@ import { fileRoutes } from "./routes/files.ts";
 import { opsRoutes } from "./routes/ops.ts";
 import { workbenchRoutes } from "./routes/workbench.ts";
 import { backupRoutes } from "./routes/backups.ts";
-import { calendarRoutes } from "./routes/calendar.ts";
+import { calendarFeedRoutes, calendarRoutes } from "./routes/calendar.ts";
 import { workspaceLifecycleRoutes } from "./routes/workspace-lifecycle.ts";
 import { db } from "./db/client.ts";
 import { instanceSettings } from "./db/schema.ts";
@@ -47,6 +47,7 @@ app.onError((e, c) => {
 });
 
 app.route("/", wellKnownRoutes);
+app.route("/", calendarFeedRoutes);
 
 app.get("/api/healthz", (c) => c.json({ ok: true, service:"knowledge-api" }));
 app.get("/api/readyz", async c=>{await db.select({id:instanceSettings.id}).from(instanceSettings).limit(1);return c.json({ok:true,database:true});});

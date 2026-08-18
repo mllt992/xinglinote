@@ -68,7 +68,39 @@ Viewer 只能建 `rw=read`。Editor+ 可 write。manage 建议 Editor+ 都能建
 
 文档同时给 stdio 桥接示例（本地小进程转发），方便只支持 stdio 的客户端。协议工具名稳定，见第 5 节。
 
-### 3.3 审计页
+### 3.3 OAuth 接入（给云端客户端）
+
+Claude.ai 连接器、ChatGPT 的 Create app 这类**云端**客户端不给填自定义请求头，只认
+「一个公网 HTTPS 地址 + OAuth」。所以除了手工贴明文，实例同时是一个授权服务器：
+
+| 端点 | 规范 |
+|---|---|
+| `/.well-known/oauth-protected-resource` | RFC 9728 受保护资源元数据 |
+| `/.well-known/oauth-authorization-server` | RFC 8414 授权服务器元数据 |
+| `POST /api/v1/oauth/register` | RFC 7591 动态客户端注册 |
+| `GET /api/v1/oauth/authorize` | 授权码，**强制 PKCE S256** |
+| `POST /api/v1/oauth/token` | 换 access token |
+
+发现链路：客户端不带 token 打 `/api/v1/mcp` → 401 且带
+`WWW-Authenticate: Bearer resource_metadata="…"` → 顺着元数据找到授权服务器 → 注册 →
+跳授权 → 落到 `/oauth/consent` 同意页。
+
+**关键取舍：授权通过后不发 JWT。** 同意页把工作区、档位、笔记本范围、三个高级开关、
+有效期勾定，换 token 时照常在 `mcp_tokens` 里落一行，access token 就是那把
+`kbk_` 明文。好处是第 4 节业务规则一条都不用改——鉴权、范围、额度、审计、
+**吊销即刻生效**全部复用既有那套；自证明的 JWT 恰恰做不到第 9 条。
+
+代价是不发 refresh token：access token 要么永不过期，要么按同意页选的有效期到点作废，
+到期后客户端重走一次授权。对自托管场景这个取舍是划算的。
+
+同意页给出去的权限**不会超过本人在该工作区的权限**，校验和手工建钥匙共用一套：
+Viewer 只能授权只读，`allow_delete` 只有 manage 档位能开，allowlist 里的每个笔记本都要
+逐个过 `notebookAccess`。授权码单次有效、10 分钟过期；被重放时连带吊销它换出去的钥匙。
+
+OAuth 签发的钥匙在设置页和手工建的并排显示（`source='oauth'`，记着 `client_id`），
+随时可吊销。
+
+### 3.4 审计页
 
 Owner/Admin 看本区：时间、token 名、user、tool、target note、结果码。本人看自己的。保留 90 天。
 
@@ -159,6 +191,18 @@ limit≤20。出：id、title、path、snippet≤240。hybrid 调 10 的融合�
 **`trash_note(id)`**  
 仅 allow_delete。走 12。
 
+**`list_tasks(from?, to?, status?, assignee?, include_inbox?, limit?)`** / **`list_events(from?, to?, limit?)`**  
+读档位。窗口默认「今天起 14 天」，上限 200 条、最长 400 天。重复条目按窗口展开，每个实例带 `occurrence_start`。
+`source=note` 的条目**完全继承来源笔记的判定**：钥匙的笔记本范围、`require_ai_index`、私密笔记本开关一并适用，不可见的直接不返回。
+`list_tasks` 默认只给 `open`，并带上收件箱里没期限的任务。
+
+**`create_task(title, due_at?, all_day?, priority?, note?)`**  
+须 write。只能建 `source=mcp` 的独立任务，**不能写笔记正文**——否则一把「只读笔记」的钥匙能靠建任务绕道改正文。
+
+**`complete_task(id, occurrence_start?, done?)`**  
+须 write。命中 `source=note` 的条目会回写正文 `- [x]`，因此额外要求对那篇笔记 `can_edit`（等于一次带审计的正文修改，走 16 §4.3 的版本合并）。
+块锚丢失时返回 `note_written:false` 并把条目标 `detached`，不报错、不静默删条目。
+
 ### 5.3 配置生成
 
 把 instance public URL + Bearer 填进模板。不把用户其他钥匙写进去。
@@ -173,5 +217,6 @@ limit≤20。出：id、title、path、snippet≤240。hybrid 调 10 的融合�
 | → 审计、13 | 审计可备；secret 永不备 |
 | ← 12 | 移出成员默认作废其本区钥匙 |
 | → 09 | feed 工具默认不注册 |
+| ← 16 | 日历四工具复用同一把钥匙的工作区与笔记本范围；`complete_task` 的回写走 16 §5.3 |
 
 发出：`McpTokenRevoked`。写操作另写 audit 表，不靠领域事件凑。

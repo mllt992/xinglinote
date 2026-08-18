@@ -1,7 +1,7 @@
 // 本轮补齐的功能验收：分享类型、分享总览、回收站销毁与重名、搜索过滤与打分、标签、MCP 动态权限。
 // 用法：KB_EMAIL=... KB_PASSWORD=... node scripts/verify-gaps.mjs
 import { KB_EMAIL, KB_PASSWORD } from './creds.mjs';
-const base = 'http://127.0.0.1:12098/api/v1';
+const base = (process.env.KB_BASE_URL??'http://127.0.0.1:12098')+'/api/v1';
 async function q(path, opt = {}, cookie = '') {
   const r = await fetch(base + path, { ...opt, headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}), ...(opt.headers || {}) } });
   const j = await r.json();

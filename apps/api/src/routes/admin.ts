@@ -1,13 +1,29 @@
 import { Hono } from "hono";
-import { count, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, ilike, or } from "drizzle-orm";
 import { z } from "zod";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { instanceSettings, mcpTokens, registrationCodes, sessions, users, workspaceMembers, workspaces } from "../db/schema.ts";
+import { instanceSettings, mcpTokens, registrationCodes, sessions, users, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { registrationCode, tokenHash } from "../lib/tokens.ts";
 import { seal } from "../lib/secrets.ts";
+
+function pageQuery(c: { req: { query: (k: string) => string | undefined } }) {
+  const page = Math.max(1, Number(c.req.query("page") ?? 1) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(c.req.query("pageSize") ?? 20) || 20));
+  return { page, pageSize, offset: (page - 1) * pageSize };
+}
+
+function likeContains(raw: string | undefined) {
+  const q = raw?.replace(/[%_]/g, "").trim() ?? "";
+  return q ? `%${q}%` : null;
+}
+
+function publicUser(row: typeof users.$inferSelect) {
+  const { passwordHash: _, ...u } = row;
+  return u;
+}
 
 export const adminRoutes = new Hono();
 async function admin(c: Parameters<typeof currentUser>[0]) {
@@ -21,8 +37,16 @@ adminRoutes.get("/admin/overview", async c => {
   await admin(c);
   const [{ value: userCount }] = await db.select({ value: count() }).from(users);
   const [{ value: workspaceCount }] = await db.select({ value: count() }).from(workspaces);
+  const [{ value: adminCount }] = await db.select({ value: count() }).from(users).where(and(eq(users.roleInstance, "admin"), eq(users.status, "active")));
+  const [{ value: codeCount }] = await db.select({ value: count() }).from(registrationCodes);
+  const [{ value: activeCodeCount }] = await db.select({ value: count() }).from(registrationCodes).where(eq(registrationCodes.status, "active"));
+  const recent = await db.select().from(users).orderBy(desc(users.createdAt)).limit(6);
   const [settings] = await db.select().from(instanceSettings);
-  return ok(c, { userCount, workspaceCount, settings:settings?{...settings,smtpPassword:settings.smtpPassword?"••••••••":null}:settings });
+  return ok(c, {
+    userCount, workspaceCount, adminCount, codeCount, activeCodeCount,
+    recentUsers: recent.map(publicUser),
+    settings: settings ? { ...settings, smtpPassword: settings.smtpPassword ? "••••••••" : null } : settings,
+  });
 });
 adminRoutes.patch("/admin/settings", async c => {
   await admin(c);
@@ -33,8 +57,18 @@ adminRoutes.patch("/admin/settings", async c => {
 });
 adminRoutes.get("/admin/users", async c => {
   await admin(c);
-  const rows = await db.select().from(users).orderBy(desc(users.createdAt));
-  return ok(c, { users: rows.map(({ passwordHash: _, ...u }) => u) });
+  const { page, pageSize, offset } = pageQuery(c);
+  const like = likeContains(c.req.query("q"));
+  const role = z.enum(["admin", "user"]).optional().catch(undefined).parse(c.req.query("role") || undefined);
+  const status = z.enum(["active", "banned", "pending_verification", "pending_deletion"]).optional().catch(undefined).parse(c.req.query("status") || undefined);
+  const where = and(
+    like ? or(ilike(users.displayName, like), ilike(users.handle, like), ilike(users.email, like)) : undefined,
+    role ? eq(users.roleInstance, role) : undefined,
+    status ? eq(users.status, status) : undefined,
+  );
+  const rows = await db.select().from(users).where(where).orderBy(desc(users.createdAt)).limit(pageSize).offset(offset);
+  const [{ value: total }] = await db.select({ value: count() }).from(users).where(where);
+  return ok(c, { users: rows.map(publicUser), total, page, pageSize });
 });
 adminRoutes.patch("/admin/users/:id", async c => {
   const actor = await admin(c); const id = c.req.param("id");
@@ -58,7 +92,27 @@ adminRoutes.post("/admin/registration-codes", async c => {
   return ok(c, { codes: plain }, 201);
 });
 adminRoutes.get("/admin/registration-codes", async c => {
-  await admin(c); const rows = await db.select().from(registrationCodes).orderBy(desc(registrationCodes.createdAt));
-  return ok(c, { codes: rows.map(r => ({ id: r.id, prefix: r.codePrefix, maxUses: r.maxUses, usedCount: r.usedCount, expiresAt: r.expiresAt, note: r.note, bindWorkspaceId: r.bindWorkspaceId, bindRole: r.bindRole, skipEmailVerification: r.skipEmailVerification, status: r.status, createdAt: r.createdAt })) });
+  await admin(c);
+  const { page, pageSize, offset } = pageQuery(c);
+  const like = likeContains(c.req.query("q"));
+  const status = z.enum(["active", "revoked", "exhausted", "expired"]).optional().catch(undefined).parse(c.req.query("status") || undefined);
+  const bindRole = z.enum(["admin", "editor", "viewer"]).optional().catch(undefined).parse(c.req.query("bindRole") || undefined);
+  const skipRaw = c.req.query("skipEmailVerification");
+  const skipEmail = skipRaw === "true" ? true : skipRaw === "false" ? false : undefined;
+  const where = and(
+    like ? or(ilike(registrationCodes.codePrefix, like), ilike(registrationCodes.note, like)) : undefined,
+    status ? eq(registrationCodes.status, status) : undefined,
+    bindRole ? eq(registrationCodes.bindRole, bindRole) : undefined,
+    skipEmail === undefined ? undefined : eq(registrationCodes.skipEmailVerification, skipEmail),
+  );
+  const rows = await db.select().from(registrationCodes).where(where).orderBy(desc(registrationCodes.createdAt)).limit(pageSize).offset(offset);
+  const [{ value: total }] = await db.select({ value: count() }).from(registrationCodes).where(where);
+  return ok(c, {
+    codes: rows.map(r => ({
+      id: r.id, prefix: r.codePrefix, maxUses: r.maxUses, usedCount: r.usedCount, expiresAt: r.expiresAt, note: r.note,
+      bindWorkspaceId: r.bindWorkspaceId, bindRole: r.bindRole, skipEmailVerification: r.skipEmailVerification, status: r.status, createdAt: r.createdAt,
+    })),
+    total, page, pageSize,
+  });
 });
 adminRoutes.delete("/admin/registration-codes/:id", async c => { await admin(c); await db.update(registrationCodes).set({ status: "revoked" }).where(eq(registrationCodes.id, c.req.param("id"))); return ok(c, {}); });

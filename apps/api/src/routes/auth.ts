@@ -39,7 +39,7 @@ auth.get("/meta", async (c) => {
 
 auth.post("/auth/register", async (c) => {
   const body = registerBody.parse(await c.req.json());
-  if (!HANDLE_RE.test(body.handle)) throw fail("VALIDATION", "handle 格式不正确", { handle: "小写字母开头，3–32 位" });
+  if (!HANDLE_RE.test(body.handle)) throw fail("VALIDATION", "用户名格式不正确", { handle: "小写字母开头，3–32 位" });
   if (!validPassword(body.password)) throw fail("VALIDATION", "密码至少 10 位且含字母和数字", { password: "太弱" });
 
   const [{ value: userCount }] = await db.select({ value: count() }).from(users);
@@ -58,7 +58,7 @@ auth.post("/auth/register", async (c) => {
   const exists = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
   if (exists.length) throw fail("VALIDATION", "邮箱已被使用", { email: "已被使用" });
   const handleTaken = await db.select({ id: users.id }).from(users).where(eq(users.handle, body.handle));
-  if (handleTaken.length) throw fail("VALIDATION", "handle 已被使用", { handle: "已被使用" });
+  if (handleTaken.length) throw fail("VALIDATION", "该用户名已被使用", { handle: "已被使用" });
 
   const isFirst = userCount === 0;
   const verifiedNow = isFirst || !settings?.requireEmailVerification || !!code?.skipEmailVerification;

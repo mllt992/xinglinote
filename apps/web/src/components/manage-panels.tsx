@@ -1,4 +1,4 @@
-import{useEffect,useState}from'react';import type{ReactNode}from'react';import{Archive,CloudUpload,Download,FileClock,FolderTree,Link2 as Link2Icon,Lock,Play,Plug,Plus,RotateCcw,ShieldAlert,Snowflake,Trash2 as Trash2Icon,Upload}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{useConfirm,usePrompt}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
+import{useEffect,useState}from'react';import type{ReactNode}from'react';import{Archive,CalendarDays,CloudUpload,Download,FileClock,FolderTree,Link2 as Link2Icon,Lock,Play,Plug,Plus,RotateCcw,ShieldAlert,Snowflake,Trash2 as Trash2Icon,Upload}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{useConfirm,usePrompt}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
 const box="rounded-xl border bg-background";
 function Field({title,children}:{title:string;children:ReactNode}){return <label className="grid gap-1.5"><span className="text-xs font-medium text-muted-foreground">{title}</span>{children}</label>;}
 function Hollow({icon,text}:{icon:ReactNode;text:string}){return <div className="py-12 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground">{icon}</span><p className="mt-3 text-xs text-muted-foreground">{text}</p></div>;}
@@ -169,5 +169,32 @@ export function SharesPanel({workspaceId}:{workspaceId:string}){
         <option value="">改设置…</option><option value="pw">改 / 取消密码</option><option value="7">续期 7 天</option><option value="30">续期 30 天</option><option value="never">改为永不过期</option></select>
       <Button variant="ghost" size="icon" aria-label="撤销" className="text-destructive" onClick={async()=>{if(!await askConfirm({title:`撤销《${s.targetTitle}》的这条链接？`,description:"链接立刻失效且不可恢复，已经拿到它的人也打不开了。原内容不受影响，需要时可以重新分享。",confirmText:"撤销链接",destructive:true}))return;try{await api(`/api/v1/shares/${s.id}`,{method:"DELETE"});toast.success("已撤销这条链接");await load()}catch(e){toast.error("撤销失败",(e as Error).message)}}}><Trash2Icon/></Button>
     </div>)}</div>}
+    <CalendarFeedsSection workspaceId={workspaceId}/>
+  </div>;
+}
+
+type CalendarFeed={id:string;scope:"mine"|"workspace";url:string;lastUsedAt:string|null};
+
+/**
+ * 日历导出地址也在这一页管，因为它和分享链接是同一个东西：一条谁拿到谁能看的对外通道。
+ * 分散在两个页面的泄露面，等于没人管的泄露面（设计 16 §4.6）。
+ */
+function CalendarFeedsSection({workspaceId}:{workspaceId:string}){
+  const askConfirm=useConfirm();const toast=useToast();
+  const[feeds,setFeeds]=useState<CalendarFeed[]>([]);const[copied,setCopied]=useState("");
+  const load=()=>api<{feeds:CalendarFeed[]}>(`/api/v1/workspaces/${workspaceId}/calendar/feed-tokens`).then(d=>setFeeds(d.feeds));
+  useEffect(()=>{void load()},[workspaceId]);
+  if(!feeds.length)return null;
+  return <div className="space-y-2 border-t pt-4">
+    <p className="text-sm font-medium">日历导出地址</p>
+    <p className="text-xs text-muted-foreground">知道这些地址的人可以看到日程的标题与时间（不含笔记正文）。这里只列你自己的。</p>
+    {feeds.map(f=><div key={f.id} className={`${box} flex flex-wrap items-center gap-3 p-4`}>
+      <span className="grid size-10 place-items-center rounded-lg bg-muted"><CalendarDays className="size-4"/></span>
+      <div className="min-w-0 flex-1"><p className="flex items-center gap-2 text-sm font-medium">ICS 订阅<Badge>{f.scope==="mine"?"只含我的":"整个工作区"}</Badge></p>
+        <p className="truncate font-mono text-xs text-muted-foreground">{f.url}</p></div>
+      <Button variant="ghost" size="sm" onClick={()=>{void navigator.clipboard.writeText(f.url);setCopied(f.id);setTimeout(()=>setCopied(""),1200)}}>{copied===f.id?"已复制":"复制地址"}</Button>
+      <Button variant="ghost" size="sm" onClick={async()=>{try{await api(`/api/v1/calendar/feed-tokens/${f.id}/rotate`,{method:"POST"});toast.success("已轮换，旧地址立即失效");await load()}catch(e){toast.error("轮换失败",(e as Error).message)}}}>轮换</Button>
+      <Button variant="ghost" size="icon" aria-label="吊销" className="text-destructive" onClick={async()=>{if(!await askConfirm({title:"吊销这个日历订阅地址？",description:"地址立刻失效，已经订阅的日历客户端会拉不到内容。日程本身不受影响，需要时可以重新生成。",confirmText:"吊销地址",destructive:true}))return;try{await api(`/api/v1/calendar/feed-tokens/${f.id}`,{method:"DELETE"});toast.success("已吊销");await load()}catch(e){toast.error("吊销失败",(e as Error).message)}}}><Trash2Icon/></Button>
+    </div>)}
   </div>;
 }

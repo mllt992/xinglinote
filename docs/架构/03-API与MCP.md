@@ -127,6 +127,61 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 
 导入导出：`POST /api/v1/import`（job）、`GET /api/v1/export?notebookId=`（job + 下载 token）。
 
+### 2.6 日历与任务
+
+业务规则见 [设计 16](../设计/16-日历与任务.md)。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/workspaces/:id/calendar` | `from`、`to`（ISO）、`layers=task,event,note`；返回已展开重复实例 |
+| GET | `/api/v1/workspaces/:id/calendar/inbox` | 无 `due_at` 的任务 + 按来源笔记分组 |
+| POST | `/api/v1/workspaces/:id/calendar/items` | 建 task / event |
+| PATCH | `/api/v1/calendar/items/:id` | 改；带 `ifUnmodifiedSince` 做弱冲突校验，冲突回 409 + 最新对象 |
+| DELETE | `/api/v1/calendar/items/:id` | 软删（`trashed_at`），可撤销 |
+| POST | `/api/v1/calendar/items/:id/complete` | `{ done, occurrenceStart? }`；`source=note` 时回写笔记 `- [x]` |
+| POST | `/api/v1/calendar/items/:id/reschedule` | `{ startsAt, endsAt?, occurrenceStart?, scope: 'one'\|'following' }` |
+| GET/PUT | `/api/v1/calendar/items/:id/reminders` | 每条最多 5 个 |
+| POST | `/api/v1/workspaces/:id/calendar/quick-add` | `{ text, commit }`；`commit=false` 只回解析预览，确认后才写库 |
+| POST | `/api/v1/calendar/items/:id/restore` | 从回收站恢复 |
+| POST | `/api/v1/calendar/items/:id/detach` | 断链条目转成独立任务 |
+| GET | `/api/v1/workspaces/:id/today` | 今日日程 + 待办 + 逾期 + 今天改过的笔记 |
+| POST | `/api/v1/workspaces/:id/calendar/diary` | `{ date? }`；落到 slug 为 `diary` 的笔记本，同一天复用同一篇 |
+| GET/POST | `/api/v1/workspaces/:id/calendar/subscriptions` | 外部 ICS 只读订阅，每区上限 5；建时校验 SSRF 并立刻入队同步 |
+| PATCH/DELETE | `/api/v1/calendar/subscriptions/:sid` | 改名 / 启停；删订阅一并清掉它带进来的条目 |
+| POST | `/api/v1/calendar/subscriptions/:sid/sync` | 手动同步，10 次 / 10 分钟 |
+| GET/POST | `/api/v1/workspaces/:id/calendar/feed-tokens` | 导出订阅地址，`scope=mine\|workspace` |
+| POST | `/api/v1/calendar/feed-tokens/:fid/rotate` | 轮换，旧地址立即失效 |
+| DELETE | `/api/v1/calendar/feed-tokens/:fid` | 吊销 |
+| GET | `/calendar/feed/:token.ics` | **不在 `/api/v1` 下**，匿名可读，返回 `text/calendar` |
+
+导出内容只含标题、时间与回本实例的 `URL`，**不含 `DESCRIPTION`**，任务导成 `VEVENT`（标题带 `☐` / `☑`）而不是 `VTODO`。
+订阅抓取每一跳都重新做 SSRF 校验（私有网段一律拒），条件请求带 `If-None-Match`，连续失败 5 次自动停用并通知创建者。
+
+`CalendarItemDTO`：
+
+```json
+{
+  "id": "uuid",
+  "occurrenceStart": "2026-08-20T07:00:00Z",
+  "kind": "task",
+  "title": "交周报",
+  "allDay": false,
+  "startsAt": null, "endsAt": null, "dueAt": "2026-08-20T07:00:00Z",
+  "timezone": "Asia/Shanghai",
+  "status": "open",
+  "priority": 3,
+  "recurring": true,
+  "source": "note",
+  "sourceNote": { "id": "uuid", "title": "本周计划" },
+  "linkState": "linked",
+  "assignee": null,
+  "canEdit": true,
+  "updatedAt": "..."
+}
+```
+
+重复条目的写操作**必须带回 `occurrenceStart`**，服务端才知道改的是哪一次；缺失时按整个序列处理。
+
 ---
 
 ## 3. 关键 DTO
@@ -247,6 +302,39 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 ### move_note / add_tags / trash_note
 
 仅对应档位注册。`trash_note` 仅 `allow_delete`。
+
+---
+
+### list_tasks / list_events
+
+```
+list_tasks  { from?: string, to?: string, status?: 'open'|'done'|'all',
+              assignee?: 'me'|'any'|handle, include_inbox?: boolean, limit?: number }
+→ { items: [{ id, title, due_at, occurrence_start, status, priority, all_day,
+              recurring, source, link_state, source_note_id?, note_title?, url }] }
+
+list_events { from?: string, to?: string, limit?: number }
+→ { items: [{ id, title, starts_at, ends_at, all_day, recurring, url, ... }] }
+```
+
+窗口默认「今天起 14 天」（当地日历日 00:00 起），单次上限 200 条，最长 400 天。
+`list_tasks` 默认只给 `open`，并额外带上收件箱里没期限的任务（`include_inbox`，默认 true）——问「我要做什么」的人不会希望漏掉没排期的那些。
+重复条目按窗口展开，每个实例带 `occurrence_start`，写操作必须带回。
+来源笔记不可见的条目直接不返回（不是 403），且钥匙的笔记本范围、`require_ai_index`、私密笔记本开关全部继承自笔记本身的判定。
+
+### create_task / complete_task
+
+```
+create_task   { title: string, due_at?: string, all_day?: boolean,
+                priority?: 0|1|2|3, note?: string }
+→ { id, title, due_at, status, url }
+
+complete_task { id: string, occurrence_start?: string, done?: boolean }
+→ { id, status, note_written: boolean, detached: boolean, source_note_id? }
+```
+
+`create_task` 只能建 `source=mcp` 的独立任务，**不能写笔记正文**——否则一把只读钥匙能靠建任务绕道改正文。  
+`complete_task` 命中 `source=note` 的条目时会回写正文，因此需要钥匙具备写档位；块锚丢失则返回 `note_written: false` 并把条目标 `detached`，不报错。
 
 ---
 

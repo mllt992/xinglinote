@@ -21,7 +21,10 @@ export const env = {
   publicUrl: process.env.PUBLIC_URL ?? "http://127.0.0.1:12098",
   port: Number(process.env.API_PORT ?? 12099),
   databaseUrl: process.env.DATABASE_URL ?? "postgres://kb:kb@127.0.0.1:5432/knowledge",
-  dataDir: resolve(process.env.DATA_DIR ?? resolve(repoRoot, "data")),
-  webDist: resolve(process.env.WEB_DIST ?? resolve(repoRoot, "apps/web/dist")),
+  // 相对路径一律按仓库根解析，不按 cwd：api 的 cwd 是 apps/api、worker 的是 apps/worker，
+  // 按 cwd 解析会让两个进程各写各的 data，附件抽文本、回收站清盘、块锚回写全都对不上。
+  // 绝对路径（生产的 DATA_DIR=/data）不受影响，resolve 遇到绝对的尾段会直接采用它。
+  dataDir: resolve(repoRoot, process.env.DATA_DIR ?? "data"),
+  webDist: resolve(repoRoot, process.env.WEB_DIST ?? "apps/web/dist"),
   repoRoot,
 };

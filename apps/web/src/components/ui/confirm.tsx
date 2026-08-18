@@ -52,7 +52,7 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
   const resolver = React.useRef<((v: Settled) => void) | null>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
   /** Radix 关闭后会把焦点还给 <AlertDialog.Trigger>，而我们是代码里直接开的，没有 Trigger，
-   *  所以自己记下打开前的焦点，关闭时还回去（元素已被卸载就交给它自己的容器处理）。 */
+   *  所以自己记下打开前的焦点，关闭时还回去（元素已被卸载就放弃，别乱抢）。 */
   const opener = React.useRef<HTMLElement | null>(null);
 
   /**
@@ -67,17 +67,28 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
     r?.(v);
   }, []);
 
+  /**
+   * 从菜单项里开弹窗时，菜单项马上就会被卸载，关闭后没法还焦点。
+   * 这时往上找到这个菜单的触发按钮（Radix 用 aria-controls 关联），把焦点还给它。
+   */
+  const captureOpener = () => {
+    const active = document.activeElement as HTMLElement | null;
+    const menu = active?.closest('[role="menu"]') as HTMLElement | null;
+    const trigger = menu?.id ? document.querySelector<HTMLElement>(`[aria-controls="${CSS.escape(menu.id)}"]`) : null;
+    opener.current = trigger ?? active;
+  };
+
   const api = React.useMemo<Api>(() => ({
     confirm: o => new Promise<boolean>(resolve => {
       resolver.current = resolve as (v: Settled) => void;
-      opener.current = document.activeElement as HTMLElement | null;
+      captureOpener();
       setValue("");
       setPending({ kind: "confirm", options: o });
       setOpen(true);
     }),
     prompt: o => new Promise<string | null>(resolve => {
       resolver.current = resolve as (v: Settled) => void;
-      opener.current = document.activeElement as HTMLElement | null;
+      captureOpener();
       setValue(o.defaultValue ?? "");
       setPending({ kind: "prompt", options: o });
       setOpen(true);

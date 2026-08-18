@@ -8,3 +8,7 @@ data
 apps/web/dist
 apps/api/dist
 .pnpm-store
+
+# 本地 env 备份不进库（.env.bak 里有 APP_SECRET 与库密码明文）
+.env.*
+!.env.example
