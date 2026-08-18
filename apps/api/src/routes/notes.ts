@@ -1,10 +1,10 @@
 import { Hono } from "hono";
 import { and, asc, desc, eq, ilike, inArray, isNull, or } from "drizzle-orm";
 import { z } from "zod";
-import { canEditNote, canReadNote, type WsRole } from "@kb/core";
+import { canEditNote, canReadNote, recencyBoost, scoreNote, tokenize, type WsRole } from "@kb/core";
 import { fail, nextSortKey } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { auditLogs, folders, notebookMembers, notebooks, notes, noteVersions, users, workspaceMembers, workspaces } from "../db/schema.ts";
+import { attachments, auditLogs, folders, notebookMembers, notebooks, notes, noteVersions, users, workspaceMembers, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { writeNoteFile } from "../lib/files.ts";
 import { currentUser } from "../lib/session.ts";
@@ -40,13 +40,14 @@ knowledge.get("/workspaces", async (c) => {
   const list = await db.select().from(workspaces);
   return ok(c, {
     workspaces: list
-      .filter((w) => ids.includes(w.id) && !w.deletionScheduledAt)
+      .filter((w) => ids.includes(w.id))
       .map((w) => ({
         id: w.id,
         name: w.name,
         slug: w.slug,
         kind: w.kind,
         frozen: w.frozen,
+        deletionScheduledAt: w.deletionScheduledAt,
         role: mine.find((m) => m.workspaceId === w.id)?.role,
       })),
   });
@@ -226,6 +227,7 @@ knowledge.delete("/notebooks/:id", async (c) => {
   const { nb, ws } = await loadNotebook(c.req.param("id"));
   const role = await memberRole(ws.id, user.id);
   if (role !== "owner" && role !== "admin") throw fail("FORBIDDEN", "无权删除笔记本");
+  if (ws.frozen) throw fail("FORBIDDEN", "工作区已冻结，暂时只读");
   await trashNotebook(nb.id,user.id);
   return ok(c, {});
 });
@@ -292,22 +294,29 @@ knowledge.get("/search", async (c) => {
   const memberships = await db.select().from(workspaceMembers).where(eq(workspaceMembers.userId, user.id));
   const ids = workspaceId ? [workspaceId] : memberships.map(m => m.workspaceId);
   if (workspaceId && !memberships.some(m => m.workspaceId === workspaceId)) throw fail("FORBIDDEN", "不是工作区成员");
-  const terms = q.toLowerCase().split(/s+/).filter(Boolean);
+  const parts = tokenize(q);
   const scored = [];
   for (const id of ids) {
     const where = [eq(notes.workspaceId, id), isNull(notes.trashedAt)];
     if (notebookId) where.push(eq(notes.notebookId, notebookId));
     if (aiIndex === "1" || aiIndex === "0") where.push(eq(notes.aiIndex, aiIndex === "1"));
     const rows = await db.select().from(notes).where(and(...where));
+    // PDF 抽出来的文本也算正文，附件里的内容才搜得到（规格 06 的 4.3）
+    const pdfText = new Map<string, string>();
+    if (!titleOnly && rows.length) {
+      const files = await db.select({ noteId: attachments.noteId, text: attachments.extractedText }).from(attachments)
+        .where(and(eq(attachments.workspaceId, id), eq(attachments.extractStatus, "ok"), isNull(attachments.trashedAt)));
+      for (const f of files) if (f.text) pdfText.set(f.noteId, `${pdfText.get(f.noteId) ?? ""}\n${f.text}`);
+    }
     for (const n of rows) {
-      const title = n.title.toLowerCase(), body = titleOnly ? "" : n.bodyMd.toLowerCase();
-      const tags = ((n.tags as string[]) ?? []).map(t => t.toLowerCase());
-      if (tag && !tags.includes(tag.toLowerCase())) continue;
-      if (!terms.every(t => title.includes(t) || tags.some(x => x.includes(t)) || body.includes(t))) continue;
-      const age = (Date.now() - new Date(n.updatedAt).getTime()) / 86400000;
-      const score = terms.reduce((sum, t) => sum + (title.includes(t) ? 8 : 0) + (tags.some(x => x.includes(t)) ? 3 : 0) + (body.includes(t) ? 1 : 0), 0) + Math.pow(0.5, age / 90);
-      const at = body.indexOf(terms[0]);
-      scored.push({ note: n, score, snippet: at >= 0 ? n.bodyMd.slice(Math.max(0, at - 60), at + 180) : n.bodyMd.slice(0, 180) });
+      const tags = ((n.tags as string[]) ?? []);
+      if (tag && !tags.some(t => t.toLowerCase() === tag.toLowerCase())) continue;
+      const base = scoreNote(parts, { title: n.title, tags, body: titleOnly ? "" : n.bodyMd + (pdfText.get(n.id) ?? "") });
+      if (!base) continue;
+      const body = n.bodyMd.toLowerCase();
+      const needle = parts.map(p => p.raw).concat(parts.flatMap(p => p.grams)).find(t => body.includes(t)) ?? "";
+      const at = needle ? body.indexOf(needle) : -1;
+      scored.push({ note: n, score: base + recencyBoost(n.updatedAt), snippet: at >= 0 ? n.bodyMd.slice(Math.max(0, at - 60), at + 180) : n.bodyMd.slice(0, 180) });
     }
   }
   scored.sort((a, b) => b.score - a.score);

@@ -220,10 +220,21 @@ const statements = [
   `ALTER TABLE share_links ADD COLUMN IF NOT EXISTS show_backlinks boolean NOT NULL DEFAULT false`,
   `ALTER TABLE share_links ADD COLUMN IF NOT EXISTS heading_anchor text`,
   `ALTER TABLE posts ADD COLUMN IF NOT EXISTS edited_at timestamptz`,
+  `ALTER TABLE attachments ADD COLUMN IF NOT EXISTS extracted_text text`,
+  `ALTER TABLE attachments ADD COLUMN IF NOT EXISTS extract_status text NOT NULL DEFAULT 'none'`,
+  `CREATE TABLE IF NOT EXISTS note_favorites (user_id uuid NOT NULL REFERENCES users(id), note_id uuid NOT NULL REFERENCES notes(id), created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(user_id,note_id))`,
+  `CREATE TABLE IF NOT EXISTS note_visits (user_id uuid NOT NULL REFERENCES users(id), note_id uuid NOT NULL REFERENCES notes(id), seen_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(user_id,note_id))`,
+  `CREATE INDEX IF NOT EXISTS note_visits_recent ON note_visits (user_id, seen_at DESC)`,
   `ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS feed_public boolean NOT NULL DEFAULT false`,
   `ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS feed_workspace boolean NOT NULL DEFAULT false`,
   `ALTER TABLE mcp_tokens ALTER COLUMN daily_write_limit_bytes DROP NOT NULL`,
   `ALTER TABLE mcp_tokens ALTER COLUMN daily_write_limit_bytes DROP DEFAULT`,
+  `CREATE TABLE IF NOT EXISTS oauth_clients (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), client_id text NOT NULL UNIQUE, client_secret_hash text, client_name text NOT NULL, redirect_uris jsonb NOT NULL DEFAULT '[]', created_at timestamptz NOT NULL DEFAULT now())`,
+  `CREATE TABLE IF NOT EXISTS oauth_requests (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), client_id text NOT NULL, redirect_uri text NOT NULL, state text, scope text NOT NULL DEFAULT '', resource text, code_challenge text NOT NULL, user_id uuid REFERENCES users(id), policy jsonb, code_hash text UNIQUE, used_at timestamptz, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`,
+  `ALTER TABLE oauth_requests ADD COLUMN IF NOT EXISTS token_id uuid REFERENCES mcp_tokens(id)`,
+  `CREATE INDEX IF NOT EXISTS oauth_requests_expires_idx ON oauth_requests(expires_at)`,
+  `ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS client_id text`,
+  `ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'manual'`,
   `CREATE TABLE IF NOT EXISTS mcp_daily_usage (token_id uuid NOT NULL REFERENCES mcp_tokens(id), day text NOT NULL, write_bytes bigint NOT NULL DEFAULT 0, PRIMARY KEY(token_id,day))`,
   `CREATE TABLE IF NOT EXISTS audit_logs (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid, workspace_id uuid, actor_type text NOT NULL, actor_id uuid, action text NOT NULL, target_type text, target_id uuid, result text NOT NULL DEFAULT 'ok', details jsonb, created_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS usage_accounts (owner_type text NOT NULL, owner_id uuid NOT NULL, bytes bigint NOT NULL DEFAULT 0, PRIMARY KEY(owner_type,owner_id))`,
@@ -240,10 +251,98 @@ const statements = [
     manifest jsonb NOT NULL,
     installed_at timestamptz NOT NULL DEFAULT now()
   )`,
+  `ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS task_anchors boolean NOT NULL DEFAULT true`,
+  `CREATE TABLE IF NOT EXISTS calendar_items (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id uuid NOT NULL REFERENCES workspaces(id),
+    kind text NOT NULL DEFAULT 'task',
+    title text NOT NULL,
+    body_md text NOT NULL DEFAULT '',
+    all_day boolean NOT NULL DEFAULT false,
+    starts_at timestamptz, ends_at timestamptz, due_at timestamptz,
+    timezone text NOT NULL DEFAULT 'Asia/Shanghai',
+    status text NOT NULL DEFAULT 'open',
+    done_at timestamptz, done_by uuid,
+    priority integer NOT NULL DEFAULT 0,
+    color text,
+    rrule text, rrule_until timestamptz,
+    source text NOT NULL DEFAULT 'manual',
+    source_note_id uuid, source_anchor text, source_sub_id uuid,
+    link_state text NOT NULL DEFAULT 'linked',
+    visibility text NOT NULL DEFAULT 'workspace',
+    notebook_id uuid,
+    assignee_user_id uuid,
+    created_by uuid NOT NULL REFERENCES users(id),
+    updated_by uuid NOT NULL REFERENCES users(id),
+    trashed_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `ALTER TABLE calendar_items ADD COLUMN IF NOT EXISTS visibility text NOT NULL DEFAULT 'workspace'`,
+  `CREATE OR REPLACE FUNCTION kb_note_tasks_sync() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO background_jobs(type,payload) VALUES('sync_note_tasks',jsonb_build_object('noteId',NEW.id)); RETURN NEW; END $$`,
+  `DROP TRIGGER IF EXISTS notes_tasks_sync ON notes`,
+  `CREATE TRIGGER notes_tasks_sync AFTER INSERT OR UPDATE OF body_md ON notes FOR EACH ROW EXECUTE FUNCTION kb_note_tasks_sync()`,
+  `CREATE INDEX IF NOT EXISTS calendar_items_ws_start ON calendar_items (workspace_id, starts_at)`,
+  `CREATE INDEX IF NOT EXISTS calendar_items_ws_due ON calendar_items (workspace_id, due_at)`,
+  `CREATE INDEX IF NOT EXISTS calendar_items_note ON calendar_items (source_note_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS calendar_items_anchor ON calendar_items (source_note_id, source_anchor) WHERE source_anchor IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS calendar_overrides (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    item_id uuid NOT NULL REFERENCES calendar_items(id),
+    occurrence_start timestamptz NOT NULL,
+    action text NOT NULL,
+    new_start timestamptz, new_end timestamptz,
+    done_at timestamptz, done_by uuid,
+    UNIQUE (item_id, occurrence_start)
+  )`,
+  `CREATE TABLE IF NOT EXISTS calendar_reminders (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    item_id uuid NOT NULL REFERENCES calendar_items(id),
+    kind text NOT NULL DEFAULT 'relative',
+    offset_min integer NOT NULL DEFAULT -10,
+    absolute_at timestamptz,
+    channel text NOT NULL DEFAULT 'inapp',
+    status text NOT NULL DEFAULT 'pending',
+    fired_at timestamptz
+  )`,
+  `CREATE INDEX IF NOT EXISTS calendar_reminders_item ON calendar_reminders (item_id)`,
+  `CREATE TABLE IF NOT EXISTS calendar_subscriptions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id uuid NOT NULL REFERENCES workspaces(id),
+    name text NOT NULL, url text NOT NULL, color text,
+    enabled boolean NOT NULL DEFAULT true,
+    etag text, last_sync_at timestamptz, last_error text,
+    fail_count integer NOT NULL DEFAULT 0,
+    created_by uuid NOT NULL REFERENCES users(id),
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS calendar_feed_tokens (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id uuid NOT NULL REFERENCES workspaces(id),
+    user_id uuid NOT NULL REFERENCES users(id),
+    token text NOT NULL UNIQUE,
+    scope text NOT NULL DEFAULT 'mine',
+    status text NOT NULL DEFAULT 'active',
+    last_used_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
 ];
 
 async function main() {
-  for (const s of statements) await sql.unsafe(s);
+  // 语句是按功能一路追加的，不保证拓扑有序：新库上 ALTER 可能排在它的 CREATE 前面。
+  // 全部语句都幂等，所以失败的留到下一轮重试；某一轮一个都没成功才是真出错。
+  let todo = statements;
+  while (todo.length) {
+    const failed: Array<{ sql: string; error: unknown }> = [];
+    for (const s of todo) {
+      try { await sql.unsafe(s); } catch (error) { failed.push({ sql: s, error }); }
+    }
+    if (failed.length === todo.length) {
+      console.error(`还有 ${failed.length} 条语句无法执行，第一条：\n${failed[0]!.sql}`);
+      throw failed[0]!.error;
+    }
+    todo = failed.map((f) => f.sql);
+  }
   await seedBuiltin();
   console.log("schema ready");
   process.exit(0);

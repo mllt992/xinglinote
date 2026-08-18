@@ -129,6 +129,8 @@ export const notebooks = pgTable("notebooks", {
   sortKey: integer("sort_key").notNull().default(0),
   visibility: text("visibility").notNull().default("open"),
   defaultAiIndex: boolean("default_ai_index").notNull().default(true),
+  /** 允许把块锚 `^tk-xxxxxxxx` 写进正文任务行；关掉后退化为文本 hash 匹配（设计 16 §5.1）。 */
+  taskAnchors: boolean("task_anchors").notNull().default(true),
   createdBy: uuid("created_by").notNull().references(() => users.id),
   sitePublished: boolean("site_published").notNull().default(false),
   siteThemeId: text("site_theme_id"),
@@ -181,7 +183,7 @@ export const notes = pgTable("notes", {
 
 export const attachments = pgTable("attachments", {
   id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id), noteId: uuid("note_id").notNull().references(() => notes.id),
-  filename: text("filename").notNull(), storedName: text("stored_name").notNull(), mime: text("mime").notNull(), bytes: bigint("bytes", {mode:"number"}).notNull(), sha256: text("sha256").notNull(),
+  filename: text("filename").notNull(), storedName: text("stored_name").notNull(), mime: text("mime").notNull(), bytes: bigint("bytes", {mode:"number"}).notNull(), sha256: text("sha256").notNull(), extractedText: text("extracted_text"), extractStatus: text("extract_status").notNull().default("none"),
   createdBy: uuid("created_by").notNull().references(() => users.id), createdAt: timestamp("created_at", {withTimezone:true}).defaultNow().notNull(), trashedAt: timestamp("trashed_at", {withTimezone:true}),
 });
 
@@ -272,7 +274,7 @@ export const aiProviders = pgTable("ai_providers", {
 export const aiChunks=pgTable("ai_chunks",{id:uuid("id").defaultRandom().primaryKey(),noteId:uuid("note_id").notNull().references(()=>notes.id),workspaceId:uuid("workspace_id").notNull().references(()=>workspaces.id),notebookId:uuid("notebook_id").notNull().references(()=>notebooks.id),chunkIndex:integer("chunk_index").notNull(),content:text("content").notNull(),embedding:text("embedding"),createdAt:timestamp("created_at",{withTimezone:true}).defaultNow().notNull()});
 
 export const aiUsage = pgTable("ai_usage", { id: uuid("id").defaultRandom().primaryKey(), userId: uuid("user_id").notNull(), workspaceId: uuid("workspace_id").notNull(), action: text("action").notNull(), model: text("model"), inputTokens: integer("input_tokens").notNull().default(0), outputTokens: integer("output_tokens").notNull().default(0), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull() });
-export const mcpTokens = pgTable("mcp_tokens", { id: uuid("id").defaultRandom().primaryKey(), secretHash: text("secret_hash").notNull().unique(), name: text("name").notNull(), userId: uuid("user_id").notNull().references(() => users.id), workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id), notebookMode: text("notebook_mode").notNull().default("inherit"), notebookIds: jsonb("notebook_ids").notNull().default([]), rw: text("rw").notNull().default("read"), allowDelete: boolean("allow_delete").notNull().default(false), requireAiIndex: boolean("require_ai_index").notNull().default(true), allowPrivateNotebooks: boolean("allow_private_notebooks").notNull().default(false), feedPublic: boolean("feed_public").notNull().default(false), feedWorkspace: boolean("feed_workspace").notNull().default(false), dailyWriteLimitBytes: bigint("daily_write_limit_bytes",{mode:"number"}), expiresAt: timestamp("expires_at", {withTimezone:true}), status: text("status").notNull().default("active"), lastUsedAt: timestamp("last_used_at", {withTimezone:true}), createdAt: timestamp("created_at", {withTimezone:true}).defaultNow().notNull() });
+export const mcpTokens = pgTable("mcp_tokens", { id: uuid("id").defaultRandom().primaryKey(), secretHash: text("secret_hash").notNull().unique(), name: text("name").notNull(), userId: uuid("user_id").notNull().references(() => users.id), workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id), notebookMode: text("notebook_mode").notNull().default("inherit"), notebookIds: jsonb("notebook_ids").notNull().default([]), rw: text("rw").notNull().default("read"), allowDelete: boolean("allow_delete").notNull().default(false), requireAiIndex: boolean("require_ai_index").notNull().default(true), allowPrivateNotebooks: boolean("allow_private_notebooks").notNull().default(false), feedPublic: boolean("feed_public").notNull().default(false), feedWorkspace: boolean("feed_workspace").notNull().default(false), dailyWriteLimitBytes: bigint("daily_write_limit_bytes",{mode:"number"}), expiresAt: timestamp("expires_at", {withTimezone:true}), status: text("status").notNull().default("active"), lastUsedAt: timestamp("last_used_at", {withTimezone:true}), clientId: text("client_id"), source: text("source").notNull().default("manual"), createdAt: timestamp("created_at", {withTimezone:true}).defaultNow().notNull() });
 export const backupTargets=pgTable("backup_targets",{id:uuid("id").defaultRandom().primaryKey(),scope:text("scope").notNull().default("workspace"),workspaceId:uuid("workspace_id").references(()=>workspaces.id),type:text("type").notNull(),name:text("name").notNull(),endpoint:text("endpoint").notNull(),prefix:text("prefix").notNull().default("knowledge"),credentials:text("credentials").notNull(),encryptionKey:text("encryption_key"),encryptionFingerprint:text("encryption_fingerprint"),schedule:text("schedule").notNull().default("manual"),retainDaily:integer("retain_daily").notNull().default(7),retainWeekly:integer("retain_weekly").notNull().default(4),enabled:boolean("enabled").notNull().default(true),createdBy:uuid("created_by").notNull().references(()=>users.id),lastRunAt:timestamp("last_run_at",{withTimezone:true}),createdAt:timestamp("created_at",{withTimezone:true}).defaultNow().notNull()});
 export const backupRuns=pgTable("backup_runs",{id:uuid("id").defaultRandom().primaryKey(),targetId:uuid("target_id").notNull().references(()=>backupTargets.id),workspaceId:uuid("workspace_id").references(()=>workspaces.id),status:text("status").notNull().default("pending"),bytes:bigint("bytes",{mode:"number"}),checksumSha256:text("checksum_sha256"),remotePath:text("remote_path"),error:text("error"),manifest:jsonb("manifest"),startedAt:timestamp("started_at",{withTimezone:true}),finishedAt:timestamp("finished_at",{withTimezone:true}),createdAt:timestamp("created_at",{withTimezone:true}).defaultNow().notNull()});
 
@@ -282,8 +284,134 @@ export const mcpDailyUsage=pgTable("mcp_daily_usage",{tokenId:uuid("token_id").n
 
 export const auditLogs = pgTable("audit_logs", { id: uuid("id").defaultRandom().primaryKey(), userId: uuid("user_id"), workspaceId: uuid("workspace_id"), actorType: text("actor_type").notNull(), actorId: uuid("actor_id"), action: text("action").notNull(), targetType: text("target_type"), targetId: uuid("target_id"), result: text("result").notNull().default("ok"), details: jsonb("details"), createdAt: timestamp("created_at", {withTimezone:true}).defaultNow().notNull() });
 
+/** 日历：task 与 event 同表，理由见 设计/16-日历与任务 §2.1。重复实例不落库，查询时展开。 */
+export const calendarItems = pgTable("calendar_items", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id),
+  kind: text("kind").notNull().default("task"),
+  title: text("title").notNull(),
+  bodyMd: text("body_md").notNull().default(""),
+  allDay: boolean("all_day").notNull().default(false),
+  startsAt: timestamp("starts_at", { withTimezone: true }),
+  endsAt: timestamp("ends_at", { withTimezone: true }),
+  dueAt: timestamp("due_at", { withTimezone: true }),
+  timezone: text("timezone").notNull().default("Asia/Shanghai"),
+  status: text("status").notNull().default("open"),
+  doneAt: timestamp("done_at", { withTimezone: true }),
+  doneBy: uuid("done_by"),
+  priority: integer("priority").notNull().default(0),
+  color: text("color"),
+  rrule: text("rrule"),
+  rruleUntil: timestamp("rrule_until", { withTimezone: true }),
+  source: text("source").notNull().default("manual"),
+  sourceNoteId: uuid("source_note_id"),
+  sourceAnchor: text("source_anchor"),
+  sourceSubId: uuid("source_sub_id"),
+  linkState: text("link_state").notNull().default("linked"),
+  /** workspace：全体成员可见；private：仅创建者。source=note 的条目忽略此列，一律继承来源笔记。 */
+  visibility: text("visibility").notNull().default("workspace"),
+  notebookId: uuid("notebook_id"),
+  assigneeUserId: uuid("assignee_user_id"),
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  updatedBy: uuid("updated_by").notNull().references(() => users.id),
+  trashedAt: timestamp("trashed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+/** 重复项的单次例外。没有 override 的实例完全由 rrule 推导。 */
+export const calendarOverrides = pgTable("calendar_overrides", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  itemId: uuid("item_id").notNull().references(() => calendarItems.id),
+  occurrenceStart: timestamp("occurrence_start", { withTimezone: true }).notNull(),
+  action: text("action").notNull(),
+  newStart: timestamp("new_start", { withTimezone: true }),
+  newEnd: timestamp("new_end", { withTimezone: true }),
+  doneAt: timestamp("done_at", { withTimezone: true }),
+  doneBy: uuid("done_by"),
+});
+
+export const calendarReminders = pgTable("calendar_reminders", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  itemId: uuid("item_id").notNull().references(() => calendarItems.id),
+  kind: text("kind").notNull().default("relative"),
+  offsetMin: integer("offset_min").notNull().default(-10),
+  absoluteAt: timestamp("absolute_at", { withTimezone: true }),
+  channel: text("channel").notNull().default("inapp"),
+  status: text("status").notNull().default("pending"),
+  firedAt: timestamp("fired_at", { withTimezone: true }),
+});
+
+export const calendarSubscriptions = pgTable("calendar_subscriptions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id),
+  name: text("name").notNull(),
+  url: text("url").notNull(),
+  color: text("color"),
+  enabled: boolean("enabled").notNull().default(true),
+  etag: text("etag"),
+  lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
+  lastError: text("last_error"),
+  failCount: integer("fail_count").notNull().default(0),
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+/** 对外 ICS 订阅地址：与 share_links.token 同级别的泄露面，可吊销。 */
+export const calendarFeedTokens = pgTable("calendar_feed_tokens", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  token: text("token").notNull().unique(),
+  scope: text("scope").notNull().default("mine"),
+  status: text("status").notNull().default("active"),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const usageAccounts = pgTable("usage_accounts", {
   ownerType: text("owner_type").notNull(),
   ownerId: uuid("owner_id").notNull(),
   bytes: bigint("bytes", { mode: "number" }).notNull().default(0),
 }, (t) => [primaryKey({ columns: [t.ownerType, t.ownerId] })]);
+
+// —— MCP OAuth（RFC 7591 动态注册 + 授权码/PKCE）——
+export const oauthClients = pgTable("oauth_clients", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  clientId: text("client_id").notNull().unique(),
+  clientSecretHash: text("client_secret_hash"),
+  clientName: text("client_name").notNull(),
+  redirectUris: jsonb("redirect_uris").notNull().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const oauthRequests = pgTable("oauth_requests", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  clientId: text("client_id").notNull(),
+  redirectUri: text("redirect_uri").notNull(),
+  state: text("state"),
+  scope: text("scope").notNull().default(""),
+  resource: text("resource"),
+  codeChallenge: text("code_challenge").notNull(),
+  userId: uuid("user_id").references(() => users.id),
+  // 同意页勾定的权限；换 token 时才据此建 mcp_tokens 行，明文不落库
+  policy: jsonb("policy"),
+  codeHash: text("code_hash").unique(),
+  tokenId: uuid("token_id"),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+// 收藏与「最近打开」都是用户级的；note_visits 的 seen_at 顺带当在场心跳用（规格 03 的 3.5 / 3.7）
+export const noteFavorites = pgTable("note_favorites", {
+  userId: uuid("user_id").notNull().references(() => users.id),
+  noteId: uuid("note_id").notNull().references(() => notes.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [primaryKey({ columns: [t.userId, t.noteId] })]);
+
+export const noteVisits = pgTable("note_visits", {
+  userId: uuid("user_id").notNull().references(() => users.id),
+  noteId: uuid("note_id").notNull().references(() => notes.id),
+  seenAt: timestamp("seen_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [primaryKey({ columns: [t.userId, t.noteId] })]);

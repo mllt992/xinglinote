@@ -1,4 +1,4 @@
-import{useEffect,useState}from'react';import type{ReactNode}from'react';import{Archive,CloudUpload,Download,FileClock,FolderTree,Link2 as Link2Icon,Lock,Play,Plug,Plus,ShieldAlert,Snowflake,Trash2 as Trash2Icon,Upload}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{useConfirm,usePrompt}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
+import{useEffect,useState}from'react';import type{ReactNode}from'react';import{Archive,CloudUpload,Download,FileClock,FolderTree,Link2 as Link2Icon,Lock,Play,Plug,Plus,RotateCcw,ShieldAlert,Snowflake,Trash2 as Trash2Icon,Upload}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{useConfirm,usePrompt}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
 const box="rounded-xl border bg-background";
 function Field({title,children}:{title:string;children:ReactNode}){return <label className="grid gap-1.5"><span className="text-xs font-medium text-muted-foreground">{title}</span>{children}</label>;}
 function Hollow({icon,text}:{icon:ReactNode;text:string}){return <div className="py-12 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground">{icon}</span><p className="mt-3 text-xs text-muted-foreground">{text}</p></div>;}
@@ -102,14 +102,47 @@ export function TransferPanel({workspaceId,workspaceName}:{workspaceId:string;wo
   </div>;
 }
 
-/** 冻结：整个工作区转只读，用来暂停协作，不删数据。 */
-export function DangerPanel({workspaceId,frozen,onChanged}:{workspaceId:string;frozen:boolean;onChanged:()=>void}){
+/** 冻结：整个工作区转只读。注销：24 小时宽限后销毁，Owner 可撤销。 */
+export function DangerPanel({workspaceId,workspaceName,kind,role,frozen,deletionScheduledAt,onChanged}:{workspaceId:string;workspaceName:string;kind:string;role:string;frozen:boolean;deletionScheduledAt?:string|null;onChanged:()=>void}){
   const askConfirm=useConfirm();const toast=useToast();
   const[busy,setBusy]=useState(false);
-  return <div className={`${box} border-destructive/30 p-5`}>
-    <div className="flex items-center gap-4"><span className="grid size-10 place-items-center rounded-lg bg-destructive/10 text-destructive">{frozen?<Snowflake className="size-4"/>:<ShieldAlert className="size-4"/>}</span>
-      <div className="min-w-0 flex-1"><p className="text-sm font-medium">{frozen?"工作区已冻结":"冻结工作区"}</p><p className="text-xs text-muted-foreground">冻结后所有人只能读，写入、AI 写作与 MCP 写档都会被拒绝；随时可以解冻。</p></div>
-      <Button variant={frozen?"outline":"destructive"} disabled={busy} onClick={async()=>{if(!frozen&&!await askConfirm({title:"冻结这个工作区？",description:"冻结后所有成员都只能读：写入、AI 写作和 MCP 写档都会被拒绝。数据不会丢，随时可以解冻。",confirmText:"冻结",destructive:true}))return;setBusy(true);try{await api(`/api/v1/workspaces/${workspaceId}/freeze`,{method:"PATCH",body:JSON.stringify({frozen:!frozen})});toast.success(frozen?"已解冻，成员可以继续写入":"已冻结，所有成员暂时只能读");onChanged()}catch(e){toast.error(frozen?"解冻失败":"冻结失败",(e as Error).message)}finally{setBusy(false)}}}>{frozen?"解冻":"冻结"}</Button></div>
+  const pending=!!deletionScheduledAt;
+  const canClose=kind!=="personal"&&role==="owner";
+  async function scheduleDelete(){
+    if(!await askConfirm({title:`注销工作区《${workspaceName}》？`,description:"提交后工作区立即冻结：分享链接、MCP 钥匙和邀请会作废。24 小时内可以撤销；到期后笔记本、笔记、附件和成员关系会一起销毁，不可恢复。",confirmText:"继续注销",destructive:true}))return;
+    if(!await askConfirm({title:"再次确认注销",description:`请输入完整工作区名称「${workspaceName}」以确认。到期后无法从回收站找回。`,confirmText:"确认注销",destructive:true,requireText:workspaceName,requireTextLabel:"工作区名称"}))return;
+    setBusy(true);
+    try{
+      const d=await api<{scheduledAt:string}>(`/api/v1/workspaces/${workspaceId}`,{method:"DELETE",body:JSON.stringify({confirmName:workspaceName})});
+      toast.success("已申请注销",`将于 ${new Date(d.scheduledAt).toLocaleString()} 永久销毁，此前可以撤销。`);
+      onChanged();
+    }catch(e){toast.error("注销失败",(e as Error).message)}
+    finally{setBusy(false)}
+  }
+  async function cancelDelete(){
+    if(!await askConfirm({title:"撤销这次注销？",description:"工作区会解冻，成员可以继续写入。已经作废的分享链接、MCP 钥匙和邀请不会自动恢复。",confirmText:"撤销注销"}))return;
+    setBusy(true);
+    try{await api(`/api/v1/workspaces/${workspaceId}/cancel-deletion`,{method:"POST"});toast.success("已撤销注销","工作区已解冻。");onChanged()}
+    catch(e){toast.error("撤销失败",(e as Error).message)}
+    finally{setBusy(false)}
+  }
+  return <div className="space-y-3">
+    <div className={`${box} border-destructive/30 p-5`}>
+      <div className="flex items-center gap-4"><span className="grid size-10 place-items-center rounded-lg bg-destructive/10 text-destructive">{frozen?<Snowflake className="size-4"/>:<ShieldAlert className="size-4"/>}</span>
+        <div className="min-w-0 flex-1"><p className="text-sm font-medium">{frozen?"工作区已冻结":"冻结工作区"}</p><p className="text-xs text-muted-foreground">{pending?"注销宽限期内工作区保持冻结，撤销注销后才会解冻。":"冻结后所有人只能读，写入、AI 写作与 MCP 写档都会被拒绝；随时可以解冻。"}</p></div>
+        <Button variant={frozen?"outline":"destructive"} disabled={busy||pending} onClick={async()=>{if(!frozen&&!await askConfirm({title:"冻结这个工作区？",description:"冻结后所有成员都只能读：写入、AI 写作和 MCP 写档都会被拒绝。数据不会丢，随时可以解冻。",confirmText:"冻结",destructive:true}))return;setBusy(true);try{await api(`/api/v1/workspaces/${workspaceId}/freeze`,{method:"PATCH",body:JSON.stringify({frozen:!frozen})});toast.success(frozen?"已解冻，成员可以继续写入":"已冻结，所有成员暂时只能读");onChanged()}catch(e){toast.error(frozen?"解冻失败":"冻结失败",(e as Error).message)}finally{setBusy(false)}}}>{frozen?"解冻":"冻结"}</Button></div>
+    </div>
+    <div className={`${box} border-destructive/30 p-5`}>
+      <div className="flex items-center gap-4"><span className="grid size-10 place-items-center rounded-lg bg-destructive/10 text-destructive"><Trash2Icon className="size-4"/></span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">{pending?"工作区将注销":"注销工作区"}</p>
+          <p className="text-xs text-muted-foreground">{kind==="personal"?"个人工作区不能注销，只能清空里面的内容。":pending?`将于 ${new Date(deletionScheduledAt!).toLocaleString()} 永久销毁笔记本、笔记、附件和成员关系。`:"只有 Owner 可以注销。提交后有 24 小时宽限，到期不可恢复。"}</p>
+        </div>
+        {canClose&&(pending
+          ?<Button variant="outline" disabled={busy} onClick={()=>void cancelDelete()}><RotateCcw/>撤销注销</Button>
+          :<Button variant="destructive" disabled={busy||!workspaceName} onClick={()=>void scheduleDelete()}><Trash2Icon/>注销工作区</Button>)}
+      </div>
+    </div>
   </div>;
 }
 
