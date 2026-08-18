@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>现代墨白 · UI 预览</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      font-family: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #0a0a0a;
+      color: #f5f5f5;
+    }
+
+    .wrap { max-width: 1320px; margin: 0 auto; padding: 28px 20px 72px; }
+    h1 { font-size: 28px; letter-spacing: -0.04em; margin: 0 0 8px; font-weight: 650; }
+    .lead { color: #a3a3a3; font-size: 14px; line-height: 1.65; max-width: 720px; margin: 0 0 22px; }
+
+    .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+    .controls button {
+      border: 1px solid #262626; background: #141414; color: #d4d4d4;
+      border-radius: 999px; padding: 7px 12px; font-size: 13px; cursor: pointer;
+    }
+    .controls button.on { background: #fafafa; color: #0a0a0a; border-color: #fafafa; }
+
+    .stage {
+      --bg: #fafafa; --bg2: #f4f4f5; --bg3: #ececee;
+      --fg: #0a0a0a; --mu: #525252; --line: #e5e5e5;
+      --acc: #0a0a0a; --accfg: #fafafa; --soft: #ececee;
+      border-radius: 14px; overflow: hidden; min-height: 680px;
+      box-shadow: 0 30px 80px #00000088;
+      font-family: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--fg); background: var(--bg);
+    }
+    .stage.spark {
+      --acc: #2563eb; --accfg: #fff; --soft: #eff6ff;
+    }
+    .stage.dark {
+      --bg: #0a0a0a; --bg2: #141414; --bg3: #1a1a1a;
+      --fg: #f5f5f5; --mu: #a3a3a3; --line: #262626;
+      --acc: #f5f5f5; --accfg: #0a0a0a; --soft: #1f1f1f;
+    }
+    .stage.dark.spark { --acc: #60a5fa; --accfg: #0a0a0a; --soft: #172554; }
+
+    .view { display: none; height: 680px; }
+    .stage.show-app .app,
+    .stage.show-site .site,
+    .stage.show-feed .feed { display: flex; }
+
+    .top {
+      height: 48px; display: flex; align-items: center; gap: 18px;
+      padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--bg);
+    }
+    .logo {
+      font-weight: 700; letter-spacing: -0.05em; font-size: 15px;
+    }
+    .logo i { display: inline-block; width: 8px; height: 8px; background: var(--acc); margin-right: 8px; border-radius: 1px; }
+    .top a { color: var(--mu); text-decoration: none; font-size: 13px; }
+    .top a.on { color: var(--fg); font-weight: 600; }
+    .sp { flex: 1; }
+    .search {
+      width: 240px; height: 30px; border: 1px solid var(--line); border-radius: 8px;
+      display: flex; align-items: center; padding: 0 10px; color: var(--mu); font-size: 12px; background: var(--bg2);
+    }
+    .ava {
+      width: 26px; height: 26px; border-radius: 999px; background: var(--fg); color: var(--bg);
+      display: grid; place-items: center; font-size: 11px; font-weight: 700;
+    }
+
+    .cols { display: flex; flex: 1; min-height: 0; }
+    .nbs { width: 176px; background: var(--bg2); border-right: 1px solid var(--line); }
+    .tree { width: 228px; border-right: 1px solid var(--line); background: var(--bg); }
+    .ed { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .sec { padding: 16px 14px 8px; font-size: 11px; color: var(--mu); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+    .row {
+      height: 32px; display: flex; align-items: center; margin: 0 8px; padding: 0 10px;
+      border-radius: 8px; font-size: 13.5px;
+    }
+    .row.on { background: var(--acc); color: var(--accfg); font-weight: 600; }
+    .node { height: 30px; display: flex; align-items: center; padding: 0 14px; font-size: 13.5px; color: var(--fg); }
+    .node.on { background: var(--soft); color: var(--acc); font-weight: 600; border-radius: 8px; margin: 0 8px; padding-left: 10px; }
+    .fold { color: var(--mu); font-size: 12px; padding: 10px 16px 2px; }
+
+    .crumb { padding: 16px 28px 0; font-size: 12px; color: var(--mu); letter-spacing: 0.01em; }
+    .ttl { padding: 6px 28px 0; font-size: 30px; letter-spacing: -0.045em; font-weight: 650; line-height: 1.2; }
+    .meta { display: flex; gap: 8px; padding: 12px 28px 14px; }
+    .tag {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+      border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; color: var(--mu);
+    }
+    .tag.k { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+    .split { flex: 1; display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); min-height: 0; }
+    .src, .pv { padding: 18px 22px; overflow: auto; line-height: 1.7; }
+    .src { background: var(--bg2); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; color: var(--mu); white-space: pre-wrap; }
+    .pv { font-size: 15px; }
+    .pv h2 { font-size: 16px; letter-spacing: -0.03em; margin: 0 0 8px; }
+    .pv p { margin: 0 0 10px; }
+    .lk { color: var(--acc); font-weight: 600; box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--acc) 55%, transparent); }
+    .bad { color: var(--mu); box-shadow: inset 0 -1px dashed var(--mu); }
+    .bar {
+      height: 30px; border-top: 1px solid var(--line); display: flex; align-items: center;
+      padding: 0 14px; font-size: 11px; color: var(--mu); gap: 12px;
+    }
+    .dot { width: 6px; height: 6px; border-radius: 99px; background: var(--fg); }
+
+    .site-side { width: 250px; border-right: 1px solid var(--line); background: var(--bg2); padding: 28px 16px; }
+    .site-side h3 { margin: 0 0 18px; letter-spacing: -0.04em; font-size: 18px; }
+    .site-art { flex: 1; padding: 48px 56px; max-width: 760px; overflow: auto; }
+    .site-art h1 { font-size: 40px; letter-spacing: -0.05em; margin: 0 0 10px; }
+    .site-art .by { color: var(--mu); font-size: 13px; margin-bottom: 28px; }
+    .site-art p { font-size: 16px; line-height: 1.8; margin: 0 0 16px; }
+
+    .feed { flex-direction: column; }
+    .box {
+      width: min(640px, 92%); margin: 20px auto 0; border: 1px solid var(--line);
+      border-radius: 12px; padding: 14px 16px; color: var(--mu);
+    }
+    .post { width: min(640px, 92%); margin: 0 auto; padding: 18px 8px; border-bottom: 1px solid var(--line); }
+    .post b { font-size: 13px; }
+    .post .t { color: var(--mu); font-weight: 400; }
+    .post p { margin: 8px 0 0; font-size: 15px; line-height: 1.7; }
+
+    .note { margin-top: 18px; color: #737373; font-size: 13px; line-height: 1.6; }
+    .note code { background: #171717; color: #e5e5e5; padding: 1px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>现代墨白</h1>
+    <p class="lead">
+      按你的反馈新做的一套：黑、白、灰打底，靠对比、字重和留白出活力，不铺颜色。
+      强调色默认就是黑（选中条、主按钮、链接）。若觉得太素，可开「一线蓝」——只涂选中项和链接，面积很小。
+    </p>
+
+    <div class="controls">
+      <button class="on" data-k="view" data-v="app">三栏笔记</button>
+      <button data-k="view" data-v="site">文档站</button>
+      <button data-k="view" data-v="feed">广场</button>
+      <button class="on" data-k="tone" data-v="light">浅色预览</button>
+      <button data-k="tone" data-v="dark">深色预览</button>
+      <button class="on" data-k="spark" data-v="off">强调 = 黑</button>
+      <button data-k="spark" data-v="on">强调 = 一线蓝</button>
+    </div>
+
+    <div class="stage show-app" id="stage">
+      <div class="app view">
+        <div style="display:flex;flex-direction:column;width:100%">
+          <div class="top">
+            <div class="logo"><i></i>Knowledge</div>
+            <a>家庭</a><a class="on">工作</a><a>广场</a>
+            <div class="sp"></div>
+            <div class="search">搜索笔记 ⌘K</div>
+            <div class="ava">张</div>
+          </div>
+          <div class="cols">
+            <div class="nbs">
+              <div class="sec">Notebooks</div>
+              <div class="row on">工作</div>
+              <div class="row">项目 A</div>
+              <div class="row">收件箱</div>
+            </div>
+            <div class="tree">
+              <div class="sec">工作</div>
+              <div class="fold">会议</div>
+              <div class="node on">鉴权怎么设计</div>
+              <div class="node">MCP 钥匙</div>
+              <div class="fold">灵感</div>
+              <div class="node">本周闪念</div>
+            </div>
+            <div class="ed">
+              <div class="crumb">工作 / 会议 / 鉴权怎么设计</div>
+              <div class="ttl">鉴权怎么设计</div>
+              <div class="meta">
+                <span class="tag k">AI 可读</span>
+                <span class="tag">未发布</span>
+                <span class="tag">2 条分享</span>
+              </div>
+              <div class="split">
+                <div class="src">## 原则
+
+钥匙绑定用户 + 一个工作区。
+不能大于本人的 ACL。
+
+见 [[MCP 钥匙]] 与 [[家庭账本]]。</div>
+                <div class="pv">
+                  <h2>原则</h2>
+                  <p>钥匙绑定用户 + 一个工作区。不能大于本人的 ACL。</p>
+                  <p>见 <span class="lk">MCP 钥匙</span> 与 <span class="bad">家庭账本</span>。</p>
+                </div>
+              </div>
+              <div class="bar"><span class="dot"></span> 已保存 · v12 · 张三刚改过</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="site view">
+        <div class="site-side">
+          <h3>家庭 Wiki</h3>
+          <div class="node on">家常菜</div>
+          <div class="node">Wi-Fi</div>
+          <div class="node">开学清单</div>
+        </div>
+        <article class="site-art">
+          <h1>红烧肉</h1>
+          <div class="by">家庭 Wiki · 可评论 · 可纠错</div>
+          <p>五花肉冷水下锅焯去血沫。糖小火炒到琥珀色，下肉翻匀，加酱油葱姜，小火四十分钟。</p>
+          <p>口感以软糯为准。相关：<span class="lk">周末菜单</span>。</p>
+        </article>
+      </div>
+
+      <div class="feed view">
+        <div class="top">
+          <div class="logo"><i></i>Knowledge</div>
+          <a class="on">广场</a><a>我的库</a>
+          <div class="sp"></div>
+          <div class="ava">张</div>
+        </div>
+        <div class="box">分享一条短想法…</div>
+        <div class="post">
+          <b>李四</b> <span class="t">@lisi · 12 分钟</span>
+          <p>把昨天的会议闪念转正到「工作 / 灵感」了。广场就该这样用：先扔出来，再收回库里。</p>
+        </div>
+        <div class="post">
+          <b>张三</b> <span class="t">@zhang · 1 小时</span>
+          <p>文档站是实时投影：改完笔记，公开页下一刷新就是新的。</p>
+        </div>
+      </div>
+    </div>
+
+    <p class="note">
+      文件：<code>docs/设计/ui-preview.html</code><br />
+      看完直接回：<b>就用这套</b> / <b>要一线蓝</b> / <b>再改哪里</b>（比如再锐利一点、再松一点、圆角再小）。
+    </p>
+  </div>
+  <script>
+    const stage = document.getElementById("stage");
+    const state = { view: "app", tone: "light", spark: "off" };
+    function paint() {
+      stage.className = "stage show-" + state.view
+        + (state.tone === "dark" ? " dark" : "")
+        + (state.spark === "on" ? " spark" : "");
+    }
+    document.querySelectorAll(".controls button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const k = btn.dataset.k, v = btn.dataset.v;
+        state[k] = v;
+        document.querySelectorAll(`.controls button[data-k="${k}"]`).forEach((b) => b.classList.toggle("on", b === btn));
+        paint();
+      });
+    });
+  </script>
+</body>
+</html>

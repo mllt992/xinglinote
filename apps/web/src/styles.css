@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent-ui);
+  --color-accent-foreground: var(--foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border-ui);
+  --color-input: var(--border-ui);
+  --color-ring: var(--primary);
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-mono);
+  --radius-sm: calc(var(--radius-ui) - 4px);
+  --radius-md: calc(var(--radius-ui) - 2px);
+  --radius-lg: var(--radius-ui);
+  --radius-xl: calc(var(--radius-ui) + 4px);
+}
+
+:root {
+  --bg: #fafafa; --bg-subtle: #f5f5f5; --bg-muted: #eeeeef; --fg: #111111;
+  --fg-muted: #6b6b6b; --border: #e4e4e7; --accent: #111111; --accent-fg: #ffffff;
+  --good: #15803d; --danger: #dc2626; --warning: #a16207; --radius: 10px;
+  --font-ui: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "SFMono-Regular", "Cascadia Code", Consolas, monospace;
+  --font-title: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --background: var(--bg); --foreground: var(--fg); --card: var(--bg); --popover: var(--bg);
+  --primary: var(--accent); --primary-foreground: var(--accent-fg); --secondary: var(--bg-muted);
+  --muted: var(--bg-subtle); --muted-foreground: var(--fg-muted); --accent-ui: var(--accent-soft, var(--bg-muted));
+  --destructive: var(--danger); --border-ui: var(--border); --radius-ui: var(--radius);
+}
+
+* { border-color: var(--border-ui); }
+html, body, #root { height: 100%; }
+body { margin: 0; background: var(--background); color: var(--foreground); font-family: var(--font-ui); text-rendering: optimizeLegibility; }
+button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
+::selection { background: var(--accent-soft, #ddd); }
+
+.app-grid { grid-template-columns: 224px 288px minmax(0, 1fr); }
+@media (max-width: 1080px) { .app-grid { grid-template-columns: 200px 250px minmax(0, 1fr); } }
+@media (max-width: 820px) { .app-grid { grid-template-columns: 72px 240px minmax(0, 1fr); } .workspace-label, .sidebar-copy { display: none; } }
+@media (max-width: 640px) { .app-grid { grid-template-columns: 1fr; } .notebook-panel, .tree-panel { display: none; } }
+
+.markdown { color: var(--foreground); font-size: 15px; line-height: 1.8; }
+.markdown > *:first-child { margin-top: 0; }
+.markdown h1,.markdown h2,.markdown h3 { margin: 1.5em 0 .6em; font-family: var(--font-title); font-weight: 700; letter-spacing: -.035em; line-height: 1.25; }
+.markdown h1 { font-size: 1.85em; } .markdown h2 { font-size: 1.45em; } .markdown h3 { font-size: 1.18em; }
+.markdown p,.markdown ul,.markdown ol { margin: 0 0 1em; }
+.markdown ul,.markdown ol { padding-left: 1.5em; }
+.markdown a { color: var(--primary); text-decoration: underline; text-underline-offset: 3px; }
+.markdown code { border-radius: 5px; background: var(--muted); padding: .15em .38em; font: .88em var(--font-mono); }
+.markdown pre { overflow: auto; border: 1px solid var(--border-ui); border-radius: 10px; background: var(--muted); padding: 1rem; }
+.markdown pre code { padding: 0; background: transparent; }
+.markdown blockquote { margin: 1em 0; border-left: 3px solid var(--primary); padding-left: 1em; color: var(--muted-foreground); }
+.markdown table { width: 100%; border-collapse: collapse; } .markdown th,.markdown td { border: 1px solid var(--border-ui); padding: .5em .7em; text-align: left; }
+.markdown .wiki { cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--primary) 50%, transparent); color: var(--primary); font-weight: 600; }
+.markdown .wiki.embed { display: inline-block; border: 0; border-radius: 6px; background: var(--accent-ui); padding: .15em .45em; }
+
+.editor-textarea { tab-size: 2; caret-color: var(--primary); }
+.editor-textarea::placeholder { color: var(--muted-foreground); }

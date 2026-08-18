@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="310" height="72" viewBox="0 0 310 72" role="img" aria-labelledby="title desc">
+  <title id="title">星璃笔记 Xingli</title><desc id="desc">星璃笔记横版品牌标志</desc>
+  <rect x="4" y="4" width="64" height="64" rx="15" fill="#111111"/>
+  <path d="M36 14 42 30 58 36 42 42 36 58 30 42 14 36 30 30Z" fill="#ffffff"/>
+  <path d="M36 14V36H14L30 30Z" fill="#d4d4d8"/>
+  <path d="M58 36H36V58L42 42Z" fill="#a1a1aa"/>
+  <path d="M36 36 42 30 58 36 42 42Z" fill="#f4f4f5"/>
+  <g fill="#111111" font-family="Inter,'PingFang SC','Microsoft YaHei',sans-serif"><text x="88" y="34" font-size="25" font-weight="700" letter-spacing="-.8">星璃笔记</text><text x="89" y="55" font-size="13" font-weight="600" letter-spacing="2.4" fill="#6b6b6b">XINGLI NOTES</text></g>
+</svg>

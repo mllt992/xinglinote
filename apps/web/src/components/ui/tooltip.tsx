@@ -1,0 +1,3 @@
+import * as TooltipPrimitive from "@radix-ui/react-tooltip";
+export const TooltipProvider = TooltipPrimitive.Provider;
+export function Tooltip({ children, content }: { children: React.ReactNode; content: React.ReactNode }) { return <TooltipPrimitive.Root><TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger><TooltipPrimitive.Portal><TooltipPrimitive.Content sideOffset={6} className="z-50 rounded-md bg-foreground px-2.5 py-1.5 text-xs text-background shadow-md">{content}<TooltipPrimitive.Arrow className="fill-foreground" /></TooltipPrimitive.Content></TooltipPrimitive.Portal></TooltipPrimitive.Root>; }

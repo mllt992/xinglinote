@@ -1,0 +1,64 @@
+import { Hono } from "hono";
+import { count, desc, eq } from "drizzle-orm";
+import { z } from "zod";
+import { fail } from "@kb/shared";
+import { db } from "../db/client.ts";
+import { instanceSettings, mcpTokens, registrationCodes, sessions, users, workspaceMembers, workspaces } from "../db/schema.ts";
+import { ok } from "../http.ts";
+import { currentUser } from "../lib/session.ts";
+import { registrationCode, tokenHash } from "../lib/tokens.ts";
+import { seal } from "../lib/secrets.ts";
+
+export const adminRoutes = new Hono();
+async function admin(c: Parameters<typeof currentUser>[0]) {
+  const u = await currentUser(c);
+  if (!u) throw fail("UNAUTHENTICATED", "未登录");
+  if (u.roleInstance !== "admin") throw fail("FORBIDDEN", "仅实例管理员可操作");
+  return u;
+}
+
+adminRoutes.get("/admin/overview", async c => {
+  await admin(c);
+  const [{ value: userCount }] = await db.select({ value: count() }).from(users);
+  const [{ value: workspaceCount }] = await db.select({ value: count() }).from(workspaces);
+  const [settings] = await db.select().from(instanceSettings);
+  return ok(c, { userCount, workspaceCount, settings:settings?{...settings,smtpPassword:settings.smtpPassword?"••••••••":null}:settings });
+});
+adminRoutes.patch("/admin/settings", async c => {
+  await admin(c);
+  const body = z.object({ allowOpenRegistration: z.boolean().optional(), allowCodeRegistration: z.boolean().optional(), requireEmailVerification: z.boolean().optional(), allowUserCreateWorkspace: z.boolean().optional(), squareEnabled: z.boolean().optional(), aiEnabled: z.boolean().optional(), defaultUserStorageBytes: z.number().int().min(1048576).max(1099511627776).optional(), smtpHost:z.string().nullable().optional(),smtpPort:z.number().int().min(1).max(65535).nullable().optional(),smtpUser:z.string().nullable().optional(),smtpPassword:z.string().nullable().optional(),smtpFrom:z.string().nullable().optional(),smtpSecure:z.boolean().optional() }).parse(await c.req.json());
+  const values={...body,smtpPassword:body.smtpPassword?seal(body.smtpPassword):body.smtpPassword,updatedAt:new Date()};
+  const [saved] = await db.update(instanceSettings).set(values).where(eq(instanceSettings.id, 1)).returning();
+  return ok(c, saved);
+});
+adminRoutes.get("/admin/users", async c => {
+  await admin(c);
+  const rows = await db.select().from(users).orderBy(desc(users.createdAt));
+  return ok(c, { users: rows.map(({ passwordHash: _, ...u }) => u) });
+});
+adminRoutes.patch("/admin/users/:id", async c => {
+  const actor = await admin(c); const id = c.req.param("id");
+  const [target] = await db.select().from(users).where(eq(users.id, id)); if (!target) throw fail("NOT_FOUND", "用户不存在");
+  const body = z.object({ status: z.enum(["active", "banned"]).optional(), roleInstance: z.enum(["admin", "user"]).optional(), storageQuotaBytes: z.number().int().min(1048576).max(1099511627776).nullable().optional() }).parse(await c.req.json());
+  if (target.id === actor.id && (body.status === "banned" || body.roleInstance === "user")) throw fail("FORBIDDEN", "不能停用或降级当前管理员账号");
+  if (target.roleInstance === "admin" && (body.roleInstance === "user" || body.status === "banned")) {
+    const admins = (await db.select().from(users).where(eq(users.roleInstance, "admin"))).filter(u => u.status === "active");
+    if (admins.length <= 1) throw fail("FORBIDDEN", "实例必须至少保留一个有效管理员");
+  }
+  if(body.status==="banned"){const owned=await db.select().from(workspaces).where(eq(workspaces.ownerId,id));const activeTeam=owned.filter(w=>w.kind!=="personal"&&!w.frozen);if(activeTeam.length)throw fail("VALIDATION","该用户仍是未冻结团队工作区的 Owner，请先转让所有权或冻结工作区");}
+  const [saved] = await db.update(users).set({ ...body, updatedAt: new Date() }).where(eq(users.id, id)).returning();
+  if (body.status === "banned") await db.transaction(async tx=>{await tx.delete(sessions).where(eq(sessions.userId,id));await tx.update(mcpTokens).set({status:"revoked"}).where(eq(mcpTokens.userId,id));});
+  const { passwordHash: _, ...safe } = saved; return ok(c, safe);
+});
+adminRoutes.post("/admin/registration-codes", async c => {
+  const actor = await admin(c);
+  const body = z.object({ quantity: z.number().int().min(1).max(200), maxUses: z.number().int().min(1).max(1000).default(1), expiresInDays: z.number().int().min(1).max(3650).nullable().optional(), note: z.string().max(200).optional(), bindWorkspaceId: z.string().uuid().nullable().optional(), bindRole: z.enum(["admin", "editor", "viewer"]).nullable().optional(), skipEmailVerification: z.boolean().default(false) }).parse(await c.req.json());
+  const plain = Array.from({ length: body.quantity }, registrationCode);
+  await db.insert(registrationCodes).values(plain.map(code => ({ codeHash: tokenHash(code), codePrefix: code.slice(0, 9), maxUses: body.maxUses, expiresAt: body.expiresInDays ? new Date(Date.now() + body.expiresInDays * 86400000) : null, note: body.note, bindWorkspaceId: body.bindWorkspaceId, bindRole: body.bindRole, skipEmailVerification: body.skipEmailVerification, createdBy: actor.id })));
+  return ok(c, { codes: plain }, 201);
+});
+adminRoutes.get("/admin/registration-codes", async c => {
+  await admin(c); const rows = await db.select().from(registrationCodes).orderBy(desc(registrationCodes.createdAt));
+  return ok(c, { codes: rows.map(r => ({ id: r.id, prefix: r.codePrefix, maxUses: r.maxUses, usedCount: r.usedCount, expiresAt: r.expiresAt, note: r.note, bindWorkspaceId: r.bindWorkspaceId, bindRole: r.bindRole, skipEmailVerification: r.skipEmailVerification, status: r.status, createdAt: r.createdAt })) });
+});
+adminRoutes.delete("/admin/registration-codes/:id", async c => { await admin(c); await db.update(registrationCodes).set({ status: "revoked" }).where(eq(registrationCodes.id, c.req.param("id"))); return ok(c, {}); });

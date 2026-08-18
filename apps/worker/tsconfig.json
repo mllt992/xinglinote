@@ -1,0 +1,1 @@
+{"extends":"../../tsconfig.base.json","compilerOptions":{"noEmit":true,"types":["node"]},"include":["src/**/*.ts","../api/src/db/**/*.ts","../api/src/env.ts"]}

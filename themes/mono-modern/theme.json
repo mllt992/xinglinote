@@ -1,0 +1,43 @@
+{
+  "id": "mono-modern",
+  "name": "现代墨白",
+  "version": "1.0.0",
+  "author": "official",
+  "description": "黑白灰、现代、有活力、不花哨。出厂默认。",
+  "modes": ["light", "dark"],
+  "navActiveStyle": "solid",
+  "tokens": {
+    "light": {
+      "bg": "#FAFAFA",
+      "bg-subtle": "#F4F4F5",
+      "bg-muted": "#ECECEE",
+      "fg": "#0A0A0A",
+      "fg-muted": "#525252",
+      "border": "#E5E5E5",
+      "accent": "#0A0A0A",
+      "good": "#15803D",
+      "danger": "#B91C1C",
+      "warning": "#A16207",
+      "radius": "8px",
+      "font-ui": "Inter, \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "font-mono": "ui-monospace, \"Cascadia Mono\", Consolas, monospace",
+      "font-title": "Inter, \"PingFang SC\", \"Microsoft YaHei\", sans-serif"
+    },
+    "dark": {
+      "bg": "#0A0A0A",
+      "bg-subtle": "#141414",
+      "bg-muted": "#1A1A1A",
+      "fg": "#F5F5F5",
+      "fg-muted": "#A3A3A3",
+      "border": "#262626",
+      "accent": "#F5F5F5",
+      "good": "#4ADE80",
+      "danger": "#F87171",
+      "warning": "#FBBF24",
+      "radius": "8px",
+      "font-ui": "Inter, \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "font-mono": "ui-monospace, \"Cascadia Mono\", Consolas, monospace",
+      "font-title": "Inter, \"PingFang SC\", \"Microsoft YaHei\", sans-serif"
+    }
+  }
+}

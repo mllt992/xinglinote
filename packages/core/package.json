@@ -1,0 +1,20 @@
+{
+  "name": "@kb/core",
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "tsx --test src/**/*.test.ts"
+  },
+  "dependencies": {
+    "@kb/shared": "workspace:*",
+    "argon2": "^0.41.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

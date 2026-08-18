@@ -1,0 +1,19 @@
+{
+  "name": "knowledge",
+  "private": true,
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @kb/api --filter @kb/web --filter @kb/worker dev",
+    "dev:api": "pnpm --filter @kb/api dev",
+    "dev:web": "pnpm --filter @kb/web dev",
+    "db:up": "docker compose up -d db",
+    "db:push": "pnpm --filter @kb/api db:push",
+    "test": "pnpm --filter @kb/core test",
+    "build": "pnpm -r build",
+    "typecheck": "tsc --noEmit -p packages/shared/tsconfig.json && tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p apps/api/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.62.1",
+    "typescript": "^5.9.3"
+  }
+}
