@@ -44,7 +44,8 @@ function useFeedDigest(posts: FeedPost[]) {
   return { authors, cited };
 }
 
-const rail = "space-y-4 lg:sticky lg:top-[4.5rem]";
+/** 右栏跟着滚：main 是滚动容器，顶栏在容器外面，所以贴顶只留一点呼吸位就够。 */
+const rail = "space-y-4 lg:sticky lg:top-4";
 
 /** 广场右栏。 */
 export function SquareRail({ posts, me, homeWsId, onOpenNote, onNav }: { posts: FeedPost[]; me: Me | null | undefined; homeWsId?: string; onOpenNote: (workspaceId: string, noteId: string) => void; onNav: (to: string) => void }) {
@@ -82,12 +83,12 @@ export function CircleRail({ wsId, wsName, wsKind, canInvite, posts, squareEnabl
   const counted = new Map(authors.map(a => [a.handle, a.count]));
   const shown = (members ?? []).slice(0, 8);
   return <div className={rail}>
-    <RailCard title={`圈子成员${members ? ` · ${members.length}` : ""}`} action={canInvite ? <Button variant="ghost" size="sm" onClick={() => onNav(`/w/${wsId}/members`)}><UserPlus />邀请</Button> : undefined}>
+    <RailCard title={`圈子成员${members ? ` · ${members.length}` : ""}`} action={canInvite ? <Button variant="ghost" size="sm" onClick={() => onNav(`/w/${wsId}/settings?tab=members`)}><UserPlus />邀请</Button> : undefined}>
       {wsKind === "personal"
         ? <p className="text-xs leading-5 text-muted-foreground">这是个人工作区，圈子里只有你自己——当私密碎片本用正好。想有人一起发，新建一个协作工作区再把人拉进来。</p>
         : members === null ? <p className="text-xs text-muted-foreground">加载中…</p>
         : <><ul className="space-y-1">{shown.map(m => <li key={m.userId}><PersonRow name={m.displayName} handle={m.handle} right={counted.get(m.handle) ? `${counted.get(m.handle)} 条` : <Badge>{m.role}</Badge>} /></li>)}</ul>
-          {members.length > shown.length && <button className="mt-2 text-xs text-muted-foreground hover:underline" onClick={() => onNav(`/w/${wsId}/members`)}>还有 {members.length - shown.length} 位，去成员管理看全部</button>}</>}
+          {members.length > shown.length && <button className="mt-2 text-xs text-muted-foreground hover:underline" onClick={() => onNav(`/w/${wsId}/settings?tab=members`)}>还有 {members.length - shown.length} 位，去设置里看全部</button>}</>}
     </RailCard>
     {cited.length > 0 && <RailCard title="动态里提到的笔记">
       <ul className="space-y-1">{cited.map(n => <li key={n.id}><NoteRow title={n.title} onOpen={() => onOpenNote(n.workspaceId, n.id)} /></li>)}</ul>

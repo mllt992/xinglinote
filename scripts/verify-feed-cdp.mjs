@@ -23,6 +23,10 @@ result.headerHasCircle = await click(`[...document.querySelectorAll('header butt
 result.circleRouted = (await ex('location.pathname')).endsWith('/feed');
 const feedPage = await ex('document.body.innerText');
 result.feedPageRenders = feedPage.includes('圈子动态') && (feedPage.includes('发布') || feedPage.includes('还没有动态'));
+// 圈子必须还待在系统里：顶栏留着工作区切换器和三处导航，不再是一个只剩「返回工作区」的孤岛
+result.circleKeepsChrome = await ex(`!!document.querySelector('nav[aria-label="主导航"]') && !!document.querySelector('.workspace-label') && !document.body.innerText.includes('返回工作区')`);
+result.circleNavMarksSelf = await ex(`[...document.querySelectorAll('nav[aria-label="主导航"] button')].some(b=>b.textContent.trim()==='圈子'&&b.getAttribute('aria-current')==='page')`);
+result.circleRailRenders = feedPage.includes('圈子成员') && feedPage.includes('关于圈子');
 
 // 发一条，看菜单里有转正与公开到广场
 const posted = await ex(`(async()=>{const r=await fetch('/api/v1/posts',{method:'POST',headers:{'content-type':'application/json','X-Requested-With':'fetch'},body:JSON.stringify({body:'界面验收用的圈子动态',visibility:'workspace',workspaceId:'${wsId}'})});return (await r.json()).data.id})()`);
@@ -33,6 +37,12 @@ const menu = await ex(`document.querySelector('[role=menu]')?.innerText||''`);
 result.menuHasPromote = menu.includes('转正为笔记');
 result.menuHasPublishToSquare = menu.includes('公开到广场');
 await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' });
+
+// 广场：同一条顶栏，能从这里点回笔记
+await go('http://127.0.0.1:12098/');
+const square = await ex('document.body.innerText');
+result.squareRailRenders = square.includes('关于广场');
+result.squareNavBackToNotes = await ex(`[...document.querySelectorAll('nav[aria-label="主导航"] button')].some(b=>b.textContent.trim()==='笔记')`);
 
 // 公开主页
 await go(`http://127.0.0.1:12098/u/${handle}`);

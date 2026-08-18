@@ -75,7 +75,7 @@ export function AuditPanel({workspaceId}:{workspaceId:string}){
 }
 
 /** 明文导出 / 导入：给「我想自己拿走数据」用；加密备份走上面的备份目标。 */
-export function TransferPanel({workspaceId,workspaceName}:{workspaceId:string;workspaceName:string}){
+export function TransferPanel({workspaceId,workspaceName,canManage=true}:{workspaceId:string;workspaceName:string;canManage?:boolean}){
   const toast=useToast();
   const[busy,setBusy]=useState(false);
   async function exportJson(){setBusy(true);try{
@@ -94,11 +94,11 @@ export function TransferPanel({workspaceId,workspaceName}:{workspaceId:string;wo
     toast.success(`已恢复 ${d.restoredNotes} 篇笔记`,"同 ID 的笔记会跳过，不会覆盖。");
   }catch(e){toast.error("导入失败",(e as Error).message)}finally{setBusy(false)}}
   return <div className="space-y-3">
-    <div className={`${box} flex items-center gap-4 p-5`}><span className="grid size-10 place-items-center rounded-lg bg-muted"><Download className="size-4"/></span><div className="min-w-0 flex-1"><p className="text-sm font-medium">导出工作区</p><p className="text-xs text-muted-foreground">笔记本、目录、笔记正文导出成一个 JSON，不含附件与成员。</p></div><Button variant="outline" disabled={busy} onClick={exportJson}><Download/>导出</Button></div>
+    {canManage&&<div className={`${box} flex items-center gap-4 p-5`}><span className="grid size-10 place-items-center rounded-lg bg-muted"><Download className="size-4"/></span><div className="min-w-0 flex-1"><p className="text-sm font-medium">导出工作区</p><p className="text-xs text-muted-foreground">笔记本、目录、笔记正文导出成一个 JSON，不含附件与成员。</p></div><Button variant="outline" disabled={busy} onClick={exportJson}><Download/>导出</Button></div>}
     <div className={`${box} flex items-center gap-4 p-5`}><span className="grid size-10 place-items-center rounded-lg bg-muted"><FolderTree className="size-4"/></span><div className="min-w-0 flex-1"><p className="text-sm font-medium">导出为 Markdown 压缩包</p><p className="text-xs text-muted-foreground">按「笔记本 / 目录 / 标题.md」的树导出，附件放在同名的「.附件」目录里，正文链接改成相对路径。别人不可读的笔记不会进包。</p></div><Button variant="outline" disabled={busy} onClick={exportZip}><FolderTree/>导出 zip</Button></div>
-    <div className={`${box} flex items-center gap-4 p-5`}><span className="grid size-10 place-items-center rounded-lg bg-muted"><Upload className="size-4"/></span><div className="min-w-0 flex-1"><p className="text-sm font-medium">从导出文件恢复</p><p className="text-xs text-muted-foreground">按笔记 ID 去重；同 ID 的笔记会跳过而不是覆盖。</p></div>
+    {canManage&&<div className={`${box} flex items-center gap-4 p-5`}><span className="grid size-10 place-items-center rounded-lg bg-muted"><Upload className="size-4"/></span><div className="min-w-0 flex-1"><p className="text-sm font-medium">从导出文件恢复</p><p className="text-xs text-muted-foreground">按笔记 ID 去重；同 ID 的笔记会跳过而不是覆盖。</p></div>
       <Button variant="outline" disabled={busy} onClick={()=>document.getElementById("restore-input")?.click()}><Upload/>选择 JSON</Button>
-      <input id="restore-input" type="file" accept="application/json,.json" className="hidden" onChange={e=>{const file=e.target.files?.[0];e.target.value="";if(file)void importJson(file)}}/></div>
+      <input id="restore-input" type="file" accept="application/json,.json" className="hidden" onChange={e=>{const file=e.target.files?.[0];e.target.value="";if(file)void importJson(file)}}/></div>}
   </div>;
 }
 
