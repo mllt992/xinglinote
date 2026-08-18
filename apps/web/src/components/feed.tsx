@@ -4,13 +4,13 @@ export type FeedPost={id:string;body:string;visibility:string;workspaceId:string
 type Nb={id:string;title:string};
 
 /** 广场与圈子共用一套时间线。scope=workspace 时发的是圈子动态。 */
-export function FeedView({scope,workspaceId,workspaces,canPost,onOpenNote}:{scope:"public"|"workspace";workspaceId?:string;workspaces:Array<{id:string;name:string}>;canPost:boolean;onOpenNote?:(workspaceId:string,noteId:string)=>void}){
+export function FeedView({scope,workspaceId,workspaces,canPost,onOpenNote,onLoaded}:{scope:"public"|"workspace";workspaceId?:string;workspaces:Array<{id:string;name:string}>;canPost:boolean;onOpenNote?:(workspaceId:string,noteId:string)=>void;onLoaded?:(posts:FeedPost[])=>void}){
   const askConfirm=useConfirm();const toast=useToast();
   const[posts,setPosts]=useState<FeedPost[]>([]);const[body,setBody]=useState("");const[err,setErr]=useState("");const[dlgErr,setDlgErr]=useState("");const[busy,setBusy]=useState(false);
   const[editing,setEditing]=useState<FeedPost|null>(null);const[draft,setDraft]=useState("");
   const[promote,setPromote]=useState<FeedPost|null>(null);const[target,setTarget]=useState({workspaceId:"",notebookId:"",title:""});const[books,setBooks]=useState<Nb[]>([]);
   const path=scope==="public"?"/api/v1/feed/public":`/api/v1/feed/workspaces/${workspaceId}`;
-  const load=()=>api<{posts:FeedPost[]}>(path).then(d=>setPosts(d.posts)).catch(e=>toast.error("加载动态失败",(e as Error).message));
+  const load=()=>api<{posts:FeedPost[]}>(path).then(d=>{setPosts(d.posts);onLoaded?.(d.posts)}).catch(e=>toast.error("加载动态失败",(e as Error).message));
   useEffect(()=>{void load()},[path]);
   useEffect(()=>{if(!target.workspaceId)return setBooks([]);api<{notebooks:Nb[]}>(`/api/v1/workspaces/${target.workspaceId}/notebooks`).then(d=>{setBooks(d.notebooks);setTarget(t=>({...t,notebookId:d.notebooks[0]?.id??""}))}).catch(()=>setBooks([]))},[target.workspaceId]);
 
@@ -47,7 +47,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,onOpenNote}:{scop
       <FormError className="mt-3">{err}</FormError>
       <div className="mt-3 flex items-center gap-3"><Button disabled={busy||!body.trim()} onClick={submit}><Send/>{busy?"发布中…":"发布"}</Button><span className="text-xs text-muted-foreground">{body.length}/5000</span></div>
     </div>}
-    {posts.length===0?<div className="rounded-2xl border py-16 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground"><Globe2 className="size-5"/></span><p className="mt-3 text-sm font-medium">还没有动态</p><p className="mt-1 text-xs text-muted-foreground">{scope==="public"?"这里是整个实例的公开时间线。":"圈子里的碎片想法可以先发这里，之后再转正为笔记。"}</p></div>
+    {posts.length===0?<div className="rounded-2xl border border-dashed py-14 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground"><Globe2 className="size-5"/></span><p className="mt-3 text-sm font-medium">还没有动态</p><p className="mt-1 text-xs text-muted-foreground">{scope==="public"?"第一条公开动态还没出现。":"圈子里的碎片想法可以先发这里，之后再转正为笔记。"}</p></div>
     :posts.map(p=><article key={p.id} className="rounded-2xl border bg-background p-4">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <b className="text-sm text-foreground">{p.author?.displayName??"已注销用户"}</b>
