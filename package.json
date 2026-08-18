@@ -9,11 +9,14 @@
     "db:up": "docker compose up -d db",
     "db:push": "pnpm --filter @kb/api db:push",
     "test": "pnpm --filter @kb/core test",
+    "lint": "eslint .",
     "build": "pnpm -r build",
     "typecheck": "tsc --noEmit -p packages/shared/tsconfig.json && tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p apps/api/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json"
   },
   "devDependencies": {
+    "eslint": "^9.39.5",
     "playwright-core": "^1.62.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.67.0"
   }
 }

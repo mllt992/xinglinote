@@ -1,4 +1,4 @@
-import{useEffect,useState}from'react';import type{ReactNode}from'react';import{BookLock,Check,Copy,Eye,KeyRound,Pencil,Plus,RotateCcw,Trash2,Wrench}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';
+import{useEffect,useState}from'react';import type{ReactNode}from'react';import{BookLock,Check,Copy,Eye,KeyRound,Pencil,Plus,RotateCcw,Trash2,Wrench}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';
 
 export type McpToken={id:string;name:string;workspaceId:string;notebookMode:"inherit"|"allowlist";notebookIds:string[];rw:"read"|"write"|"manage";allowDelete:boolean;requireAiIndex:boolean;allowPrivateNotebooks:boolean;feedPublic:boolean;feedWorkspace:boolean;dailyWriteLimitBytes:number|null;expiresAt:string|null;status:string;lastUsedAt:string|null;createdAt:string};
 type Issued={name:string;secret:string;config:unknown;stdioConfig:unknown};
@@ -18,6 +18,7 @@ const fromToken=(t:McpToken):Draft=>({name:t.name,workspaceId:t.workspaceId,rw:t
 
 /** 设置 → MCP 钥匙。一把钥匙绑一个工作区，范围、档位、过期、写入额度都在这里定。 */
 export function McpPanel({workspaces,defaultWorkspaceId}:{workspaces:Array<{id:string;name:string}>;defaultWorkspaceId?:string}){
+  const askConfirm=useConfirm();const toast=useToast();
   const[tokens,setTokens]=useState<McpToken[]>([]);const[msg,setMsg]=useState("");const[busy,setBusy]=useState(false);
   const[draft,setDraft]=useState<Draft|null>(null);const[editing,setEditing]=useState<McpToken|null>(null);
   const[notebooks,setNotebooks]=useState<Nb[]>([]);const[issued,setIssued]=useState<Issued|null>(null);
@@ -39,12 +40,12 @@ export function McpPanel({workspaces,defaultWorkspaceId}:{workspaces:Array<{id:s
     }catch(e){setMsg((e as Error).message)}finally{setBusy(false)}
   }
   async function rotate(t:McpToken){
-    if(!confirm(`轮换《${t.name}》？旧明文立刻失效，所有用它的客户端都要换配置。`))return;
-    setMsg("");try{const d=await api<Issued>(`/api/v1/mcp/tokens/${t.id}/rotate`,{method:"POST"});setIssued({...d,name:t.name});await load();}catch(e){setMsg((e as Error).message)}
+    if(!await askConfirm({title:`轮换《${t.name}》？`,description:"会立刻签发一把新明文，旧明文同时作废。所有正在用这把钥匙的客户端都要改配置才能继续访问。",confirmText:"轮换",destructive:true}))return;
+    setMsg("");try{const d=await api<Issued>(`/api/v1/mcp/tokens/${t.id}/rotate`,{method:"POST"});setIssued({...d,name:t.name});await load();}catch(e){toast.error("轮换失败",(e as Error).message)}
   }
   async function revoke(t:McpToken){
-    if(!confirm(`吊销《${t.name}》？立刻失效且不可恢复，需要的话请新建一把。`))return;
-    setMsg("");try{await api(`/api/v1/mcp/tokens/${t.id}`,{method:"DELETE"});await load();}catch(e){setMsg((e as Error).message)}
+    if(!await askConfirm({title:`吊销《${t.name}》？`,description:"这把钥匙会立刻失效且不可恢复，用它接入的客户端会全部断开。需要的话请新建一把。",confirmText:"吊销",destructive:true}))return;
+    setMsg("");try{await api(`/api/v1/mcp/tokens/${t.id}`,{method:"DELETE"});toast.success(`已吊销《${t.name}》`);await load();}catch(e){toast.error("吊销失败",(e as Error).message)}
   }
 
   return <div className="space-y-4">

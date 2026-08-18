@@ -1,4 +1,4 @@
-import{useEffect,useState}from'react';import type{ReactNode}from'react';import{Archive,CloudUpload,Download,FileClock,Link2 as Link2Icon,Lock,Play,Plug,Plus,ShieldAlert,Snowflake,Trash2 as Trash2Icon,Upload}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';
+import{useEffect,useState}from'react';import type{ReactNode}from'react';import{Archive,CloudUpload,Download,FileClock,Link2 as Link2Icon,Lock,Play,Plug,Plus,ShieldAlert,Snowflake,Trash2 as Trash2Icon,Upload}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{useConfirm,usePrompt}from'./ui/confirm';import{useToast}from'./ui/toast';
 const box="rounded-xl border bg-background";
 function Field({title,children}:{title:string;children:ReactNode}){return <label className="grid gap-1.5"><span className="text-xs font-medium text-muted-foreground">{title}</span>{children}</label>;}
 function Hollow({icon,text}:{icon:ReactNode;text:string}){return <div className="py-12 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground">{icon}</span><p className="mt-3 text-xs text-muted-foreground">{text}</p></div>;}
@@ -96,11 +96,12 @@ export function TransferPanel({workspaceId,workspaceName}:{workspaceId:string;wo
 
 /** 冻结：整个工作区转只读，用来暂停协作，不删数据。 */
 export function DangerPanel({workspaceId,frozen,onChanged}:{workspaceId:string;frozen:boolean;onChanged:()=>void}){
+  const askConfirm=useConfirm();
   const[busy,setBusy]=useState(false);const[msg,setMsg]=useState("");
   return <div className={`${box} border-destructive/30 p-5`}>
     <div className="flex items-center gap-4"><span className="grid size-10 place-items-center rounded-lg bg-destructive/10 text-destructive">{frozen?<Snowflake className="size-4"/>:<ShieldAlert className="size-4"/>}</span>
       <div className="min-w-0 flex-1"><p className="text-sm font-medium">{frozen?"工作区已冻结":"冻结工作区"}</p><p className="text-xs text-muted-foreground">冻结后所有人只能读，写入、AI 写作与 MCP 写档都会被拒绝；随时可以解冻。</p></div>
-      <Button variant={frozen?"outline":"destructive"} disabled={busy} onClick={async()=>{if(!frozen&&!confirm("冻结后这个工作区的所有人都只能读，确定吗？"))return;setBusy(true);setMsg("");try{await api(`/api/v1/workspaces/${workspaceId}/freeze`,{method:"PATCH",body:JSON.stringify({frozen:!frozen})});onChanged()}catch(e){setMsg((e as Error).message)}finally{setBusy(false)}}}>{frozen?"解冻":"冻结"}</Button></div>
+      <Button variant={frozen?"outline":"destructive"} disabled={busy} onClick={async()=>{if(!frozen&&!await askConfirm({title:"冻结这个工作区？",description:"冻结后所有成员都只能读：写入、AI 写作和 MCP 写档都会被拒绝。数据不会丢，随时可以解冻。",confirmText:"冻结",destructive:true}))return;setBusy(true);setMsg("");try{await api(`/api/v1/workspaces/${workspaceId}/freeze`,{method:"PATCH",body:JSON.stringify({frozen:!frozen})});onChanged()}catch(e){setMsg((e as Error).message)}finally{setBusy(false)}}}>{frozen?"解冻":"冻结"}</Button></div>
     {msg&&<p className="mt-3 text-sm text-destructive">{msg}</p>}
   </div>;
 }
@@ -110,6 +111,7 @@ const shareType:Record<string,string>={note:"整篇",heading:"某一节",folder:
 
 /** 本区分享总览：Admin/Owner 能收掉别人建的链接。 */
 export function SharesPanel({workspaceId}:{workspaceId:string}){
+  const askConfirm=useConfirm();const askText=usePrompt();const toast=useToast();
   const[data,setData]=useState<{canManageAll:boolean;shares:WsShare[]}>({canManageAll:false,shares:[]});const[msg,setMsg]=useState("");const[copied,setCopied]=useState("");
   const load=()=>api<typeof data>(`/api/v1/workspaces/${workspaceId}/shares`).then(setData);
   useEffect(()=>{void load()},[workspaceId]);
@@ -124,9 +126,9 @@ export function SharesPanel({workspaceId}:{workspaceId:string}){
       <div className="min-w-0 flex-1"><p className="flex flex-wrap items-center gap-2 text-sm font-medium">{s.targetTitle}<Badge>{shareType[s.targetType]??s.targetType}</Badge>{!s.mine&&<Badge>他人创建</Badge>}</p>
         <p className="truncate text-xs text-muted-foreground">{s.hasPassword?"有密码":"无密码"} · {s.expiresAt?`到期 ${new Date(s.expiresAt).toLocaleDateString()}`:"永不过期"}{s.correctionsEnabled?" · 可纠错":""} · 建于 {new Date(s.createdAt).toLocaleDateString()}</p></div>
       <Button variant="ghost" size="sm" onClick={()=>{void navigator.clipboard.writeText(`${location.origin}/p/${s.token}`);setCopied(s.id);setTimeout(()=>setCopied(""),1200)}}>{copied===s.id?"已复制":"复制链接"}</Button>
-      <select className="h-8 rounded-lg border bg-background px-2 text-xs" value="" onChange={e=>{const v=e.target.value;e.target.value="";if(v==="pw"){const p=prompt("设置新密码（留空表示取消密码）");if(p===null)return;void patch(s,{password:p||null},p?"已改密码":"已取消密码");}else if(v)void patch(s,{expiresInDays:v==="never"?null:Number(v)},"已更新有效期");}}>
+      <select className="h-8 rounded-lg border bg-background px-2 text-xs" value="" onChange={async e=>{const v=e.target.value;e.target.value="";if(v==="pw"){const p=await askText({title:`改《${s.targetTitle}》这条链接的密码`,description:"留空并确认表示取消密码，之后任何拿到链接的人都能直接打开。",label:"新密码",type:"password",autoComplete:"new-password",placeholder:"留空 = 取消密码",allowEmpty:true,confirmText:"保存"});if(p===null)return;void patch(s,{password:p||null},p?"已改密码":"已取消密码");}else if(v)void patch(s,{expiresInDays:v==="never"?null:Number(v)},"已更新有效期");}}>
         <option value="">改设置…</option><option value="pw">改 / 取消密码</option><option value="7">续期 7 天</option><option value="30">续期 30 天</option><option value="never">改为永不过期</option></select>
-      <Button variant="ghost" size="icon" aria-label="撤销" className="text-destructive" onClick={async()=>{if(!confirm(`撤销《${s.targetTitle}》的这条链接？立刻失效且不可恢复。`))return;setMsg("");try{await api(`/api/v1/shares/${s.id}`,{method:"DELETE"});await load()}catch(e){setMsg((e as Error).message)}}}><Trash2Icon/></Button>
+      <Button variant="ghost" size="icon" aria-label="撤销" className="text-destructive" onClick={async()=>{if(!await askConfirm({title:`撤销《${s.targetTitle}》的这条链接？`,description:"链接立刻失效且不可恢复，已经拿到它的人也打不开了。原内容不受影响，需要时可以重新分享。",confirmText:"撤销链接",destructive:true}))return;setMsg("");try{await api(`/api/v1/shares/${s.id}`,{method:"DELETE"});toast.success("已撤销这条链接");await load()}catch(e){setMsg((e as Error).message)}}}><Trash2Icon/></Button>
     </div>)}</div>}
   </div>;
 }

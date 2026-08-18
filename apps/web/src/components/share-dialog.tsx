@@ -1,4 +1,4 @@
-import{useEffect,useMemo,useState}from'react';import{Check,Copy,Link2,Lock,Share2,Trash2}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';
+import{useEffect,useMemo,useState}from'react';import{Check,Copy,Link2,Lock,Share2,Trash2}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{useConfirm}from'./ui/confirm';
 
 export type ShareDto={id:string;token:string;targetType:string;targetId:string;headingAnchor:string|null;hasPassword:boolean;expiresAt:string|null;allowRobots:boolean;commentsEnabled:boolean;correctionsEnabled:boolean;showBacklinks:boolean;status:string;createdAt:string};
 export type ShareTarget={kind:"note"|"folder"|"attachment";id:string;title:string;bodyMd?:string};
@@ -9,6 +9,7 @@ const slug=(t:string)=>t.trim().toLowerCase().replace(/\s+/g,"-").replace(/[^\p{
 /** 一个目标可以有多条互不影响的链接：密码、有效期、评论纠错开关都各自独立。 */
 export function ShareDialog({target,open,onOpenChange}:{target:ShareTarget|null;open:boolean;onOpenChange:(v:boolean)=>void}){
   const[shares,setShares]=useState<ShareDto[]>([]);const[password,setPassword]=useState("");const[days,setDays]=useState("never");const[busy,setBusy]=useState(false);const[copied,setCopied]=useState("");const[err,setErr]=useState("");
+  const askConfirm=useConfirm();
   const[anchor,setAnchor]=useState("");const[opts,setOpts]=useState({commentsEnabled:true,correctionsEnabled:false,showBacklinks:false,allowRobots:false});
   const headings=useMemo(()=>target?.kind==="note"&&target.bodyMd?target.bodyMd.split("\n").filter(l=>/^#{1,6}\s/.test(l)).map(l=>({anchor:slug(l.replace(/^#+\s*/,"")),text:l.replace(/^#+\s*/,"").trim()})).filter(h=>h.anchor):[],[target?.bodyMd,target?.kind]);
   const listPath=target?.kind==="note"?`/api/v1/notes/${target.id}/shares`:null;
@@ -38,7 +39,7 @@ export function ShareDialog({target,open,onOpenChange}:{target:ShareTarget|null;
       <span className={`grid size-9 place-items-center rounded-lg ${s.status==="active"?"bg-primary text-primary-foreground":"bg-muted text-muted-foreground"}`}>{s.hasPassword?<Lock className="size-4"/>:<Link2 className="size-4"/>}</span>
       <div className="min-w-0 flex-1"><p className="truncate font-mono text-xs">{url(s)}</p><p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground"><Badge>{typeLabel[s.targetType]??s.targetType}</Badge>{s.status==="revoked"?"已撤销":s.expiresAt?`到期 ${new Date(s.expiresAt).toLocaleDateString()}`:"永不过期"}{s.hasPassword?" · 有密码":" · 无密码"}{s.correctionsEnabled?" · 可纠错":""}</p></div>
       {s.status==="active"&&<><Button variant="ghost" size="icon" aria-label="复制链接" onClick={()=>void copy(s)}>{copied===s.id?<Check/>:<Copy/>}</Button>
-      <Button variant="ghost" size="icon" aria-label="撤销链接" className="text-destructive" onClick={async()=>{if(!confirm("撤销后这条链接立刻失效且不可恢复。"))return;await api(`/api/v1/shares/${s.id}`,{method:"DELETE"});void load()}}><Trash2/></Button></>}
+      <Button variant="ghost" size="icon" aria-label="撤销链接" className="text-destructive" onClick={async()=>{if(!await askConfirm({title:`撤销《${target?.title}》的这条链接？`,description:"撤销后这条链接立刻失效且不可恢复，已经拿到链接的人也打不开了。需要的话可以再生成一条新的。",confirmText:"撤销链接",destructive:true}))return;await api(`/api/v1/shares/${s.id}`,{method:"DELETE"});void load()}}><Trash2/></Button></>}
     </div>)}</div>
     :<p className="text-xs text-muted-foreground">生成的链接已复制到剪贴板。这个目标的全部链接可以在「备份与审计 → 分享」里管理。</p>}
   </DialogContent></Dialog>;
