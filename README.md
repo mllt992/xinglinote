@@ -47,6 +47,7 @@ pnpm test
 ```bash
 node scripts/mock-ai-provider.mjs   # verify-ai-index、verify-ai-write-review 要它（:19091）
 node scripts/mock-webdav.mjs        # verify-backup 要它（:19092）
+node scripts/mock-push-gateway.mjs  # verify-push 要它（:19093）
 ```
 
 **所有脚本的账号都从环境变量取**（见 `scripts/creds.mjs`），仓库里不留任何凭据：
@@ -62,6 +63,7 @@ node scripts/verify-calendar-sync.mjs   # 笔记 ↔ 日历双向同步、块锚
 node scripts/verify-calendar-recur.mjs  # 重复展开、单次例外、「此后全部」
 node scripts/verify-calendar-ics.mjs    # ICS 导出与订阅（含 SSRF 拦截）、日历 MCP 四工具
 node scripts/verify-calendar-p2.mjs     # 批量操作、模板、去年今日 / 周回顾、AI 提待办不写库、推送
+node --experimental-strip-types scripts/verify-push.mjs   # 推送投递闭环：VAPID 验签、密文解回原文、失效端点停用
 node --experimental-strip-types scripts/verify-transfer.mjs   # 导入向导、zip 导出、版本裁剪（约 3 分钟）
 node scripts/verify-manage-cdp.mjs
 node scripts/verify-gaps-cdp.mjs
