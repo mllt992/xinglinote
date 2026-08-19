@@ -30,24 +30,27 @@ export function IntegrationsPage() {
   const [draft, setDraft] = useState(DEFAULTS);
   const [saving, setSaving] = useState(false);
   const [formErr, setFormErr] = useState("");
+  const [aiErr, setAiErr] = useState("");
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
 
   /** 新存的提供商要拿服务端给的 id 和 Key 后四位，只能回表；工作区列表是给 MCP 面板用的，不跟着动。 */
   const loadProviders = useCallback(async () => {
     setProviders((await api<{ providers: Provider[] }>(`/api/v1/workspaces/${wsId}/ai/provider`)).providers);
+    setAiErr("");
   }, [wsId]);
   const load = useCallback(async () => {
-    const [p, w] = await Promise.all([
+    // 两路互不拖死：模型配置挂了不该把 MCP 钥匙一起藏起来。
+    const [p, w] = await Promise.allSettled([
       api<{ providers: Provider[] }>(`/api/v1/workspaces/${wsId}/ai/provider`),
       api<{ workspaces: Ws[] }>("/api/v1/workspaces"),
     ]);
-    setProviders(p.providers);
-    setSpaces(w.workspaces);
+    if (p.status === "fulfilled") { setProviders(p.value.providers); setAiErr(""); }
+    else { setProviders([]); setAiErr((p.reason as Error).message); }
+    setSpaces(w.status === "fulfilled" ? w.value.workspaces : []);
   }, [wsId]);
   const reload = useCallback(() => {
     setLoading(true);
-    load().then(() => setError("")).catch(e => setError((e as Error).message)).finally(() => setLoading(false));
+    load().finally(() => setLoading(false));
   }, [load]);
   useEffect(() => { reload(); }, [reload]);
 
@@ -76,7 +79,7 @@ export function IntegrationsPage() {
     catch (e) { toast.error("移除失败", (e as Error).message); }
   }
 
-  return <SettingsShell wsId={wsId} current="integrations" counts={{ integrations: providers.length }} loading={loading} error={error} onRetry={reload}>
+  return <SettingsShell wsId={wsId} current="integrations" counts={{ integrations: providers.length }} loading={loading}>
     <Tabs.Root defaultValue="ai">
       <Tabs.List className="mb-4 inline-flex rounded-lg bg-muted p-1">
         {[["ai", "AI 提供商"], ["mcp", "MCP 钥匙"]].map(([v, label]) =>
@@ -84,6 +87,7 @@ export function IntegrationsPage() {
       </Tabs.List>
 
       <Tabs.Content value="ai" className="space-y-4 outline-none">
+        {aiErr && <FormError>{aiErr}</FormError>}
         <SectionCard title="接入模型" desc="任何 OpenAI 兼容的接口都行：官方、Azure、或者自建的中转。">
           <div className="grid gap-4 p-4">
             <Field label="Base URL" htmlFor="ai-base" hint="要带到 /v1 这一层，末尾不用加斜杠。">
