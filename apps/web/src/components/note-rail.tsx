@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { History, List, MessageSquare, Paperclip, PanelRight, Share2, Sparkles, Trash2, Upload, Workflow, X } from "lucide-react";
+import { History, List, ListChecks, MessageSquare, Paperclip, PanelRight, Share2, Sparkles, Trash2, Upload, Workflow, X } from "lucide-react";
 import { outlineOf, type DiagramBlock } from "@kb/shared/markdown";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
@@ -10,9 +10,10 @@ import { Tooltip } from "./ui/tooltip";
 import { VersionsTab } from "./version-panel";
 import { AiDiagramTab } from "./ai-diagram-tab";
 import { AiWriteTab, type Selection } from "./ai-write-tab";
+import { AiTasksTab } from "./ai-tasks-tab";
 import { ReviewTab } from "./review-tab";
 
-export const RAIL_TABS = ["outline", "links", "attachments", "versions", "review", "ai", "diagram"] as const;
+export const RAIL_TABS = ["outline", "links", "attachments", "versions", "review", "ai", "diagram", "tasks"] as const;
 export type RailTab = (typeof RAIL_TABS)[number];
 
 const TAB_META: Record<RailTab, { label: string; icon: ReactNode }> = {
@@ -23,6 +24,7 @@ const TAB_META: Record<RailTab, { label: string; icon: ReactNode }> = {
   review: { label: "评论与纠错", icon: <MessageSquare /> },
   ai: { label: "AI 写作", icon: <Sparkles /> },
   diagram: { label: "AI 画图", icon: <Workflow /> },
+  tasks: { label: "提取待办", icon: <ListChecks /> },
 };
 
 const WIDTH_KEY = "kb.note-rail.width";
@@ -382,6 +384,7 @@ export function NoteRail({
       {tab === "review" && <ReviewTab note={note} onLocate={onLocate} onApplied={onReviewApplied} />}
       {tab === "ai" && <AiWriteTab note={note} workspaceId={workspaceId} getSelection={getSelection} onApply={onApplyAi} />}
       {tab === "diagram" && <AiDiagramTab note={note} workspaceId={workspaceId} getTarget={getDiagramTarget} onInsert={onInsertDiagram} />}
+      {tab === "tasks" && <AiTasksTab note={note} workspaceId={workspaceId} />}
     </aside>
   );
 }

@@ -4,19 +4,22 @@ import { z } from "zod";
 import { canReadNote, type NbMemberRole, type WsRole } from "@kb/core";
 import { AppError, fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { auditLogs, backgroundJobs, calendarFeedTokens, calendarItems, calendarOverrides, calendarReminders, calendarSubscriptions, calendarTemplates, notebookMembers, notebooks, notes, noteVersions, users, workspaces } from "../db/schema.ts";
+import { aiUsage, auditLogs, backgroundJobs, calendarFeedTokens, calendarItems, calendarOverrides, calendarReminders, calendarSubscriptions, calendarTemplates, instanceSettings, notebookMembers, notebooks, notes, noteVersions, users, workspaces } from "../db/schema.ts";
 import { env } from "../env.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
 import { notebookAccess } from "../lib/notebook-access.ts";
+import { noteAccess } from "../lib/note-access.ts";
 import { assertUserStorage, textBytes } from "../lib/quota.ts";
 import { limit } from "../lib/rate-limit.ts";
 import { secureToken } from "../lib/tokens.ts";
 import { writeNoteFile } from "../lib/files.ts";
-import { completeCalendarItem, DEFAULT_TZ, localDayKey, occurrencesOf, rescheduleReminders, wallParts } from "../lib/calendar.ts";
+import { completeCalendarItem, DEFAULT_TZ, localDayKey, occurrencesOf, rescheduleReminders, wallParts, wallToUtc } from "../lib/calendar.ts";
 import { itemsToTemplate, MAX_TEMPLATE_ITEMS, planTemplate, type TemplateItem } from "../lib/calendar-template.ts";
 import { assertPublicUrl, buildIcs, syncSubscription } from "../lib/ics.ts";
+import { aiProvider, chatAi } from "../lib/ai.ts";
+import { dedupe, existingTaskTitles, extractPrompt, parseCandidates } from "../lib/task-extract.ts";
 import { parseQuickAdd } from "../lib/quick-add.ts";
 
 export const calendarRoutes = new Hono();
@@ -70,12 +73,16 @@ async function readableItems(workspaceId: string, userId: string, role: WsRole, 
   const noteIds = [...new Set(rows.map(r => r.sourceNoteId).filter((x): x is string => !!x))];
   const sourceNotes = noteIds.length ? await db.select({ id: notes.id, title: notes.title, trashedAt: notes.trashedAt }).from(notes).where(inArray(notes.id, noteIds)) : [];
   const noteById = new Map(sourceNotes.map(n => [n.id, n]));
+  const mine = (r: typeof calendarItems.$inferSelect) => r.visibility !== "private" || r.createdBy === userId;
   const kept = rows.filter(r => {
     if (r.source === "note") {
       const note = r.sourceNoteId ? noteById.get(r.sourceNoteId) : null;
       return !!note && !note.trashedAt && !!r.notebookId && visible.has(r.notebookId);
     }
-    return r.visibility !== "private" || r.createdBy === userId;
+    // AI 从某篇纪要提出来的条目虽然是独立任务，标题里照样可能是私密笔记本的内容，
+    // 所以只要挂着笔记本就一并过 ACL——但不跟着来源笔记进回收站，它本来就是独立的。
+    if (r.notebookId) return visible.has(r.notebookId) && mine(r);
+    return mine(r);
   });
   return { kept, noteById };
 }
@@ -907,4 +914,207 @@ calendarRoutes.post("/calendar/templates/:tid/apply", async c => {
   }
   await audit(row.workspaceId, user.id, "calendar.template.apply", row.id, { date: body.date, count: created.length }, "calendar_template");
   return ok(c, { date: body.date, items: created.map(r => itemDto(r)) }, 201);
+});
+
+// ── 去年今日与回顾（设计 16 §4.8）──────────────────────────────────────
+// 两个都是只读回看：不写库、不发通知。一旦它们会推送，就变成了新的打扰源。
+
+const LOOKBACK_YEARS = 5;
+const PER_YEAR = 5;
+
+/** 2 月 29 日在平年落到 2 月 28 日，而不是悄悄变成 3 月 1 日。 */
+function sameDayInYear(year: number, month: number, day: number) {
+  if (month === 2 && day === 29 && new Date(Date.UTC(year, 1, 29)).getUTCMonth() !== 1) return { month: 2, day: 28 };
+  return { month, day };
+}
+
+calendarRoutes.get("/workspaces/:id/calendar/on-this-day", async c => {
+  const workspaceId = c.req.param("id");
+  const { user, role } = await workspaceContext(c, workspaceId);
+  const tz = c.req.query("tz") || DEFAULT_TZ;
+  const raw = c.req.query("date");
+  const anchor = raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? wallToUtc(...(raw.split("-").map(Number) as [number, number, number]), 0, 0, tz) : new Date();
+  const w = wallParts(anchor, tz);
+  const back = Math.min(20, Math.max(1, Number(c.req.query("years") ?? LOOKBACK_YEARS) || LOOKBACK_YEARS));
+
+  const visible = await visibleNotebookIds(workspaceId, user.id, role);
+  const all = await db.select().from(calendarItems).where(and(eq(calendarItems.workspaceId, workspaceId), isNull(calendarItems.trashedAt)));
+  const { kept, noteById } = await readableItems(workspaceId, user.id, role, all);
+  const overrides = kept.length ? await db.select().from(calendarOverrides).where(inArray(calendarOverrides.itemId, kept.map(r => r.id))) : [];
+  const byItem = new Map<string, Array<typeof calendarOverrides.$inferSelect>>();
+  for (const o of overrides) byItem.set(o.itemId, [...(byItem.get(o.itemId) ?? []), o]);
+
+  const nbTitle = new Map((await db.select({ id: notebooks.id, title: notebooks.title }).from(notebooks).where(eq(notebooks.workspaceId, workspaceId))).map(n => [n.id, n.title]));
+
+  const years: Array<{ year: number; date: string; notes: Array<{ id: string; title: string; notebook: string | null; createdAt: Date }>; items: unknown[] }> = [];
+  for (let back_i = 1; back_i <= back; back_i++) {
+    const year = w.y - back_i;
+    const { month, day } = sameDayInYear(year, w.m, w.d);
+    const from = wallToUtc(year, month, day, 0, 0, tz);
+    const to = wallToUtc(year, month, day + 1, 0, 0, tz);
+    const born = (await db.select({ id: notes.id, title: notes.title, notebookId: notes.notebookId, createdAt: notes.createdAt })
+      .from(notes).where(and(eq(notes.workspaceId, workspaceId), isNull(notes.trashedAt), gte(notes.createdAt, from), lte(notes.createdAt, to))))
+      .filter(n => visible.has(n.notebookId))
+      .slice(0, PER_YEAR)
+      .map(n => ({ id: n.id, title: n.title, notebook: nbTitle.get(n.notebookId) ?? null, createdAt: n.createdAt }));
+    const items = kept
+      .flatMap(row => occurrencesOf(row, byItem.get(row.id) ?? [], from, to).map(o => itemDto(row, row.sourceNoteId ? noteById.get(row.sourceNoteId)?.title : null, o)))
+      .slice(0, PER_YEAR);
+    // 那一年这一天什么都没有就整段不出现，别摆一排空壳
+    if (born.length || items.length) years.push({ year, date: localDayKey(from, tz), notes: born, items });
+  }
+  return ok(c, { date: localDayKey(anchor, tz), timezone: tz, years });
+});
+
+/**
+ * 周回顾。统计只算调用者可见的条目，所以同一周两个人看到的回顾可以不一样——
+ * 这是对的，回顾是个人的。不做同比环比，不给评分。
+ */
+calendarRoutes.get("/workspaces/:id/calendar/review", async c => {
+  const workspaceId = c.req.param("id");
+  const { user, role } = await workspaceContext(c, workspaceId);
+  const tz = c.req.query("tz") || DEFAULT_TZ;
+  const raw = c.req.query("week");
+  const anchor = raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? wallToUtc(...(raw.split("-").map(Number) as [number, number, number]), 12, 0, tz) : new Date();
+  const w = wallParts(anchor, tz);
+  // 民用周从周一起：问「这一周」的人问的是周一到周日，不是「往前七天」
+  const weekday = (new Date(Date.UTC(w.y, w.m - 1, w.d)).getUTCDay() + 6) % 7;
+  const from = wallToUtc(w.y, w.m, w.d - weekday, 0, 0, tz);
+  const to = wallToUtc(w.y, w.m, w.d - weekday + 7, 0, 0, tz);
+
+  const visible = await visibleNotebookIds(workspaceId, user.id, role);
+  const all = await db.select().from(calendarItems).where(and(eq(calendarItems.workspaceId, workspaceId), isNull(calendarItems.trashedAt)));
+  const { kept } = await readableItems(workspaceId, user.id, role, all);
+  const overrides = kept.length ? await db.select().from(calendarOverrides).where(inArray(calendarOverrides.itemId, kept.map(r => r.id))) : [];
+  const byItem = new Map<string, Array<typeof calendarOverrides.$inferSelect>>();
+  for (const o of overrides) byItem.set(o.itemId, [...(byItem.get(o.itemId) ?? []), o]);
+
+  const perDay = new Map<string, number>();
+  let completed = 0;
+  for (const row of kept) {
+    if (row.status === "done" && row.doneAt && row.doneAt >= from && row.doneAt < to) {
+      completed++;
+      const key = localDayKey(row.doneAt, tz);
+      perDay.set(key, (perDay.get(key) ?? 0) + 1);
+    }
+    // 重复条目的单次完成记在 override 上，别漏掉
+    for (const o of byItem.get(row.id) ?? []) {
+      if (o.doneAt && o.doneAt >= from && o.doneAt < to) {
+        completed++;
+        const key = localDayKey(o.doneAt, tz);
+        perDay.set(key, (perDay.get(key) ?? 0) + 1);
+      }
+    }
+  }
+
+  let eventMinutes = 0;
+  for (const row of kept) {
+    if (row.kind !== "event" || row.allDay) continue;
+    for (const o of occurrencesOf(row, byItem.get(row.id) ?? [], from, to)) {
+      if (!o.end) continue;
+      // 跨出这一周的部分不算：一场跨周的长会不该把周一那格撑爆
+      const s = Math.max(o.start.getTime(), from.getTime());
+      const e = Math.min(o.end.getTime(), to.getTime());
+      if (e > s) eventMinutes += Math.round((e - s) / 60_000);
+    }
+  }
+
+  const now = new Date();
+  const overdue = kept.filter(r => r.status === "open" && r.dueAt && r.dueAt < now && !r.rrule).length;
+
+  const touched = (await db.select({ id: notes.id, notebookId: notes.notebookId, updatedAt: notes.updatedAt })
+    .from(notes).where(and(eq(notes.workspaceId, workspaceId), isNull(notes.trashedAt), gte(notes.updatedAt, from), lte(notes.updatedAt, to))))
+    .filter(n => visible.has(n.notebookId));
+  const nbTitle = new Map((await db.select({ id: notebooks.id, title: notebooks.title }).from(notebooks).where(eq(notebooks.workspaceId, workspaceId))).map(n => [n.id, n.title]));
+  const byNotebook = new Map<string, number>();
+  for (const n of touched) byNotebook.set(n.notebookId, (byNotebook.get(n.notebookId) ?? 0) + 1);
+
+  const best = [...perDay.entries()].sort((a, b) => b[1] - a[1])[0];
+  return ok(c, {
+    from: localDayKey(from, tz), to: localDayKey(new Date(to.getTime() - 1), tz), timezone: tz,
+    completed, notesTouched: touched.length, eventMinutes, overdue,
+    bestDay: best ? { day: best[0], count: best[1] } : null,
+    perDay: [...perDay.entries()].sort().map(([day, count]) => ({ day, count })),
+    byNotebook: [...byNotebook.entries()]
+      .map(([id, count]) => ({ notebookId: id, title: nbTitle.get(id) ?? "未知笔记本", count }))
+      .sort((a, b) => b.count - a.count).slice(0, 8),
+  });
+});
+
+// ── AI 从纪要提取待办（设计 16 §6.4）──────────────────────────────────
+// 接口只返回候选，一条都不写库。落库走批量创建，且必须是人点过确认之后。
+
+calendarRoutes.post("/workspaces/:id/calendar/extract-tasks", async c => {
+  const workspaceId = c.req.param("id");
+  const { user, role, ws } = await workspaceContext(c, workspaceId);
+  limit(`calendar:extract:${user.id}`, 10, 60_000);
+  const [inst] = await db.select({ aiEnabled: instanceSettings.aiEnabled }).from(instanceSettings);
+  if (!inst?.aiEnabled || !ws.aiEnabled) throw fail("FORBIDDEN", "AI 已关闭");
+
+  const body = z.object({ noteId: z.string().uuid() }).parse(await c.req.json());
+  // 用户对着自己打开的这一篇主动发起，走统一的 can_read_note 就够；
+  // ai_index 是「进不进检索语料」的开关，不是这里的门槛（设计 16 §6.4）。
+  const { note } = await noteAccess(body.noteId, user.id, "read");
+  if (note.workspaceId !== workspaceId) throw fail("NOT_FOUND", "笔记不存在");
+  if (!note.bodyMd.trim()) throw fail("VALIDATION", "这篇笔记还是空的");
+
+  const provider = await aiProvider(workspaceId, user.id);
+  if (!provider) throw fail("AI_NOT_CONFIGURED", "请先配置 AI 提供商");
+  const tz = DEFAULT_TZ;
+  const out = await chatAi(provider, extractPrompt(note.title, note.bodyMd.slice(0, 12_000), localDayKey(new Date(), tz)));
+  const parsed = parseCandidates(out.content);
+  // 模型抽风时宁可少给：读不出 JSON 就说没提取到，绝不做正则兜底猜测
+  if (!parsed) throw fail("AI_PROVIDER_ERROR", "没能从这篇笔记里提取出待办，换个模型或把纪要写具体些再试");
+
+  // 已经是任务行的、以及已经从这篇同步过来的，都不再重复提
+  const synced = await db.select({ title: calendarItems.title }).from(calendarItems)
+    .where(and(eq(calendarItems.sourceNoteId, note.id), isNull(calendarItems.trashedAt)));
+  const candidates = dedupe(parsed, [...existingTaskTitles(note.bodyMd), ...synced.map(s => s.title)]);
+
+  await db.insert(aiUsage).values({
+    userId: user.id, workspaceId, action: "extract_tasks", model: provider.chatModel,
+    inputTokens: out.usage.prompt_tokens ?? 0, outputTokens: out.usage.completion_tokens ?? 0,
+  });
+  await audit(workspaceId, user.id, "calendar.tasks.extract", note.id, { candidates: candidates.length, dropped: parsed.length - candidates.length }, "note");
+  return ok(c, {
+    noteId: note.id, noteTitle: note.title, timezone: tz,
+    candidates: candidates.map(x => ({
+      ...x,
+      // 前端要能直接拿去建条目，日期换算放服务端做，省得两边各写一套时区逻辑
+      dueAt: x.day ? (x.startMin == null ? wallToUtc(...(x.day.split("-").map(Number) as [number, number, number]), 9, 0, tz) : wallToUtc(...(x.day.split("-").map(Number) as [number, number, number]), Math.floor(x.startMin / 60), x.startMin % 60, tz)).toISOString() : null,
+    })),
+    dropped: parsed.length - candidates.length,
+  });
+});
+
+/**
+ * 确认落库。这是提取的**第二步**，也是唯一会写库的一步——
+ * 上面那个接口一条都不写，人在界面上逐条改过、勾过，才走到这里。
+ * 落地的条目 source=ai：不受 sync_note_tasks 管（它只碰 source=note），改期改标题都随意。
+ */
+calendarRoutes.post("/workspaces/:id/calendar/tasks-from-note", async c => {
+  const workspaceId = c.req.param("id");
+  const { user, role, ws } = await workspaceContext(c, workspaceId);
+  if (role === "viewer") throw fail("FORBIDDEN", "只读成员不能创建日历项");
+  if (ws.frozen) throw fail("FORBIDDEN", "工作区已冻结，暂时只读");
+  const body = z.object({
+    noteId: z.string().uuid(),
+    tasks: z.array(z.object({
+      title: z.string().min(1).max(200),
+      dueAt: z.string().datetime().nullish(),
+      priority: z.number().int().min(0).max(3).default(0),
+    })).min(1).max(20),
+  }).parse(await c.req.json());
+  const { note } = await noteAccess(body.noteId, user.id, "read");
+  if (note.workspaceId !== workspaceId) throw fail("NOT_FOUND", "笔记不存在");
+  const [total] = await db.select({ n: count() }).from(calendarItems).where(eq(calendarItems.workspaceId, workspaceId));
+  if ((total?.n ?? 0) + body.tasks.length > MAX_ITEMS_PER_WORKSPACE) throw fail("QUOTA", "日历项已达上限，请先清理");
+
+  const rows = await db.insert(calendarItems).values(body.tasks.map(t => ({
+    workspaceId, kind: "task", title: t.title.trim(), dueAt: date(t.dueAt), timezone: DEFAULT_TZ,
+    priority: t.priority, source: "ai", sourceNoteId: note.id, notebookId: note.notebookId,
+    createdBy: user.id, updatedBy: user.id,
+  }))).returning();
+  await audit(workspaceId, user.id, "calendar.tasks.confirm", note.id, { count: rows.length }, "note");
+  return ok(c, { items: rows.map(r => itemDto(r, note.title)) }, 201);
 });

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { BellRing, CalendarDays, ChevronRight, FileText, Inbox, Link2Off, PenLine, Plus, RotateCcw, Star, UserPlus, X } from "lucide-react";
+import { BellRing, CalendarDays, ChevronRight, FileText, History, Inbox, Link2Off, PenLine, Plus, RotateCcw, Sparkles, Star, UserPlus, X } from "lucide-react";
 import { api } from "../api";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
@@ -1346,6 +1346,8 @@ export function TodayPage() {
   const nav = useNavigate();
   const toast = useToast();
   const [data, setData] = useState<TodayData | null>(null);
+  const [review, setReview] = useState<ReviewData | null>(null);
+  const [onThisDay, setOnThisDay] = useState<OnThisDayData | null>(null);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -1353,6 +1355,12 @@ export function TodayPage() {
     catch (e) { setError((e as Error).message); }
   }, [wsId]);
   useEffect(() => { void load(); }, [load]);
+
+  // 回看是加分项，拉不到就整段不出现，别把今天页一起拖垮
+  useEffect(() => {
+    api<ReviewData>(`/api/v1/workspaces/${wsId}/calendar/review`).then(setReview).catch(() => {});
+    api<OnThisDayData>(`/api/v1/workspaces/${wsId}/calendar/on-this-day`).then(setOnThisDay).catch(() => {});
+  }, [wsId]);
 
   async function toggle(item: CalendarItem, done: boolean) {
     try {
@@ -1420,7 +1428,71 @@ export function TodayPage() {
             </button>)}
           </div> : <p className="text-xs text-muted-foreground">今天还没动过笔记。<button className="underline underline-offset-2" onClick={() => void openDiary()}>写点什么</button>。</p>}
         </section>
+
+        {review && <WeekReview review={review} />}
+        {onThisDay?.years.length ? <OnThisDay years={onThisDay.years} tz={tz} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} /> : null}
       </div>
     </ScrollArea>
   </div>;
+}
+
+// ── 去年今日与回顾（设计 16 §4.8）──────────────────────────────────────
+
+type ReviewData = {
+  from: string; to: string; completed: number; notesTouched: number; eventMinutes: number; overdue: number;
+  bestDay: { day: string; count: number } | null;
+  byNotebook: Array<{ notebookId: string; title: string; count: number }>;
+};
+type OnThisDayData = {
+  date: string;
+  years: Array<{ year: number; date: string; notes: Array<{ id: string; title: string; notebook: string | null; createdAt: string }>; items: CalendarItem[] }>;
+};
+
+const hours = (min: number) => (min >= 60 ? `${(min / 60).toFixed(min % 60 ? 1 : 0)} 小时` : `${min} 分钟`);
+
+/** 四个数就够了。不做同比环比，不给评分——知识库不是打卡机。 */
+function WeekReview({ review }: { review: ReviewData }) {
+  const stats: Array<[string, string, string]> = [
+    ["完成", String(review.completed), "件待办"],
+    ["动过", String(review.notesTouched), "篇笔记"],
+    ["开会", hours(review.eventMinutes), "在日程上"],
+    ["还欠", String(review.overdue), "件逾期"],
+  ];
+  return <section className="rounded-xl border border-border p-3 md:col-span-2">
+    <h2 className="mb-2 flex items-center gap-1.5 text-sm font-semibold"><Sparkles className="size-4" />本周回顾
+      <span className="ml-1 font-normal text-muted-foreground">{review.from} — {review.to}</span>
+    </h2>
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {stats.map(([label, value, unit]) => <div key={label} className="rounded-lg bg-muted/40 px-3 py-2">
+        <p className="text-[11px] text-muted-foreground">{label}</p>
+        <p className="text-lg font-semibold tabular-nums leading-tight">{value}</p>
+        <p className="text-[11px] text-muted-foreground">{unit}</p>
+      </div>)}
+    </div>
+    {(review.bestDay || review.byNotebook.length > 0) && <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+      {review.bestDay && <span>清得最多的一天是 <strong className="font-medium text-foreground">{review.bestDay.day}</strong>（{review.bestDay.count} 件）</span>}
+      {review.byNotebook.slice(0, 3).map(n => <span key={n.notebookId}>{n.title} · {n.count} 篇</span>)}
+    </div>}
+    {/* 统计只算你看得见的条目，所以同一周两个人看到的可以不一样 */}
+    <p className="mt-2 text-[11px] text-muted-foreground">只统计你能看到的内容。</p>
+  </section>;
+}
+
+function OnThisDay({ years, tz, onOpenNote }: { years: OnThisDayData["years"]; tz: string; onOpenNote: (id: string) => void }) {
+  return <section className="rounded-xl border border-border p-3 md:col-span-2">
+    <h2 className="mb-2 flex items-center gap-1.5 text-sm font-semibold"><History className="size-4" />去年今日</h2>
+    <div className="space-y-3">
+      {years.map(y => <div key={y.year}>
+        <p className="mb-1 text-xs font-medium text-muted-foreground">{y.year} 年 · {y.date}</p>
+        <div className="space-y-0.5">
+          {y.notes.map(n => <button key={n.id} onClick={() => onOpenNote(n.id)} className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs hover:bg-muted">
+            <FileText className="size-3 shrink-0 text-muted-foreground" />
+            <span className="truncate">{n.title}</span>
+            {n.notebook && <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{n.notebook}</span>}
+          </button>)}
+          {y.items.map(i => <ItemChip key={`${i.id}:${i.occurrenceStart}`} item={i} tz={tz} onToggle={() => {}} />)}
+        </div>
+      </div>)}
+    </div>
+  </section>;
 }
