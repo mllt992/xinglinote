@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import * as Avatar from "@radix-ui/react-avatar";
 import {
   Ban, Check, ChevronRight, Copy, Download, HardDrive, KeyRound, LayoutGrid, MoreHorizontal,
-  Plus, Search, Shield, Sparkles, Ticket, Trash2, UserCog, Users, X,
+  Plus, Search, Shield, ShieldCheck, Sparkles, Ticket, Trash2, UserCog, Users, X,
 } from "lucide-react";
 import { api } from "../api";
 import { cn } from "../lib/utils";
@@ -13,20 +13,23 @@ import { useConfirm } from "./ui/confirm";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { FormError } from "./ui/form-error";
 import { Input } from "./ui/input";
+import { Switch } from "./ui/switch";
 import { useToast } from "./ui/toast";
+import { ModerationConfig, ModerationQueue } from "./moderation-panel";
 
-type Tab = "overview" | "registration" | "codes" | "users";
+type Tab = "overview" | "registration" | "moderation" | "codes" | "users";
 type AdminUser = { id: string; displayName: string; email: string; handle: string; roleInstance: string; status: string; createdAt?: string };
 type AdminCode = { id: string; prefix: string; usedCount: number; maxUses: number; status: string; note?: string | null; expiresAt?: string | null; createdAt?: string; skipEmailVerification?: boolean; bindRole?: string | null };
 type Overview = {
   userCount: number; workspaceCount: number; adminCount: number; codeCount: number; activeCodeCount: number;
-  recentUsers: AdminUser[]; settings: Record<string, boolean | number | string | null>;
+  recentUsers: AdminUser[]; settings: Record<string, boolean | number | string | null>; pendingModerationCount?: number;
 };
 type PageResult<T> = T & { total: number; page: number; pageSize: number };
 
 const TABS: { id: Tab; label: string; hint: string; icon: typeof LayoutGrid }[] = [
   { id: "overview", label: "概览", hint: "规模与关键开关", icon: LayoutGrid },
   { id: "registration", label: "注册策略", hint: "谁能进来、能做什么", icon: Shield },
+  { id: "moderation", label: "内容审核", hint: "AI 先审，拦下来的转人工", icon: ShieldCheck },
   { id: "codes", label: "注册码", hint: "批量发放一次性准入", icon: Ticket },
   { id: "users", label: "用户", hint: "封禁、角色与状态", icon: Users },
 ];
@@ -89,13 +92,6 @@ function statusTone(status: string) {
 
 function StatusBadge({ status }: { status: string }) {
   return <Badge className={statusTone(status)}>{STATUS_LABEL[status] ?? status}</Badge>;
-}
-
-function Switch({ checked, onCheckedChange, disabled, label }: { checked: boolean; onCheckedChange: (next: boolean) => void; disabled?: boolean; label: string }) {
-  return <button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} onClick={() => onCheckedChange(!checked)}
-    className={cn("relative h-6 w-10 shrink-0 rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50", checked ? "bg-primary" : "bg-muted ring-1 ring-inset ring-border")}>
-    <span className={cn("pointer-events-none absolute top-0.5 left-0.5 block size-5 rounded-full bg-background shadow-sm transition-transform", checked && "translate-x-4")} />
-  </button>;
 }
 
 function Field({ title, children }: { title: string; children: ReactNode }) {
@@ -340,6 +336,7 @@ export function AdminPage() {
                 ["自建工作区", !!overview?.settings?.allowUserCreateWorkspace],
                 ["广场", !!overview?.settings?.squareEnabled],
                 ["AI", !!overview?.settings?.aiEnabled],
+                ["内容审核", !!overview?.settings?.moderationEnabled],
               ].map(([label, on]) => <div key={String(label)} className="flex items-center justify-between bg-background px-5 py-3.5">
                 <span className="text-sm">{label}</span>
                 <Badge className={on ? statusTone("active") : undefined}>{on ? "开" : "关"}</Badge>
@@ -355,6 +352,11 @@ export function AdminPage() {
               ? <p className="px-5 py-10 text-center text-sm text-muted-foreground">还没有用户。</p>
               : overview.recentUsers.map((u, i) => <div key={u.id} className={cn("px-5 py-3.5", i && "border-t")}><UserRow user={u} /></div>)}
           </section>
+        </div>}
+
+        {!error && !loading && tab === "moderation" && <div className="space-y-6">
+          <ModerationConfig settings={overview?.settings ?? {}} onSaved={loadOverview} />
+          <ModerationQueue />
         </div>}
 
         {!error && !loading && tab === "registration" && <div className="space-y-5">

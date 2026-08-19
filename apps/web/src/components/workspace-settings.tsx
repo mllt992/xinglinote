@@ -2,13 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import * as Avatar from "@radix-ui/react-avatar";
 import {
-  Archive, ArrowUpRight, Bot, CalendarDays, Check, ChevronRight, CircleCheck, CloudUpload, Copy, Crown,
+  Archive, ArrowUpRight, Bot, CalendarDays, Check, CircleCheck, CloudUpload, Copy, Crown,
   Download, FileClock, FileText, Link2, LoaderCircle, LogOut, MoreHorizontal, Notebook, Paperclip, Pencil,
   Plus, Search, ShieldAlert, Snowflake, Sparkles, Trash2, TriangleAlert, UserPlus, Users, X,
 } from "lucide-react";
 import { api } from "../api";
 import { cn } from "../lib/utils";
 import { AuditPanel, BackupPanel, DangerPanel, SharesPanel, TransferPanel } from "./manage-panels";
+import { ModerationQueue } from "./moderation-panel";
+import { SettingsShell, cardCls } from "./settings-shell";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { useConfirm } from "./ui/confirm";
@@ -33,10 +35,10 @@ type Overview = {
 };
 
 /** 这一页自己负责的分区。回收站、AI 与 MCP、外观也在同一个左栏里，但它们是独立路由，见 settings-shell。 */
-type SectionId = "overview" | "members" | "shares" | "backup" | "transfer" | "audit" | "danger";
+type SectionId = "overview" | "members" | "shares" | "backup" | "transfer" | "audit" | "moderation" | "danger";
 
-const SECTION_IDS: SectionId[] = ["overview", "members", "shares", "backup", "transfer", "audit", "danger"];
-const MANAGER_ONLY: SectionId[] = ["backup", "audit", "danger"];
+const SECTION_IDS: SectionId[] = ["overview", "members", "shares", "backup", "transfer", "audit", "moderation", "danger"];
+const MANAGER_ONLY: SectionId[] = ["backup", "audit", "moderation", "danger"];
 
 const ROLES = ["admin", "editor", "viewer"] as const;
 const ROLE_ORDER = ["owner", "admin", "editor", "viewer"];
@@ -112,93 +114,30 @@ export function WorkspaceSettings() {
 
   const ws = overview?.workspace;
   const personal = ws?.kind === "personal";
-  const counts: Partial<Record<SectionId, number>> = {
+  const counts = {
     members: overview?.stats.members ?? 0,
     shares: overview?.shares.active ?? 0,
     backup: overview?.backup?.targets ?? 0,
+    trash: overview?.stats.trashedNotes ?? 0,
   };
 
-  return <div className="min-h-full bg-muted/25">
-    <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-background/90 px-4 backdrop-blur">
-      <Button variant="ghost" onClick={() => nav(`/w/${wsId}`)}><ChevronRight className="rotate-180" />返回工作区</Button>
-      <nav aria-label="位置" className="ml-1 hidden min-w-0 items-center gap-1.5 text-sm text-muted-foreground md:flex">
-        <span className="truncate font-medium text-foreground">{ws?.name ?? "工作区"}</span>
-        <ChevronRight className="size-3.5" />
-        <span>{current.label}</span>
-      </nav>
-      <div className="ml-auto flex items-center gap-2">
-        {ws?.frozen && <Badge className="gap-1 border-destructive/40 text-destructive"><Snowflake className="size-3" />已冻结</Badge>}
-        <Button variant="outline" size="sm" onClick={() => nav(`/w/${wsId}`)}>打开工作区<ArrowUpRight /></Button>
-      </div>
-    </header>
-
-    <div className="mx-auto grid max-w-[1440px] gap-6 px-4 py-6 lg:grid-cols-[264px_minmax(0,1fr)] lg:gap-8 lg:px-6 lg:py-8">
-      <aside className="min-w-0 lg:sticky lg:top-[4.5rem] lg:self-start">
-        <div className={cn(cardCls, "mb-3 flex items-center gap-3 p-3")}>
-          <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-primary text-lg font-semibold text-primary-foreground">{(ws?.name ?? "工").slice(0, 1)}</span>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold tracking-[-0.01em]">{ws?.name ?? "…"}</p>
-            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{personal ? "个人工作区" : "协作工作区"} · {ROLE_LABEL[overview?.myRole ?? ""] ?? "成员"}</p>
-          </div>
-        </div>
-        <nav aria-label="工作区设置" className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
-          {sections.map(item => {
-            const Icon = item.icon;
-            const active = item.id === tab;
-            const n = counts[item.id];
-            return <button key={item.id} type="button" onClick={() => go(item.id)} aria-current={active ? "page" : undefined}
-              className={cn("flex shrink-0 items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50",
-                active ? "bg-background font-medium shadow-sm ring-1 ring-border" : "text-muted-foreground hover:bg-muted hover:text-foreground")}>
-              <Icon className={cn("size-4 shrink-0", active && "text-primary")} />
-              <span className="flex-1 whitespace-nowrap">{item.label}</span>
-              {n != null && n > 0 && <span className="rounded-full px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground">{n}</span>}
-            </button>;
-          })}
-        </nav>
-        <div className="mt-3 hidden lg:block">
-          <p className="px-3 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">相关页面</p>
-          {[
-            { label: "回收站", icon: Archive, to: `/w/${wsId}/trash` },
-            { label: "AI 与 MCP", icon: Bot, to: `/settings/integrations?workspace=${wsId}` },
-            { label: "圈子动态", icon: Users, to: `/w/${wsId}/feed` },
-          ].map(l => <button key={l.label} onClick={() => nav(l.to)}
-            className="group flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50">
-            <l.icon className="size-4" /><span className="flex-1">{l.label}</span>
-            <ArrowUpRight className="size-3.5 opacity-0 transition-opacity group-hover:opacity-100" />
-          </button>)}
-        </div>
-      </aside>
-
-      <main className="min-w-0">
-        <div className="mb-5">
-          <h1 className="text-2xl font-semibold tracking-[-0.035em]">{current.label}</h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">{current.hint}</p>
-        </div>
-
-        {error && <div className={cn(cardCls, "p-10 text-center")}>
-          <span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground"><TriangleAlert className="size-5" /></span>
-          <p className="mt-3 text-sm font-medium">打不开这个工作区的设置</p>
-          <p className="mt-1 text-xs text-muted-foreground">{error}</p>
-          <Button className="mt-4" variant="outline" onClick={() => { setLoading(true); reload().then(() => setError("")).catch(e => setError((e as Error).message)).finally(() => setLoading(false)); }}>重试</Button>
-        </div>}
-
-        {!error && loading && <div className="space-y-3">
-          <div className="h-32 animate-pulse rounded-xl border border-border bg-muted/60" />
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{[0, 1, 2].map(i => <div key={i} className="h-24 animate-pulse rounded-xl border border-border bg-muted/60" />)}</div>
-        </div>}
-
-        {!error && !loading && overview && ws && <>
-          {tab === "overview" && <OverviewSection overview={overview} onGo={go} onRenamed={loadOverview} nav={nav} />}
-          {tab === "members" && <MembersSection wsId={wsId} data={membersData} invites={invites} personal={personal} onReload={reload} />}
-          {tab === "shares" && <SharesPanel workspaceId={wsId} />}
-          {tab === "backup" && <BackupPanel workspaceId={wsId} />}
-          {tab === "transfer" && <TransferPanel workspaceId={wsId} workspaceName={ws.name} canManage={canManage} />}
-          {tab === "audit" && <AuditPanel workspaceId={wsId} />}
-          {tab === "danger" && <DangerPanel workspaceId={wsId} workspaceName={ws.name} kind={ws.kind} role={overview.myRole} frozen={ws.frozen} deletionScheduledAt={ws.deletionScheduledAt} onChanged={() => { void reload(); }} />}
-        </>}
-      </main>
-    </div>
-  </div>;
+  return <SettingsShell
+    wsId={wsId} current={tab} counts={counts}
+    workspace={overview && ws ? { id: ws.id, name: ws.name, kind: ws.kind, role: overview.myRole, frozen: ws.frozen } : null}
+    loading={loading} error={error}
+    onRetry={() => { setLoading(true); reload().then(() => setError("")).catch(e => setError((e as Error).message)).finally(() => setLoading(false)); }}
+  >
+    {overview && ws && <>
+      {tab === "overview" && <OverviewSection overview={overview} onGo={go} onRenamed={loadOverview} nav={nav} />}
+      {tab === "members" && <MembersSection wsId={wsId} data={membersData} invites={invites} personal={personal} onReload={reload} />}
+      {tab === "shares" && <SharesPanel workspaceId={wsId} />}
+      {tab === "backup" && <BackupPanel workspaceId={wsId} />}
+      {tab === "transfer" && <TransferPanel workspaceId={wsId} workspaceName={ws.name} canManage={canManage} />}
+      {tab === "audit" && <AuditPanel workspaceId={wsId} />}
+      {tab === "moderation" && <ModerationQueue workspaceId={wsId} />}
+      {tab === "danger" && <DangerPanel workspaceId={wsId} workspaceName={ws.name} kind={ws.kind} role={overview.myRole} frozen={ws.frozen} deletionScheduledAt={ws.deletionScheduledAt} onChanged={() => { void reload(); }} />}
+    </>}
+  </SettingsShell>;
 }
 
 /* ---------------------------------- 概览 ---------------------------------- */
@@ -360,7 +299,7 @@ function IdentityCard({ overview, onRenamed, onGo, nav }: { overview: Overview; 
     </div>
     {overview.stats.mcpActive > 0 && <div className="flex flex-wrap items-center gap-2 border-t border-border bg-muted/40 px-5 py-2.5 text-xs text-muted-foreground">
       <Bot className="size-3.5" /><span>{overview.stats.mcpActive} 把 MCP 钥匙正在这个工作区里生效。</span>
-      <button className="underline underline-offset-4" onClick={() => nav(`/settings/integrations?workspace=${ws.id}`)}>去看看</button>
+      <button className="underline underline-offset-4" onClick={() => nav(`/w/${ws.id}/settings/integrations`)}>去看看</button>
     </div>}
   </section>;
 }

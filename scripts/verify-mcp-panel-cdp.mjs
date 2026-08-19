@@ -15,7 +15,7 @@ const click = async selectorExpr => { const rect = await ex(`(()=>{const el=${se
 
 await go('http://127.0.0.1:12098/app');
 const wsId = await ex('location.pathname.split("/")[2]||""');
-await go(`http://127.0.0.1:12098/settings/integrations?workspace=${wsId}`);
+await go(`http://127.0.0.1:12098/w/${wsId}/settings/integrations`);
 const result = {};
 result.mcpTabOpens = await click(`[...document.querySelectorAll('[role=tab]')].find(x=>x.textContent.trim()==='MCP 钥匙')`);
 const listText = await ex('document.body.innerText');

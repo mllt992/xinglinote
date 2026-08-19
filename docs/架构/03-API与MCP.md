@@ -110,6 +110,8 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | POST | `/api/v1/posts/:id/like` | |
 | POST | `/api/v1/posts/:id/promote` | 转正为笔记 |
 | POST | `/api/v1/notes/:id/excerpt-to-post` | |
+| GET | `/api/v1/moderation/queue` | status=pending \| handled，workspaceId= 限本圈子，scope= 限场景 |
+| PATCH | `/api/v1/moderation/:id` | action=approve \| reject，note 为驳回理由 |
 | POST | `/api/v1/ai/write` | 写作，回 diff |
 | POST | `/api/v1/ai/ask` | SSE 流 |
 | GET/PATCH | `/api/v1/workspaces/:id/ai` | |
