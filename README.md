@@ -5,9 +5,11 @@
 三栏编辑与双链、导入导出、附件与回收站、分享与文档站、AI 与 `ai_index`、MCP 钥匙、S3/WebDAV 备份、
 身份生命周期，以及广场、评论与纠错。
 
-日历（[设计 16](docs/设计/16-日历与任务.md)）也已落地 P0 与 P1：日 / 周 / 月 / 议程四视图、笔记任务
+日历（[设计 16](docs/设计/16-日历与任务.md)）P0 / P1 / P2 全部落地：日 / 周 / 月 / 议程四视图、笔记任务
 双向同步（块锚定位，勾选回写正文）、拖拽改期与拉伸改时长、撤销、提醒、重复规则、今天页与日记入口、
-ICS 订阅与导出，以及 `list_tasks` / `list_events` / `create_task` / `complete_task` 四个 MCP 工具。
+ICS 订阅与导出，以及 `list_tasks` / `list_events` / `create_task` / `complete_task` 四个 MCP 工具；
+P2 补上浏览器推送（自签 VAPID、自己加密，不经第三方）、多选批量操作、日历模板、去年今日与周回顾、
+以及「AI 从纪要提待办」——只给候选，人确认过才写库。
 
 画图（[设计 17 §3.0](docs/设计/17-编辑器方案.md)）走 ` ```mermaid ` 代码块：预览与编辑器里就地渲染、
 渲染库按需加载，外加「AI 画图」——说一句话生成或改一张图，画得出来才让插进正文。
@@ -59,6 +61,7 @@ node scripts/verify-calendar-core.mjs   # 日历 CRUD、时区边界、ACL、409
 node scripts/verify-calendar-sync.mjs   # 笔记 ↔ 日历双向同步、块锚、版本合并、脱链
 node scripts/verify-calendar-recur.mjs  # 重复展开、单次例外、「此后全部」
 node scripts/verify-calendar-ics.mjs    # ICS 导出与订阅（含 SSRF 拦截）、日历 MCP 四工具
+node scripts/verify-calendar-p2.mjs     # 批量操作、模板、去年今日 / 周回顾、AI 提待办不写库、推送
 node --experimental-strip-types scripts/verify-transfer.mjs   # 导入向导、zip 导出、版本裁剪（约 3 分钟）
 node scripts/verify-manage-cdp.mjs
 node scripts/verify-gaps-cdp.mjs

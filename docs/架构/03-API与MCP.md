@@ -155,6 +155,19 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | POST | `/api/v1/calendar/feed-tokens/:fid/rotate` | 轮换，旧地址立即失效 |
 | DELETE | `/api/v1/calendar/feed-tokens/:fid` | 吊销 |
 | GET | `/calendar/feed/:token.ics` | **不在 `/api/v1` 下**，匿名可读，返回 `text/calendar` |
+| POST | `/api/v1/workspaces/:id/calendar/batch` | `{ ids[≤200], action, … }`；逐条鉴权、允许部分成功，回 `{changed, snapshot, failed[]}`，`action=revert` 拿快照撤销 |
+| GET/POST | `/api/v1/workspaces/:id/calendar/templates` | 模板；建时可传 `fromItemIds` 由服务端折算成相对偏移 |
+| PATCH/DELETE | `/api/v1/calendar/templates/:tid` | `scope=workspace` 的只有 owner / admin 能改 |
+| POST | `/api/v1/calendar/templates/:tid/apply` | `{ date, preview? }`；`preview=true` 只算不写 |
+| GET | `/api/v1/workspaces/:id/calendar/on-this-day` | 往年同月日的笔记与条目，只读 |
+| GET | `/api/v1/workspaces/:id/calendar/review` | 周回顾；统计只算调用者可见的内容 |
+| POST | `/api/v1/workspaces/:id/calendar/extract-tasks` | AI 从纪要提待办，**只回候选、一条都不写库** |
+| POST | `/api/v1/workspaces/:id/calendar/tasks-from-note` | 人确认后才落库，`source=ai`，一次最多 20 条 |
+| GET | `/api/v1/push/config` | 推送开没开、VAPID 公钥 |
+| GET/POST | `/api/v1/push/devices` | 本人的推送设备，按 endpoint upsert，每人最多 10 台 |
+| DELETE | `/api/v1/push/devices/:id` | 移除一台 |
+| POST | `/api/v1/push/test` | 给自己发一条测试推送，6 次 / 分钟 |
+| POST | `/api/v1/admin/push/vapid` | 生成 / 轮换 VAPID；轮换会把所有旧订阅一并置 `gone` |
 
 导出内容只含标题、时间与回本实例的 `URL`，**不含 `DESCRIPTION`**，任务导成 `VEVENT`（标题带 `☐` / `☑`）而不是 `VTODO`。
 订阅抓取每一跳都重新做 SSRF 校验（私有网段一律拒），条件请求带 `If-None-Match`，连续失败 5 次自动停用并通知创建者。
