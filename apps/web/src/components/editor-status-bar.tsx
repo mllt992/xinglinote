@@ -15,6 +15,7 @@ export function EditorStatusBar({
   bodyMd,
   cursor,
   readOnly,
+  vimMode,
   right,
 }: {
   status: string;
@@ -22,6 +23,8 @@ export function EditorStatusBar({
   bodyMd: string;
   cursor: CursorInfo | null;
   readOnly: boolean;
+  /** Vim keymap 开着时的当前模式；关着就是 null（设计 17 §3.3）。 */
+  vimMode?: string | null;
   right?: React.ReactNode;
 }) {
   const stats = useMemo(() => ({ words: countWords(bodyMd), chars: bodyMd.length, lines: bodyMd ? bodyMd.split("\n").length : 0 }), [bodyMd]);
@@ -33,6 +36,7 @@ export function EditorStatusBar({
         {status}
       </span>
       {readOnly && <span className="inline-flex items-center gap-1"><Lock className="size-3" />只读</span>}
+      {vimMode && <span className="rounded bg-foreground px-1.5 font-medium tracking-wider text-background">{vimMode}</span>}
       <span className="ml-auto tabular-nums">{stats.words} 字</span>
       <span className="tabular-nums">{stats.chars} 字符</span>
       <span className="hidden tabular-nums sm:inline">{stats.lines} 行</span>

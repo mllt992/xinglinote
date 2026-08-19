@@ -8,6 +8,8 @@ export type LayoutPrefs = {
   typewriter: boolean;
   /** 即时渲染（Typora 那套）：标记按元素显隐、表格就地渲染、正文比例字体。 */
   wysiwyg: boolean;
+  /** Vim keymap。默认关：少数人的强需求、多数人的灾难（设计 17 §3.3）。 */
+  vim: boolean;
 };
 
 const KEY = "kb.layout";
@@ -19,6 +21,7 @@ export const DEFAULT_LAYOUT: LayoutPrefs = {
   showTree: true,
   typewriter: false,
   wysiwyg: true,
+  vim: false,
 };
 
 export const NOTEBOOKS_MIN = 160, NOTEBOOKS_MAX = 420;
@@ -37,6 +40,7 @@ export function loadLayout(): LayoutPrefs {
       showTree: raw.showTree !== false,
       typewriter: raw.typewriter === true,
       wysiwyg: raw.wysiwyg !== false,
+      vim: raw.vim === true,
     };
   } catch { return DEFAULT_LAYOUT; }
 }

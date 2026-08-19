@@ -5,7 +5,7 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { bracketMatching, indentOnInput } from "@codemirror/language";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
-import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState, Prec } from "@codemirror/state";
 import {
   EditorView, crosshairCursor, drawSelection, dropCursor, highlightActiveLine,
   keymap, placeholder as placeholderExt, rectangularSelection,
@@ -17,11 +17,14 @@ import { markdownSyntaxExtensions } from "./markdown-syntax";
 import { slashCompletion } from "./slash-menu";
 import { typewriterScroll } from "./typewriter";
 import { editorHighlighting, editorTheme } from "./theme";
+import { cachedVim, loadVim, vimExtension, vimModeOf, type VimMode } from "./vim";
 import { wikiCompletion, type WikiCompleteOptions } from "./wiki-complete";
 
 const readOnlyCompartment = new Compartment();
 // 即时渲染要换掉整个装饰插件，用隔间热替换，省得为一个开关重建编辑器。
 const livePreviewCompartment = new Compartment();
+// Vim 是按需加载的，加载完才往这个隔间里塞，所以它天生就得是隔间而不是初始扩展。
+const vimCompartment = new Compartment();
 
 export type MarkdownEditorHandle = {
   /** 把某一源码行滚到视口顶部（0 基，和预览的 `data-line` 同一套编号）。 */
@@ -54,6 +57,8 @@ export function MarkdownEditor({
   completion,
   typewriter = false,
   wysiwyg = false,
+  vim = false,
+  onVimMode,
   readOnly = false,
   placeholder = "",
   resetKey,
@@ -79,6 +84,10 @@ export function MarkdownEditor({
   typewriter?: boolean;
   /** 即时渲染（Typora 那套）：标记按元素显隐、表格就地渲染、正文比例字体。 */
   wysiwyg?: boolean;
+  /** Vim keymap。按需加载，关着的时候一个字节都不下。 */
+  vim?: boolean;
+  /** Vim 模式变了：底栏拿它显示 NORMAL / INSERT / VISUAL；关着时给 null。 */
+  onVimMode?: (mode: VimMode | null) => void;
   readOnly?: boolean;
   placeholder?: string;
   /** 换一篇笔记时传新的 key，光标与滚动位置会重置。 */
@@ -90,9 +99,10 @@ export function MarkdownEditor({
   const host = useRef<HTMLDivElement | null>(null);
   const view = useRef<EditorView | null>(null);
   // 这些回调每次渲染都是新函数，用 ref 兜住，免得为了它们重建整个编辑器。
-  const latest = useRef({ onChange, onSave, onWiki, onUpload, onScrollLine, onCursor, completion, typewriter });
-  latest.current = { onChange, onSave, onWiki, onUpload, onScrollLine, onCursor, completion, typewriter };
+  const latest = useRef({ onChange, onSave, onWiki, onUpload, onScrollLine, onCursor, onVimMode, completion, typewriter });
+  latest.current = { onChange, onSave, onWiki, onUpload, onScrollLine, onCursor, onVimMode, completion, typewriter };
   const mine = useRef(value);
+  const vimOn = useRef(vim);
 
   useImperativeHandle(ref, () => ({
     scrollToLine: line => {
@@ -141,6 +151,21 @@ export function MarkdownEditor({
       state: EditorState.create({
         doc: value,
         extensions: [
+          // Vim 的 keymap 是 Prec.highest，会盖住下面那套；把应用级快捷键也提到最高，
+          // 让 Ctrl/⌘+S、Ctrl+B 这些照旧——它们是宿主的约定，换个编辑模式不该改变「保存」怎么按。
+          Prec.highest(keymap.of([
+            { key: "Mod-s", preventDefault: true, run: () => { latest.current.onSave?.(); return true; } },
+            { key: "Mod-b", run: toggleWrap("**") },
+            { key: "Mod-i", run: toggleWrap("*") },
+            { key: "Mod-e", run: toggleWrap("`") },
+            { key: "Mod-Shift-x", run: toggleWrap("~~") },
+            { key: "Mod-Shift-k", run: insertLink },
+            { key: "Mod-Shift-l", run: insertWikiLink },
+            { key: "Mod-Shift-o", run: toggleLinePrefix("> ", /^\s*>[ \t]?/) },
+            { key: "Mod-Shift-u", run: toggleLinePrefix("- ", /^\s*(?:[-*+]|\d+[.)])[ \t]+/) },
+            { key: "Mod-Shift-Enter", run: toggleTask },
+          ])),
+          vimCompartment.of(vim && cachedVim() ? vimExtension(cachedVim()!, () => latest.current.onSave?.()) : []),
           history(),
           drawSelection(),
           dropCursor(),
@@ -167,16 +192,6 @@ export function MarkdownEditor({
           editorTheme,
           placeholderExt(placeholder),
           keymap.of([
-            { key: "Mod-s", preventDefault: true, run: () => { latest.current.onSave?.(); return true; } },
-            { key: "Mod-b", run: toggleWrap("**") },
-            { key: "Mod-i", run: toggleWrap("*") },
-            { key: "Mod-e", run: toggleWrap("`") },
-            { key: "Mod-Shift-x", run: toggleWrap("~~") },
-            { key: "Mod-Shift-k", run: insertLink },
-            { key: "Mod-Shift-l", run: insertWikiLink },
-            { key: "Mod-Shift-o", run: toggleLinePrefix("> ", /^\s*>[ \t]?/) },
-            { key: "Mod-Shift-u", run: toggleLinePrefix("- ", /^\s*(?:[-*+]|\d+[.)])[ \t]+/) },
-            { key: "Mod-Shift-Enter", run: toggleTask },
             ...closeBracketsKeymap,
             ...searchKeymap,
             ...historyKeymap,
@@ -198,6 +213,9 @@ export function MarkdownEditor({
                 const line = update.state.doc.lineAt(head);
                 report({ line: line.number, col: head - line.from + 1, selected: to - from });
               }
+              // 模式切换本身不产生事务，但进出插入模式一定伴随选区或文档变化，
+              // 蹭这一趟上报就够了，不必再往 view 上挂一个轮询。
+              if (vimOn.current) latest.current.onVimMode?.(vimModeOf(update.view));
             }
           }),
         ],
@@ -250,5 +268,23 @@ export function MarkdownEditor({
     });
   }, [wysiwyg]);
 
-  return <div ref={host} className={className} data-editor="markdown" data-wysiwyg={wysiwyg ? "1" : undefined} />;
+  // Vim：开了才去下那两百 KB。加载失败就当没开，并把 null 报上去让外面提示。
+  useEffect(() => {
+    let alive = true;
+    vimOn.current = vim;
+    if (!vim) {
+      view.current?.dispatch({ effects: vimCompartment.reconfigure([]) });
+      onVimMode?.(null);
+      return;
+    }
+    void loadVim().then(mod => {
+      if (!alive || !view.current) return;
+      if (!mod) { vimOn.current = false; onVimMode?.(null); return; }
+      view.current.dispatch({ effects: vimCompartment.reconfigure(vimExtension(mod, () => latest.current.onSave?.())) });
+      onVimMode?.(vimModeOf(view.current));
+    });
+    return () => { alive = false; };
+  }, [vim, onVimMode, resetKey]);
+
+  return <div ref={host} className={className} data-editor="markdown" data-wysiwyg={wysiwyg ? "1" : undefined} data-vim={vim ? "1" : undefined} />;
 }
