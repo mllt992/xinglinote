@@ -2,8 +2,9 @@ import { and,asc,eq,lte,or,lt,sql } from "drizzle-orm";
 import { readFile,rm } from "node:fs/promises";
 import { join } from "node:path";
 import { db } from "../../api/src/db/client.ts";
-import { aiChunks,aiProviders,aiUsage,attachments,backupRuns,backupTargets,auditLogs,authTokens,backgroundJobs,calendarItems,calendarReminders,calendarSubscriptions,comments,corrections,folders,links,mcpTokens,notebookMembers,notebooks,notes,noteVersions,notifications,posts,postReactions,sessions,shareLinks,users,workspaceInvites,workspaceMembers,workspaces } from "../../api/src/db/schema.ts";
+import { aiChunks,aiProviders,aiUsage,attachments,backupRuns,backupTargets,auditLogs,authTokens,backgroundJobs,calendarItems,calendarReminders,calendarSubscriptions,comments,corrections,folders,links,mcpTokens,notebookMembers,notebooks,notes,noteVersions,notifications,posts,postReactions,pushSubscriptions,sessions,shareLinks,users,workspaceInvites,workspaceMembers,workspaces } from "../../api/src/db/schema.ts";
 import { nextOccurrence,reminderFireAt,rescheduleReminders,syncNoteTasks } from "../../api/src/lib/calendar.ts";
+import { pushToUser } from "../../api/src/lib/push.ts";
 import { syncSubscription } from "../../api/src/lib/ics.ts";
 import { sendMail } from "../../api/src/lib/mail.ts";
 import { env } from "../../api/src/env.ts";
@@ -46,10 +47,13 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
    if(reminder.firedAt&&Date.now()-reminder.firedAt.getTime()<600000)return;
    const target=item.assigneeUserId??item.createdBy;
    const when=new Intl.DateTimeFormat("zh-CN",{timeZone:item.timezone,dateStyle:"short",timeStyle:"short"}).format(occurrence??item.startsAt??item.dueAt??new Date());
-   if(reminder.channel==="email"){const[u]=await db.select().from(users).where(eq(users.id,target));if(u?.email&&!u.email.endsWith("@invalid.local"))await sendMail(u.email,`提醒：${item.title}`,`${when}
+   const href=`/w/${item.workspaceId}/calendar?item=${item.id}`;
+   // 推送发不出去（实例没开、这人没设备、全掉线）就落回站内。提醒宁可重也不能凭空消失。
+   if(reminder.channel==="push"){const r=await pushToUser(target,{title:`提醒：${item.title}`,body:when,href,tag:`calendar-${item.id}`});if(!r.sent)await db.insert(notifications).values({userId:target,type:"calendar_reminder",title:item.title,body:when,href});}
+   else if(reminder.channel==="email"){const[u]=await db.select().from(users).where(eq(users.id,target));if(u?.email&&!u.email.endsWith("@invalid.local"))await sendMail(u.email,`提醒：${item.title}`,`${when}
 
 ${env.publicUrl}/w/${item.workspaceId}/calendar?item=${item.id}`);}
-   else await db.insert(notifications).values({userId:target,type:"calendar_reminder",title:item.title,body:when,href:`/w/${item.workspaceId}/calendar?item=${item.id}`});
+   else await db.insert(notifications).values({userId:target,type:"calendar_reminder",title:item.title,body:when,href});
    await db.update(calendarReminders).set({status:"fired",firedAt:new Date()}).where(eq(calendarReminders.id,reminder.id));
    // 重复条目：触发后才排下一个实例，避免往 jobs 表灌几千行
    if(item.rrule&&nextOccurrence(item,new Date(Date.now()+60000)))await rescheduleReminders(item.id);
@@ -71,6 +75,8 @@ ${env.publicUrl}/w/${item.workspaceId}/calendar?item=${item.id}`);}
  }
  if(job.type==="calendar_rollover"){
    // 逾期不自动搬家，只把过期未触发的提醒收尾，避免重启后补发一整天的历史提醒
+   // 失效的推送端点每天清一次：留一天是为了让人在设备列表里看见它挂了，再久就只是垃圾了
+   await db.delete(pushSubscriptions).where(eq(pushSubscriptions.status,"gone"));
    const stale=await db.select().from(calendarReminders).where(eq(calendarReminders.status,"scheduled"));
    for(const r of stale){const[item]=await db.select().from(calendarItems).where(eq(calendarItems.id,r.itemId));if(!item||item.trashedAt||item.status!=="open"){await db.update(calendarReminders).set({status:"skipped"}).where(eq(calendarReminders.id,r.id));continue;}const at=reminderFireAt(item,r,nextOccurrence(item)??undefined);if(at&&at.getTime()<Date.now()-2*3600000)await db.update(calendarReminders).set({status:"skipped"}).where(eq(calendarReminders.id,r.id));}
    return;

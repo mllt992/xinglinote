@@ -218,7 +218,7 @@ const itemBody = z.object({
   rruleUntil: z.string().datetime().nullish(),
   visibility: z.enum(["workspace", "private"]).optional(),
   assigneeUserId: z.string().uuid().nullish(),
-  reminders: z.array(z.object({ kind: z.enum(["relative", "absolute"]).default("relative"), offsetMin: z.number().int().min(-40320).max(0).default(-10), absoluteAt: z.string().datetime().nullish(), channel: z.enum(["inapp", "email"]).default("inapp") })).max(5).optional(),
+  reminders: z.array(z.object({ kind: z.enum(["relative", "absolute"]).default("relative"), offsetMin: z.number().int().min(-40320).max(0).default(-10), absoluteAt: z.string().datetime().nullish(), channel: z.enum(["inapp", "email", "push"]).default("inapp") })).max(5).optional(),
 });
 
 const date = (v: string | null | undefined) => (v ? new Date(v) : null);
@@ -401,7 +401,7 @@ calendarRoutes.put("/calendar/items/:id/reminders", async c => {
       kind: z.enum(["relative", "absolute"]).default("relative"),
       offsetMin: z.number().int().min(-40320).max(0).default(-10),
       absoluteAt: z.string().datetime().nullish(),
-      channel: z.enum(["inapp", "email"]).default("inapp"),
+      channel: z.enum(["inapp", "email", "push"]).default("inapp"),
     })).max(5),
   }).parse(await c.req.json());
   await db.delete(calendarReminders).where(eq(calendarReminders.itemId, item.id));

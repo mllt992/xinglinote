@@ -24,6 +24,7 @@ import { opsRoutes } from "./routes/ops.ts";
 import { workbenchRoutes } from "./routes/workbench.ts";
 import { backupRoutes } from "./routes/backups.ts";
 import { calendarFeedRoutes, calendarRoutes } from "./routes/calendar.ts";
+import { pushRoutes } from "./routes/push.ts";
 import { workspaceLifecycleRoutes } from "./routes/workspace-lifecycle.ts";
 import { db } from "./db/client.ts";
 import { instanceSettings } from "./db/schema.ts";
@@ -70,6 +71,7 @@ app.route("/api/v1", workbenchRoutes);
 app.route("/api/v1", workspaceLifecycleRoutes);
 app.route("/api/v1", backupRoutes);
 app.route("/api/v1", calendarRoutes);
+app.route("/api/v1", pushRoutes);
 
 const web = mountWeb(app);
 

@@ -22,7 +22,10 @@ function likeContains(raw: string | undefined) {
 
 /** 密文也别回前端，UI 只需要知道「配没配」。 */
 function maskSettings(s: typeof instanceSettings.$inferSelect | undefined) {
-  return s ? { ...s, smtpPassword: s.smtpPassword ? "••••••••" : null, moderationApiKey: s.moderationApiKey ? "••••••••" : null } : s;
+  if (!s) return s;
+  // VAPID 私钥一个字节都不该出这台机器；公钥要给前端订阅用，照常回。
+  const { vapidPrivateKey, ...rest } = s;
+  return { ...rest, smtpPassword: s.smtpPassword ? "••••••••" : null, moderationApiKey: s.moderationApiKey ? "••••••••" : null, vapidConfigured: !!vapidPrivateKey };
 }
 
 function publicUser(row: typeof users.$inferSelect) {
@@ -60,7 +63,8 @@ adminRoutes.patch("/admin/settings", async c => {
     moderationEnabled: z.boolean().optional(), moderationSquare: z.boolean().optional(), moderationCircle: z.boolean().optional(), moderationArticle: z.boolean().optional(),
     moderationBaseUrl: z.string().url().nullable().optional(), moderationModel: z.string().max(120).nullable().optional(), moderationApiKey: z.string().max(400).nullable().optional(),
     moderationRules: z.string().max(4000).nullable().optional(), moderationCategories: z.array(z.string().min(1).max(40)).max(20).optional(),
-    moderationThreshold: z.number().int().min(1).max(100).optional(), moderationOnError: z.enum(["pass", "review"]).optional() }).parse(await c.req.json());
+    moderationThreshold: z.number().int().min(1).max(100).optional(), moderationOnError: z.enum(["pass", "review"]).optional(),
+    pushEnabled: z.boolean().optional(), vapidSubject: z.string().max(200).nullable().optional() }).parse(await c.req.json());
   // 前端回填的是掩码，别把 •••••••• 当成新 Key 存进去。
   const key = body.moderationApiKey === undefined || body.moderationApiKey?.startsWith("••") ? undefined : body.moderationApiKey ? seal(body.moderationApiKey) : null;
   const values={...body,smtpPassword:body.smtpPassword?seal(body.smtpPassword):body.smtpPassword,moderationApiKey:key,updatedAt:new Date()};

@@ -35,6 +35,9 @@ export const instanceSettings = pgTable("instance_settings", {
   moderationCategories: jsonb("moderation_categories").notNull().default(["politics", "porn", "violence", "abuse", "illegal", "privacy", "ad"]),
   moderationThreshold: integer("moderation_threshold").notNull().default(60),
   moderationOnError: text("moderation_on_error").notNull().default("review"),
+  /** Web Push：实例级的一对 VAPID 密钥，私钥走 secrets.seal。没配就整个实例不出现推送这个渠道。 */
+  pushEnabled: boolean("push_enabled").notNull().default(false),
+  vapidPublicKey: text("vapid_public_key"), vapidPrivateKey: text("vapid_private_key"), vapidSubject: text("vapid_subject"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -436,3 +439,30 @@ export const noteVisits = pgTable("note_visits", {
   noteId: uuid("note_id").notNull().references(() => notes.id),
   seenAt: timestamp("seen_at", { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [primaryKey({ columns: [t.userId, t.noteId] })]);
+
+/** Web Push 端点：一人多设备，掉线的置 gone 不再重试（设计 16 §5.7）。 */
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  endpoint: text("endpoint").notNull().unique(),
+  p256dh: text("p256dh").notNull(),
+  auth: text("auth").notNull(),
+  userAgent: text("user_agent"),
+  status: text("status").notNull().default("active"),
+  failCount: integer("fail_count").notNull().default(0),
+  lastOkAt: timestamp("last_ok_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+/** 日历模板：只存相对偏移，不存绝对日期，否则模板只能用一次（设计 16 §3.12）。 */
+export const calendarTemplates = pgTable("calendar_templates", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  scope: text("scope").notNull().default("private"),
+  items: jsonb("items").notNull().default([]),
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});

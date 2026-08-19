@@ -358,6 +358,37 @@ const statements = [
   )`,
   `CREATE INDEX IF NOT EXISTS moderation_reviews_pending_idx ON moderation_reviews (status, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS moderation_reviews_target_idx ON moderation_reviews (target_type, target_id)`,
+
+  // —— 日历 P2：Web Push 与模板 ——
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS push_enabled boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS vapid_public_key text`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS vapid_private_key text`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS vapid_subject text`,
+  `CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES users(id),
+    endpoint text NOT NULL UNIQUE,
+    p256dh text NOT NULL,
+    auth text NOT NULL,
+    user_agent text,
+    status text NOT NULL DEFAULT 'active',
+    fail_count integer NOT NULL DEFAULT 0,
+    last_ok_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS push_subscriptions_user_idx ON push_subscriptions (user_id, status)`,
+  `CREATE TABLE IF NOT EXISTS calendar_templates (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id uuid NOT NULL REFERENCES workspaces(id),
+    name text NOT NULL,
+    description text,
+    scope text NOT NULL DEFAULT 'private',
+    items jsonb NOT NULL DEFAULT '[]'::jsonb,
+    created_by uuid NOT NULL REFERENCES users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS calendar_templates_ws_idx ON calendar_templates (workspace_id, scope)`,
 ];
 
 async function main() {

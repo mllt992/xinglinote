@@ -42,6 +42,9 @@ const VIEWS: Array<{ id: View; label: string; key: string }> = [
   { id: "month", label: "月", key: "m" },
   { id: "agenda", label: "议程", key: "a" },
 ];
+type ReminderChannel = "inapp" | "email" | "push";
+/** 推送那一项只在实例配好 VAPID 时才出现——给个点了必然失败的入口比没有更糟。 */
+const CHANNELS: Array<[ReminderChannel, string]> = [["inapp", "站内"], ["push", "推送"], ["email", "邮件"]];
 const WEEK_LABELS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 const HOUR_PX = 48;
 
@@ -103,6 +106,7 @@ export function CalendarPage() {
   const [footprints, setFootprints] = useState<Footprint[]>([]);
   const [panel, setPanel] = useState<InboxData>({ inbox: [], groups: [], overdue: 0, me: "", workspaceKind: "personal", canEdit: true });
   const [panelTab, setPanelTab] = useState<"tasks" | "sync" | null>("tasks");
+  const [pushReady, setPushReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [focusKey, setFocusKey] = useState<string | null>(null);
@@ -113,6 +117,10 @@ export function CalendarPage() {
     // 指派只在团队工作区有意义，但成员列表本身对谁都无害，失败也不该打断日历
     api<{ members: Member[] }>(`/api/v1/workspaces/${wsId}/members`).then(r => setMembers(r.members)).catch(() => {});
   }, [wsId]);
+  useEffect(() => {
+    // 实例级配置，跟工作区无关：没开推送就别在提醒浮层里摆一个必然失败的选项
+    api<{ enabled: boolean }>("/api/v1/push/config").then(r => setPushReady(r.enabled)).catch(() => {});
+  }, []);
   const quickRef = useRef<HTMLInputElement>(null);
   const today = dayKey(civil(new Date(), tz));
 
@@ -281,13 +289,13 @@ export function CalendarPage() {
     );
   }
 
-  async function setReminder(item: CalendarItem, offsetMin: number | null) {
+  async function setReminder(item: CalendarItem, offsetMin: number | null, channel: ReminderChannel = "inapp") {
     try {
       await api(`/api/v1/calendar/items/${item.id}/reminders`, {
         method: "PUT",
-        body: JSON.stringify({ reminders: offsetMin === null ? [] : [{ kind: "relative", offsetMin, channel: "inapp" }] }),
+        body: JSON.stringify({ reminders: offsetMin === null ? [] : [{ kind: "relative", offsetMin, channel }] }),
       });
-      toast.success(offsetMin === null ? "已取消提醒" : `已设提醒：提前 ${Math.abs(offsetMin) >= 1440 ? `${Math.abs(offsetMin) / 1440} 天` : Math.abs(offsetMin) >= 60 ? `${Math.abs(offsetMin) / 60} 小时` : `${Math.abs(offsetMin)} 分钟`}`);
+      toast.success(offsetMin === null ? "已取消提醒" : `已设提醒：提前 ${Math.abs(offsetMin) >= 1440 ? `${Math.abs(offsetMin) / 1440} 天` : Math.abs(offsetMin) >= 60 ? `${Math.abs(offsetMin) / 60} 小时` : `${Math.abs(offsetMin)} 分钟`}（${CHANNELS.find(ch => ch[0] === channel)?.[1] ?? "站内"}）`);
     } catch (e) { toast.error("设提醒失败", (e as Error).message); }
   }
 
@@ -446,7 +454,7 @@ export function CalendarPage() {
           : view === "agenda" ? <AgendaList start={start} days={14} today={today} byDay={byDay} notesByDay={notesByDay} onToggle={toggleDone} onDiary={() => void openDiary()} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />
           : <TimeGrid start={start} days={view === "week" ? 7 : 1} today={today} byDay={byDay} notesByDay={notesByDay} onDrop={reschedule} onToggle={toggleDone} onResize={resizeItem} onCreate={createEvent} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />}
       </div>
-      {panelTab === "tasks" && <TaskPanel narrow={narrow} data={panel} members={members} onToggle={toggleDone} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} onCapture={captureToInbox} onDropBack={dropBackToInbox} onReschedule={(i, t) => void reschedule(i, t)} onRemind={setReminder} onAssign={assignTo} tz={tz} />}
+      {panelTab === "tasks" && <TaskPanel narrow={narrow} data={panel} members={members} onToggle={toggleDone} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} onCapture={captureToInbox} onDropBack={dropBackToInbox} onReschedule={(i, t) => void reschedule(i, t)} onRemind={setReminder} onAssign={assignTo} pushReady={pushReady} tz={tz} />}
       {panelTab === "sync" && <CalendarSyncPanel wsId={wsId} narrow={narrow} onClose={() => setPanelTab(null)} onChanged={() => void load()} />}
     </div>
 
@@ -914,15 +922,16 @@ function AgendaList(props: { start: Date; days: number; today: string; byDay: Ma
 
 // ── 右侧待办面板 ─────────────────────────────────────────────────────────
 
-function TaskPanel({ narrow, data, members, onToggle, onOpenNote, onCapture, onDropBack, onReschedule, onRemind, onAssign, tz }: {
+function TaskPanel({ narrow, data, members, onToggle, onOpenNote, onCapture, onDropBack, onReschedule, onRemind, onAssign, pushReady, tz }: {
   narrow: boolean; data: InboxData; members: Member[];
   onToggle: (i: CalendarItem, done: boolean) => void;
   onOpenNote: (id: string) => void;
   onCapture: (title: string) => Promise<void>;
   onDropBack: (p: DropPayload) => void;
   onReschedule: (i: CalendarItem, target: Date) => void;
-  onRemind: (i: CalendarItem, offsetMin: number | null) => void;
+  onRemind: (i: CalendarItem, offsetMin: number | null, channel: ReminderChannel) => void;
   onAssign: (i: CalendarItem, userId: string | null) => void;
+  pushReady: boolean;
   tz: string;
 }) {
   const [filter, setFilter] = useState<"mine" | "all" | "overdue" | "week">("all");
@@ -983,7 +992,7 @@ function TaskPanel({ narrow, data, members, onToggle, onOpenNote, onCapture, onD
             className="mb-1.5 h-8 text-xs"
           />}
           <div className="space-y-0.5 rounded-lg border border-border bg-background p-1.5">
-            {inbox.map(i => <PanelRow key={i.id} item={i} tz={tz} data={data} members={members} onToggle={onToggle} onReschedule={onReschedule} onRemind={onRemind} onAssign={onAssign} />)}
+            {inbox.map(i => <PanelRow key={i.id} item={i} tz={tz} data={data} members={members} onToggle={onToggle} onReschedule={onReschedule} onRemind={onRemind} onAssign={onAssign} pushReady={pushReady} />)}
             {!inbox.length && <p className="px-1.5 py-2 text-xs text-muted-foreground">这里接住随手记。也可以在笔记里写 <code className="rounded bg-muted px-1">- [ ] 事情</code>，它会自动出现在下面。</p>}
           </div>
         </section>
@@ -996,7 +1005,7 @@ function TaskPanel({ narrow, data, members, onToggle, onOpenNote, onCapture, onD
               <button className="ml-auto rounded p-0.5 hover:bg-muted" onClick={() => onOpenNote(g.noteId)} aria-label="跳到原文"><ChevronRight className="size-3.5" /></button>
             </h3>
             <div className="space-y-0.5 rounded-lg border border-border bg-background p-1.5">
-              {rows.map(i => <PanelRow key={`${i.id}:${i.occurrenceStart}`} item={i} tz={tz} data={data} members={members} onToggle={onToggle} onReschedule={onReschedule} onRemind={onRemind} onAssign={onAssign} />)}
+              {rows.map(i => <PanelRow key={`${i.id}:${i.occurrenceStart}`} item={i} tz={tz} data={data} members={members} onToggle={onToggle} onReschedule={onReschedule} onRemind={onRemind} onAssign={onAssign} pushReady={pushReady} />)}
             </div>
           </section>;
         })}
@@ -1006,14 +1015,16 @@ function TaskPanel({ narrow, data, members, onToggle, onOpenNote, onCapture, onD
 }
 
 /** 面板里的一行：hover 才露出「改期 / 设提醒 / 指派」，平时不抢注意力。 */
-function PanelRow({ item, tz, data, members, onToggle, onReschedule, onRemind, onAssign }: {
+function PanelRow({ item, tz, data, members, onToggle, onReschedule, onRemind, onAssign, pushReady }: {
   item: CalendarItem; tz: string; data: InboxData; members: Member[];
   onToggle: (i: CalendarItem, done: boolean) => void;
   onReschedule: (i: CalendarItem, target: Date) => void;
-  onRemind: (i: CalendarItem, offsetMin: number | null) => void;
+  onRemind: (i: CalendarItem, offsetMin: number | null, channel: ReminderChannel) => void;
   onAssign: (i: CalendarItem, userId: string | null) => void;
+  pushReady: boolean;
 }) {
   const [open, setOpen] = useState<"" | "date" | "remind" | "assign">("");
+  const [channel, setChannel] = useState<ReminderChannel>("inapp");
   const due = item.dueAt ? civil(item.dueAt, tz) : null;
   const assignee = members.find(m => m.userId === item.assigneeUserId);
   // 来自笔记的条目改期要回原文改，这里不给假入口
@@ -1050,9 +1061,18 @@ function PanelRow({ item, tz, data, members, onToggle, onReschedule, onRemind, o
       />
     </div>}
 
-    {open === "remind" && <div className="mt-1 flex flex-wrap gap-1 px-7">
-      {([["提前 10 分钟", -10], ["提前 1 小时", -60], ["提前 1 天", -1440], ["不提醒", null]] as const).map(([label, offset]) =>
-        <button key={label} onClick={() => { setOpen(""); onRemind(item, offset); }} className="rounded border border-border px-1.5 py-0.5 text-[10px] hover:bg-muted">{label}</button>)}
+    {open === "remind" && <div className="mt-1 grid gap-1 px-7">
+      {/* 渠道先选，再点时机就直接存了：两步都要点确认的浮层没人爱用 */}
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="text-[10px] text-muted-foreground">发到</span>
+        {CHANNELS.filter(([id]) => id !== "push" || pushReady).map(([id, label]) =>
+          <button key={id} aria-pressed={channel === id} onClick={() => setChannel(id)}
+            className={cn("rounded border px-1.5 py-0.5 text-[10px]", channel === id ? "border-primary bg-primary/10" : "border-border hover:bg-muted")}>{label}</button>)}
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {([["提前 10 分钟", -10], ["提前 1 小时", -60], ["提前 1 天", -1440], ["不提醒", null]] as const).map(([label, offset]) =>
+          <button key={label} onClick={() => { setOpen(""); onRemind(item, offset, channel); }} className="rounded border border-border px-1.5 py-0.5 text-[10px] hover:bg-muted">{label}</button>)}
+      </div>
     </div>}
 
     {open === "assign" && <div className="mt-1 px-7">

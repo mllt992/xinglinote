@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode, type SelectHTMLAttributes } from "
 import { useNavigate, useSearchParams } from "react-router-dom";
 import * as Avatar from "@radix-ui/react-avatar";
 import {
-  Ban, Check, ChevronRight, Copy, Download, HardDrive, KeyRound, LayoutGrid, MoreHorizontal,
+  Ban, BellRing, Check, ChevronRight, Copy, Download, HardDrive, KeyRound, LayoutGrid, MoreHorizontal,
   Plus, Search, Shield, ShieldCheck, Sparkles, Ticket, Trash2, UserCog, Users, X,
 } from "lucide-react";
 import { api } from "../api";
@@ -16,8 +16,9 @@ import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
 import { useToast } from "./ui/toast";
 import { ModerationConfig, ModerationQueue } from "./moderation-panel";
+import { PushConfig } from "./push-admin-panel";
 
-type Tab = "overview" | "registration" | "moderation" | "codes" | "users";
+type Tab = "overview" | "registration" | "moderation" | "notifications" | "codes" | "users";
 type AdminUser = { id: string; displayName: string; email: string; handle: string; roleInstance: string; status: string; createdAt?: string };
 type AdminCode = { id: string; prefix: string; usedCount: number; maxUses: number; status: string; note?: string | null; expiresAt?: string | null; createdAt?: string; skipEmailVerification?: boolean; bindRole?: string | null };
 type Overview = {
@@ -30,6 +31,7 @@ const TABS: { id: Tab; label: string; hint: string; icon: typeof LayoutGrid }[] 
   { id: "overview", label: "概览", hint: "规模与关键开关", icon: LayoutGrid },
   { id: "registration", label: "注册策略", hint: "谁能进来、能做什么", icon: Shield },
   { id: "moderation", label: "内容审核", hint: "AI 先审，拦下来的转人工", icon: ShieldCheck },
+  { id: "notifications", label: "通知与推送", hint: "VAPID 密钥与推送总开关", icon: BellRing },
   { id: "codes", label: "注册码", hint: "批量发放一次性准入", icon: Ticket },
   { id: "users", label: "用户", hint: "封禁、角色与状态", icon: Users },
 ];
@@ -352,6 +354,10 @@ export function AdminPage() {
               ? <p className="px-5 py-10 text-center text-sm text-muted-foreground">还没有用户。</p>
               : overview.recentUsers.map((u, i) => <div key={u.id} className={cn("px-5 py-3.5", i && "border-t")}><UserRow user={u} /></div>)}
           </section>
+        </div>}
+
+        {!error && !loading && tab === "notifications" && <div className="space-y-6">
+          <PushConfig settings={overview?.settings ?? {}} onSaved={loadOverview} />
         </div>}
 
         {!error && !loading && tab === "moderation" && <div className="space-y-6">

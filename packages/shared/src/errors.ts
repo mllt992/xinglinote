@@ -11,6 +11,7 @@ export const ErrorCodes = {
   RATE_LIMIT: "RATE_LIMIT",
   AI_NOT_CONFIGURED: "AI_NOT_CONFIGURED",
   AI_PROVIDER_ERROR: "AI_PROVIDER_ERROR",
+  PUSH_FAILED: "PUSH_FAILED",
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
@@ -39,6 +40,7 @@ export const httpStatus: Record<ErrorCode, number> = {
   RATE_LIMIT: 429,
   AI_NOT_CONFIGURED: 422,
   AI_PROVIDER_ERROR: 502,
+  PUSH_FAILED: 502,
 };
 
 export function fail(code: ErrorCode, message: string, fields?: Record<string, string>) {
