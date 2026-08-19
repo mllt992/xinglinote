@@ -565,6 +565,7 @@ function InviteList({ wsId, invites, onDone }: { wsId: string; invites: Invite[]
 
 /** 被加进来的人得有出口：管理员在成员列表里移不掉自己，但本人可以自己走。 */
 function LeaveCard({ wsId }: { wsId: string }) {
+  const nav = useNavigate();
   const askConfirm = useConfirm();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -580,20 +581,21 @@ function LeaveCard({ wsId }: { wsId: string }) {
       try {
         const d = await api<{ migratedNotebooks: string[] }>(`/api/v1/workspaces/${wsId}/leave`, { method: "POST" });
         toast.success("已退出工作区", d.migratedNotebooks.length ? `${d.migratedNotebooks.length} 个私密笔记本已迁回你的个人库。` : undefined);
-        location.assign("/app");
+        nav("/app");
       } catch (e) { toast.error("退出失败", (e as Error).message); setBusy(false); }
     }}><LogOut />退出</Button>
   </section>;
 }
 
 function NewWorkspaceButton() {
+  const nav = useNavigate();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   return <Button className="mt-5" disabled={busy} onClick={async () => {
     setBusy(true);
     try {
       const d = await api<{ workspace: { id: string } }>("/api/v1/workspaces", { method: "POST", body: JSON.stringify({ name: "新的协作工作区" }) });
-      location.assign(`/w/${d.workspace.id}/settings?tab=members`);
+      nav(`/w/${d.workspace.id}/settings?tab=members`);
     } catch (e) { toast.error("建不了工作区", (e as Error).message); setBusy(false); }
   }}><Plus />新建协作工作区</Button>;
 }

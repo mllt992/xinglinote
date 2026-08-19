@@ -33,6 +33,10 @@ export function IntegrationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  /** 新存的提供商要拿服务端给的 id 和 Key 后四位，只能回表；工作区列表是给 MCP 面板用的，不跟着动。 */
+  const loadProviders = useCallback(async () => {
+    setProviders((await api<{ providers: Provider[] }>(`/api/v1/workspaces/${wsId}/ai/provider`)).providers);
+  }, [wsId]);
   const load = useCallback(async () => {
     const [p, w] = await Promise.all([
       api<{ providers: Provider[] }>(`/api/v1/workspaces/${wsId}/ai/provider`),
@@ -56,7 +60,7 @@ export function IntegrationsPage() {
       await api(`/api/v1/workspaces/${wsId}/ai/provider`, { method: "POST", body: JSON.stringify({ ...draft, personal: false }) });
       setDraft({ ...draft, apiKey: "" });
       toast.success("已保存", "这个工作区的 AI 写作、问答和索引都会走它。");
-      void load();
+      void loadProviders();
     } catch (e) { setFormErr((e as Error).message); }
     finally { setSaving(false); }
   }
@@ -68,7 +72,7 @@ export function IntegrationsPage() {
       confirmText: "移除", destructive: true,
     });
     if (!yes) return;
-    try { await api(`/api/v1/ai/providers/${p.id}`, { method: "DELETE" }); toast.success("已移除"); void load(); }
+    try { await api(`/api/v1/ai/providers/${p.id}`, { method: "DELETE" }); toast.success("已移除"); setProviders(list => list.filter(x => x.id !== p.id)); }
     catch (e) { toast.error("移除失败", (e as Error).message); }
   }
 

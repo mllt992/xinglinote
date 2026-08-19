@@ -182,7 +182,8 @@ export function ModerationQueue({ workspaceId }: { workspaceId?: string }) {
     try {
       await api(`/api/v1/moderation/${item.id}`, { method: "PATCH", body: JSON.stringify({ action, note: note || undefined }) });
       toast.success(action === "approve" ? "已通过，内容正常展示了" : "已驳回，作者会收到通知");
-      await load();
+      // 审完就把这一行撤下去。重拉整个队列会把列表整个换成骨架，处理一条闪一次，越审越难受。
+      setItems(list => list.filter(i => i.id !== item.id));
     } catch (e) { toast.error("操作失败", (e as Error).message); } finally { setBusy(null); }
   }
 

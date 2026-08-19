@@ -1,4 +1,4 @@
-import{useEffect,useState}from'react';import{Globe2,Heart,MoreHorizontal,NotebookPen,Pencil,Send,Trash2}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
+import{useEffect,useRef,useState}from'react';import{Globe2,Heart,MoreHorizontal,NotebookPen,Pencil,Send,Trash2}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
 
 export type FeedPost={id:string;body:string;visibility:string;workspaceId:string|null;createdAt:string;editedAt:string|null;mine:boolean;author:{handle:string;displayName:string}|null;note:{id:string;title:string}|null;likes:number;liked:boolean;status?:string;moderationReason?:string|null};
 type Held={held:boolean;message:string|null};
@@ -21,7 +21,13 @@ export function FeedView({scope,workspaceId,workspaces,canPost,onOpenNote,onLoad
   const[editing,setEditing]=useState<FeedPost|null>(null);const[draft,setDraft]=useState("");
   const[promote,setPromote]=useState<FeedPost|null>(null);const[target,setTarget]=useState({workspaceId:"",notebookId:"",title:""});const[books,setBooks]=useState<Nb[]>([]);
   const path=scope==="public"?"/api/v1/feed/public":`/api/v1/feed/workspaces/${workspaceId}`;
-  const load=()=>api<{posts:FeedPost[]}>(path).then(d=>{setPosts(d.posts);onLoaded?.(d.posts)}).catch(e=>toast.error("加载动态失败",(e as Error).message));
+  /** 单条动态的点赞、编辑、删除就地改这一条：整条时间线重拉会闪一下、丢滚动位置，点个赞不该付这个代价。
+      listRef 只经 apply 写入，所以连点两下也不会拿到上一次渲染的旧列表。 */
+  const listRef=useRef<FeedPost[]>([]);
+  const apply=(next:FeedPost[])=>{listRef.current=next;setPosts(next);onLoaded?.(next)};
+  const patchOne=(id:string,fn:(p:FeedPost)=>FeedPost)=>apply(listRef.current.map(p=>p.id===id?fn(p):p));
+  const dropOne=(id:string)=>apply(listRef.current.filter(p=>p.id!==id));
+  const load=()=>api<{posts:FeedPost[]}>(path).then(d=>apply(d.posts)).catch(e=>toast.error("加载动态失败",(e as Error).message));
   useEffect(()=>{void load()},[path]);
   useEffect(()=>{if(!target.workspaceId)return setBooks([]);api<{notebooks:Nb[]}>(`/api/v1/workspaces/${target.workspaceId}/notebooks`).then(d=>{setBooks(d.notebooks);setTarget(t=>({...t,notebookId:d.notebooks[0]?.id??""}))}).catch(()=>setBooks([]))},[target.workspaceId]);
 
@@ -38,8 +44,8 @@ export function FeedView({scope,workspaceId,workspaces,canPost,onOpenNote,onLoad
       setBody("");await load();
     }catch(e){setErr((e as Error).message)}finally{setBusy(false)}
   }
-  async function like(p:FeedPost){try{await api(`/api/v1/posts/${p.id}/like`,{method:"POST"});await load()}catch(e){toast.error("操作失败",(e as Error).message)}}
-  async function remove(p:FeedPost){if(!await askConfirm({title:"删除这条动态？",description:"动态和它收到的点赞会一起删除，不可恢复。已经转正成笔记的内容不受影响。",confirmText:"删除",destructive:true}))return;try{await api(`/api/v1/posts/${p.id}`,{method:"DELETE"});toast.success("已删除这条动态");await load()}catch(e){toast.error("删除失败",(e as Error).message)}}
+  async function like(p:FeedPost){try{const d=await api<{liked:boolean}>(`/api/v1/posts/${p.id}/like`,{method:"POST"});patchOne(p.id,x=>({...x,liked:d.liked,likes:Math.max(0,x.likes+(d.liked?1:-1))}))}catch(e){toast.error("操作失败",(e as Error).message)}}
+  async function remove(p:FeedPost){if(!await askConfirm({title:"删除这条动态？",description:"动态和它收到的点赞会一起删除，不可恢复。已经转正成笔记的内容不受影响。",confirmText:"删除",destructive:true}))return;try{await api(`/api/v1/posts/${p.id}`,{method:"DELETE"});toast.success("已删除这条动态");dropOne(p.id)}catch(e){toast.error("删除失败",(e as Error).message)}}
   async function toSquare(p:FeedPost){
     try{const d=await api<{strippedLinks:string[];moderation?:Held}>(`/api/v1/posts/${p.id}/publish-to-square`,{method:"POST",body:JSON.stringify({})});
       if(d.moderation?.held)toast.success("已提交到广场，等待人工审核",d.moderation.message??undefined);
@@ -86,7 +92,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,onOpenNote,onLoad
       <DialogHeader><DialogTitle>编辑动态</DialogTitle><DialogDescription>改完会标上「已编辑」。</DialogDescription></DialogHeader>
       <Textarea value={draft} onChange={e=>setDraft(e.target.value)} className="min-h-32" maxLength={5000}/>
       <FormError>{dlgErr}</FormError>
-      <div className="flex justify-end gap-2"><Button variant="ghost" onClick={()=>setEditing(null)}>取消</Button><Button disabled={busy||!draft.trim()} onClick={async()=>{if(!editing)return;setBusy(true);try{const d=await api<{moderation?:Held}>(`/api/v1/posts/${editing.id}`,{method:"PATCH",body:JSON.stringify({body:draft})});if(d.moderation?.held)toast.success("改动已提交，等待人工审核",d.moderation.message??undefined);setEditing(null);await load()}catch(e){setDlgErr((e as Error).message)}finally{setBusy(false)}}}>保存</Button></div>
+      <div className="flex justify-end gap-2"><Button variant="ghost" onClick={()=>setEditing(null)}>取消</Button><Button disabled={busy||!draft.trim()} onClick={async()=>{if(!editing)return;setBusy(true);try{const d=await api<{editedAt?:string;status?:string;moderation?:Held}>(`/api/v1/posts/${editing.id}`,{method:"PATCH",body:JSON.stringify({body:draft})});if(d.moderation?.held)toast.success("改动已提交，等待人工审核",d.moderation.message??undefined);patchOne(editing.id,x=>({...x,body:draft,editedAt:d.editedAt??new Date().toISOString(),status:d.status??x.status,moderationReason:d.moderation?.message??null}));setEditing(null)}catch(e){setDlgErr((e as Error).message)}finally{setBusy(false)}}}>保存</Button></div>
     </DialogContent></Dialog>
 
     <Dialog open={!!promote} onOpenChange={v=>{if(!v)setPromote(null);setDlgErr("")}}><DialogContent>

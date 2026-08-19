@@ -42,12 +42,18 @@ export function TrashPage() {
 
   const total = data.notes.length + data.folders.length + data.notebooks.length;
 
+  /** 笔记只牵涉自己那一行，就地撤掉；目录和笔记本会连着同一删除批次的子内容一起动，那种只能回表。 */
+  const afterChange = (kind: Kind, id: string) => {
+    if (kind === "note") setData(d => ({ ...d, notes: d.notes.filter(n => n.id !== id) }));
+    else void load();
+  };
+
   async function restore(kind: Kind, item: Item) {
     try {
       const r = await api<{ renamed?: boolean; movedToRoot?: boolean; title?: string }>(`/api/v1/trash/${kind}/${item.id}/restore`, { method: "POST" });
       toast.success("已恢复", r.renamed ? `原位置已有同名内容，改名为《${r.title}》。`
         : r.movedToRoot ? "原目录还在回收站里，已放到笔记本根目录。" : undefined);
-      void load();
+      afterChange(kind, item.id);
     } catch (e) { toast.error("恢复失败", (e as Error).message); }
   }
 
@@ -58,7 +64,7 @@ export function TrashPage() {
       confirmText: "永久销毁", destructive: true,
     });
     if (!yes) return;
-    try { await api(`/api/v1/trash/${kind}/${item.id}`, { method: "DELETE" }); toast.success(`已彻底销毁《${item.title}》`); void load(); }
+    try { await api(`/api/v1/trash/${kind}/${item.id}`, { method: "DELETE" }); toast.success(`已彻底销毁《${item.title}》`); afterChange(kind, item.id); }
     catch (e) { toast.error("销毁失败", (e as Error).message); }
   }
 
