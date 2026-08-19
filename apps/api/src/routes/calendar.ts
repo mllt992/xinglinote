@@ -4,7 +4,7 @@ import { z } from "zod";
 import { canReadNote, type NbMemberRole, type WsRole } from "@kb/core";
 import { AppError, fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { auditLogs, backgroundJobs, calendarFeedTokens, calendarItems, calendarOverrides, calendarReminders, calendarSubscriptions, notebookMembers, notebooks, notes, noteVersions, users, workspaces } from "../db/schema.ts";
+import { auditLogs, backgroundJobs, calendarFeedTokens, calendarItems, calendarOverrides, calendarReminders, calendarSubscriptions, calendarTemplates, notebookMembers, notebooks, notes, noteVersions, users, workspaces } from "../db/schema.ts";
 import { env } from "../env.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
@@ -15,6 +15,7 @@ import { limit } from "../lib/rate-limit.ts";
 import { secureToken } from "../lib/tokens.ts";
 import { writeNoteFile } from "../lib/files.ts";
 import { completeCalendarItem, DEFAULT_TZ, localDayKey, occurrencesOf, rescheduleReminders, wallParts } from "../lib/calendar.ts";
+import { itemsToTemplate, MAX_TEMPLATE_ITEMS, planTemplate, type TemplateItem } from "../lib/calendar-template.ts";
 import { assertPublicUrl, buildIcs, syncSubscription } from "../lib/ics.ts";
 import { parseQuickAdd } from "../lib/quick-add.ts";
 
@@ -628,4 +629,282 @@ calendarRoutes.post("/workspaces/:id/calendar/diary", async c => {
   await writeNoteFile({ ...note, noteId: note.id });
   await audit(workspaceId, user.id, "calendar.diary.create", note.id, { date: day }, "note");
   return ok(c, { noteId: note.id, notebookId: nb.id, created: true, date: day }, 201);
+});
+
+// ── 批量操作（设计 16 §3.11）────────────────────────────────────────────
+
+const MAX_BATCH = 200;
+
+/** 只快照这次动作会碰的字段。撤销是拿它原样写回去，多存的字段只会在并发时把别人的改动一起回滚。 */
+type Snapshot = { id: string; status?: string; dueAt?: string | null; startsAt?: string | null; endsAt?: string | null; assigneeUserId?: string | null; priority?: number; trashed?: boolean };
+
+const iso = (d: Date | null) => (d ? d.toISOString() : null);
+
+/**
+ * 一次一批，逐条鉴权，部分成功。整批因为其中一条没权限就回滚，会让用户完全不知道是哪条卡住了。
+ * 重复条目只作用于整条序列——要改单次仍走「仅此一次 / 此后全部」那条路径。
+ */
+calendarRoutes.post("/workspaces/:id/calendar/batch", async c => {
+  const workspaceId = c.req.param("id");
+  const { user, role, ws } = await workspaceContext(c, workspaceId);
+  if (role === "viewer") throw fail("FORBIDDEN", "只读成员不能修改日历");
+  if (ws.frozen) throw fail("FORBIDDEN", "工作区已冻结，暂时只读");
+  limit(`calendar:batch:${user.id}`, 10, 60_000);
+  const body = z.object({
+    ids: z.array(z.string().uuid()).min(1).max(MAX_BATCH),
+    action: z.enum(["complete", "reopen", "shift", "setDue", "assign", "priority", "trash", "restore", "revert"]),
+    days: z.number().int().min(-3650).max(3650).optional(),
+    dueAt: z.string().datetime().nullish(),
+    assigneeUserId: z.string().uuid().nullish(),
+    priority: z.number().int().min(0).max(3).optional(),
+    snapshot: z.array(z.object({
+      id: z.string().uuid(), status: z.string().optional(),
+      dueAt: z.string().datetime().nullish(), startsAt: z.string().datetime().nullish(), endsAt: z.string().datetime().nullish(),
+      assigneeUserId: z.string().uuid().nullish(), priority: z.number().int().min(0).max(3).optional(), trashed: z.boolean().optional(),
+    })).max(MAX_BATCH).optional(),
+  }).parse(await c.req.json());
+  if (body.action === "shift" && body.days == null) throw fail("VALIDATION", "改期要带天数");
+  if (body.action === "revert" && !body.snapshot?.length) throw fail("VALIDATION", "撤销要带快照");
+  if (body.action === "assign" && body.assigneeUserId && ws.kind === "personal") throw fail("VALIDATION", "个人工作区不支持指派");
+
+  const ids = [...new Set(body.ids)];
+  const rows = await db.select().from(calendarItems).where(and(eq(calendarItems.workspaceId, workspaceId), inArray(calendarItems.id, ids)));
+  // 回收站里的条目对 restore / revert 仍然可见，其余动作按「不存在」处理
+  const allowTrashed = body.action === "restore" || body.action === "revert";
+  const { kept } = await readableItems(workspaceId, user.id, role, rows.filter(r => allowTrashed || !r.trashedAt));
+  const byId = new Map(kept.map(r => [r.id, r]));
+  const snapshotById = new Map((body.snapshot ?? []).map(s => [s.id, s]));
+
+  const batch = crypto.randomUUID();
+  const done: Snapshot[] = [];
+  const failed: Array<{ id: string; code: string; message: string }> = [];
+  const now = new Date();
+
+  for (const id of ids) {
+    const item = byId.get(id);
+    if (!item) { failed.push({ id, code: "NOT_FOUND", message: "看不到这一条，或它已被删除" }); continue; }
+    try {
+      const before: Snapshot = { id };
+      const patch: Partial<typeof calendarItems.$inferInsert> = { updatedBy: user.id, updatedAt: now };
+
+      if (body.action === "complete" || body.action === "reopen") {
+        before.status = item.status;
+        // 来自笔记的条目要回写正文，这条路径必须复用单条那套，不能直接 UPDATE status
+        await completeCalendarItem(item, user.id, body.action === "complete");
+        done.push(before);
+        await audit(workspaceId, user.id, body.action === "complete" ? "calendar.task.complete" : "calendar.task.reopen", id, { batch });
+        continue;
+      }
+
+      if (body.action === "trash" || body.action === "restore") {
+        before.trashed = !!item.trashedAt;
+        patch.trashedAt = body.action === "trash" ? now : null;
+      } else if (body.action === "shift" || body.action === "setDue") {
+        if (item.source === "note") throw fail("VALIDATION", "这条来自笔记，请到原文改期");
+        before.dueAt = iso(item.dueAt); before.startsAt = iso(item.startsAt); before.endsAt = iso(item.endsAt);
+        if (body.action === "setDue") {
+          const target = date(body.dueAt);
+          patch.dueAt = target;
+          // 只挪日程的起止，不动时长；清掉期限时整条落回收件箱
+          if (item.startsAt) patch.startsAt = target;
+          if (item.startsAt && item.endsAt && target) patch.endsAt = new Date(target.getTime() + (item.endsAt.getTime() - item.startsAt.getTime()));
+          else if (!target) patch.endsAt = null;
+        } else {
+          const ms = body.days! * 86400_000;
+          if (item.dueAt) patch.dueAt = new Date(item.dueAt.getTime() + ms);
+          if (item.startsAt) patch.startsAt = new Date(item.startsAt.getTime() + ms);
+          if (item.endsAt) patch.endsAt = new Date(item.endsAt.getTime() + ms);
+        }
+      } else if (body.action === "assign") {
+        before.assigneeUserId = item.assigneeUserId;
+        patch.assigneeUserId = body.assigneeUserId ?? null;
+      } else if (body.action === "priority") {
+        before.priority = item.priority;
+        patch.priority = body.priority ?? 0;
+      } else {
+        const snap = snapshotById.get(id);
+        if (!snap) throw fail("VALIDATION", "这一条没有快照");
+        before.status = item.status; before.trashed = !!item.trashedAt;
+        before.dueAt = iso(item.dueAt); before.startsAt = iso(item.startsAt); before.endsAt = iso(item.endsAt);
+        before.assigneeUserId = item.assigneeUserId; before.priority = item.priority;
+        if (snap.status !== undefined && snap.status !== item.status) await completeCalendarItem(item, user.id, snap.status === "done");
+        if (snap.dueAt !== undefined) patch.dueAt = date(snap.dueAt);
+        if (snap.startsAt !== undefined) patch.startsAt = date(snap.startsAt);
+        if (snap.endsAt !== undefined) patch.endsAt = date(snap.endsAt);
+        if (snap.assigneeUserId !== undefined) patch.assigneeUserId = snap.assigneeUserId ?? null;
+        if (snap.priority !== undefined) patch.priority = snap.priority;
+        if (snap.trashed !== undefined) patch.trashedAt = snap.trashed ? (item.trashedAt ?? now) : null;
+      }
+
+      await db.update(calendarItems).set(patch).where(eq(calendarItems.id, id));
+      await rescheduleReminders(id);
+      done.push(before);
+      await audit(workspaceId, user.id, `calendar.batch.${body.action}`, id, { batch });
+    } catch (e) {
+      // 一条炸了不能带走整批：记下来继续跑下一条
+      failed.push({ id, code: e instanceof AppError ? e.code : "VALIDATION", message: e instanceof Error ? e.message : "处理失败" });
+    }
+  }
+  return ok(c, { batch, changed: done.length, snapshot: done, failed });
+});
+
+// ── 模板（设计 16 §3.12）────────────────────────────────────────────────
+
+const MAX_TEMPLATES = 50;
+
+const templateItem = z.object({
+  kind: z.enum(["task", "event"]).default("task"),
+  title: z.string().min(1).max(200),
+  bodyMd: z.string().max(2000).default(""),
+  allDay: z.boolean().default(false),
+  offsetDays: z.number().int().min(0).max(365).default(0),
+  /** 当地零点起的分钟数。null = 不定时刻（全天条目，或只有期限没有时刻的任务）。 */
+  startMin: z.number().int().min(0).max(1439).nullish(),
+  durationMin: z.number().int().min(0).max(1440).nullish(),
+  priority: z.number().int().min(0).max(3).default(0),
+  reminders: z.array(z.number().int().min(-40320).max(0)).max(5).default([]),
+});
+
+function templateDto(row: typeof calendarTemplates.$inferSelect, mine: boolean) {
+  const items = (row.items as TemplateItem[]) ?? [];
+  return { id: row.id, name: row.name, description: row.description, scope: row.scope, itemCount: items.length, items, createdBy: row.createdBy, mine, updatedAt: row.updatedAt };
+}
+
+async function loadTemplate(c: Parameters<typeof currentUser>[0], id: string, mode: "read" | "edit") {
+  const user = await requireUser(c);
+  const [row] = await db.select().from(calendarTemplates).where(eq(calendarTemplates.id, id));
+  if (!row) throw fail("NOT_FOUND", "模板不存在");
+  const role = await memberRole(row.workspaceId, user.id);
+  if (!role) throw fail("NOT_FOUND", "模板不存在");
+  if (row.scope === "private" && row.createdBy !== user.id) throw fail("NOT_FOUND", "模板不存在");
+  if (mode === "edit" && role === "viewer") throw fail("FORBIDDEN", "只读成员不能改模板");
+  // 工作区模板是公共资产，改它得是管理员；自己的私有模板自己随便改
+  if (mode === "edit" && row.scope === "workspace" && role !== "owner" && role !== "admin") throw fail("FORBIDDEN", "只有管理员能改工作区模板");
+  return { user, role, row };
+}
+
+calendarRoutes.get("/workspaces/:id/calendar/templates", async c => {
+  const workspaceId = c.req.param("id");
+  const { user } = await workspaceContext(c, workspaceId);
+  const rows = await db.select().from(calendarTemplates).where(eq(calendarTemplates.workspaceId, workspaceId)).orderBy(desc(calendarTemplates.updatedAt));
+  const visible = rows.filter(r => r.scope === "workspace" || r.createdBy === user.id);
+  return ok(c, { templates: visible.map(r => templateDto(r, r.createdBy === user.id)), max: MAX_TEMPLATES });
+});
+
+/**
+ * 建模板：要么直接给条目，要么给一组现有条目 id 由服务端折算成相对结构。
+ * 存绝对日期的模板只能用一次，所以这里一律折算。
+ */
+calendarRoutes.post("/workspaces/:id/calendar/templates", async c => {
+  const workspaceId = c.req.param("id");
+  const { user, role, ws } = await workspaceContext(c, workspaceId);
+  if (role === "viewer") throw fail("FORBIDDEN", "只读成员不能建模板");
+  if (ws.frozen) throw fail("FORBIDDEN", "工作区已冻结，暂时只读");
+  const body = z.object({
+    name: z.string().min(1).max(80),
+    description: z.string().max(300).nullish(),
+    scope: z.enum(["workspace", "private"]).default("private"),
+    items: z.array(templateItem).max(MAX_TEMPLATE_ITEMS).optional(),
+    fromItemIds: z.array(z.string().uuid()).max(MAX_TEMPLATE_ITEMS).optional(),
+  }).parse(await c.req.json());
+  if (body.scope === "workspace" && role !== "owner" && role !== "admin") throw fail("FORBIDDEN", "只有管理员能建工作区模板");
+  const [total] = await db.select({ n: count() }).from(calendarTemplates).where(eq(calendarTemplates.workspaceId, workspaceId));
+  if ((total?.n ?? 0) >= MAX_TEMPLATES) throw fail("QUOTA", `模板最多 ${MAX_TEMPLATES} 个，请先清理`);
+
+  let items = body.items ?? [];
+  if (body.fromItemIds?.length) {
+    const rows = await db.select().from(calendarItems).where(and(eq(calendarItems.workspaceId, workspaceId), inArray(calendarItems.id, body.fromItemIds), isNull(calendarItems.trashedAt)));
+    const { kept } = await readableItems(workspaceId, user.id, role, rows);
+    items = itemsToTemplate(kept);
+  }
+  if (!items.length) throw fail("VALIDATION", "模板至少要有一条内容");
+  const [row] = await db.insert(calendarTemplates).values({
+    workspaceId, name: body.name.trim(), description: body.description ?? null,
+    scope: body.scope, items, createdBy: user.id,
+  }).returning();
+  await audit(workspaceId, user.id, "calendar.template.create", row.id, { name: row.name, count: items.length }, "calendar_template");
+  return ok(c, templateDto(row, true), 201);
+});
+
+calendarRoutes.patch("/calendar/templates/:tid", async c => {
+  const { user, role, row } = await loadTemplate(c, c.req.param("tid"), "edit");
+  const body = z.object({
+    name: z.string().min(1).max(80).optional(),
+    description: z.string().max(300).nullish(),
+    scope: z.enum(["workspace", "private"]).optional(),
+    items: z.array(templateItem).max(MAX_TEMPLATE_ITEMS).optional(),
+  }).parse(await c.req.json());
+  if (body.items && !body.items.length) throw fail("VALIDATION", "模板至少要有一条内容");
+  // 把私有模板升成工作区模板，等于往公共区放东西，同样是管理员的事
+  if (body.scope === "workspace" && row.scope !== "workspace" && role !== "owner" && role !== "admin") throw fail("FORBIDDEN", "只有管理员能把模板放到工作区");
+  const [saved] = await db.update(calendarTemplates).set({
+    ...(body.name !== undefined ? { name: body.name.trim() } : {}),
+    ...(body.description !== undefined ? { description: body.description ?? null } : {}),
+    ...(body.scope !== undefined ? { scope: body.scope } : {}),
+    ...(body.items !== undefined ? { items: body.items } : {}),
+    updatedAt: new Date(),
+  }).where(eq(calendarTemplates.id, row.id)).returning();
+  await audit(row.workspaceId, user.id, "calendar.template.update", row.id, { name: saved.name }, "calendar_template");
+  return ok(c, templateDto(saved, saved.createdBy === user.id));
+});
+
+calendarRoutes.delete("/calendar/templates/:tid", async c => {
+  const { user, row } = await loadTemplate(c, c.req.param("tid"), "edit");
+  await db.delete(calendarTemplates).where(eq(calendarTemplates.id, row.id));
+  await audit(row.workspaceId, user.id, "calendar.template.delete", row.id, { name: row.name }, "calendar_template");
+  return ok(c, {});
+});
+
+/**
+ * 套用到某一天。preview=true 只算不写，让人先看清要落几条、分别落在哪天。
+ * 落地的条目 source=manual，跟模板此后无关联——模板改了不追溯已排好的日程。
+ */
+calendarRoutes.post("/calendar/templates/:tid/apply", async c => {
+  const { user, role, row } = await loadTemplate(c, c.req.param("tid"), "read");
+  const body = z.object({
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    timezone: z.string().max(64).optional(),
+    preview: z.boolean().default(false),
+  }).parse(await c.req.json());
+  const tz = body.timezone ?? DEFAULT_TZ;
+  const items = (row.items as TemplateItem[]) ?? [];
+
+  const planned = planTemplate(items, body.date, tz);
+
+  if (body.preview) {
+    return ok(c, {
+      date: body.date, timezone: tz,
+      items: planned.map(({ item: t, base, start, end }) => ({
+        kind: t.kind, title: t.title, allDay: t.allDay, priority: t.priority,
+        day: localDayKey(base, tz),
+        startsAt: iso(t.kind === "event" ? (start ?? base) : null),
+        endsAt: iso(t.kind === "event" ? end : null),
+        dueAt: iso(start ?? base),
+      })),
+    });
+  }
+
+  if (role === "viewer") throw fail("FORBIDDEN", "只读成员不能套用模板");
+  const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, row.workspaceId));
+  if (ws?.frozen) throw fail("FORBIDDEN", "工作区已冻结，暂时只读");
+  const [total] = await db.select({ n: count() }).from(calendarItems).where(eq(calendarItems.workspaceId, row.workspaceId));
+  if ((total?.n ?? 0) + items.length > MAX_ITEMS_PER_WORKSPACE) throw fail("QUOTA", "日历项已达上限，请先清理");
+
+  const created: Array<typeof calendarItems.$inferSelect> = [];
+  for (const { item: t, base, start, end } of planned) {
+    const [made] = await db.insert(calendarItems).values({
+      workspaceId: row.workspaceId, kind: t.kind, title: t.title, bodyMd: t.bodyMd, allDay: t.allDay,
+      startsAt: t.kind === "event" ? (start ?? base) : null,
+      endsAt: t.kind === "event" ? end : null,
+      dueAt: start ?? base,
+      timezone: tz, priority: t.priority, source: "manual", createdBy: user.id, updatedBy: user.id,
+    }).returning();
+    if (t.reminders.length) {
+      await db.insert(calendarReminders).values(t.reminders.map(offsetMin => ({ itemId: made.id, kind: "relative", offsetMin, channel: "inapp" })));
+      await rescheduleReminders(made.id);
+    }
+    created.push(made);
+  }
+  await audit(row.workspaceId, user.id, "calendar.template.apply", row.id, { date: body.date, count: created.length }, "calendar_template");
+  return ok(c, { date: body.date, items: created.map(r => itemDto(r)) }, 201);
 });

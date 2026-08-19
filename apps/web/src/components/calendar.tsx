@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { BellRing, CalendarDays, ChevronRight, FileText, Inbox, Link2Off, PenLine, Plus, RotateCcw, Star, UserPlus, X } from "lucide-react";
 import { api } from "../api";
@@ -9,6 +9,7 @@ import { Badge } from "./ui/badge";
 import { ScrollArea } from "./ui/scroll-area";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { useToast } from "./ui/toast";
+import { BatchBar, SaveTemplateDialog, TemplatePanel, type BatchPayload } from "./calendar-batch";
 
 export type CalendarItem = {
   id: string;
@@ -105,8 +106,11 @@ export function CalendarPage() {
   const [items, setItems] = useState<CalendarItem[]>([]);
   const [footprints, setFootprints] = useState<Footprint[]>([]);
   const [panel, setPanel] = useState<InboxData>({ inbox: [], groups: [], overdue: 0, me: "", workspaceKind: "personal", canEdit: true });
-  const [panelTab, setPanelTab] = useState<"tasks" | "sync" | null>("tasks");
+  const [panelTab, setPanelTab] = useState<"tasks" | "sync" | "templates" | null>("tasks");
   const [pushReady, setPushReady] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  const [saveTemplate, setSaveTemplate] = useState(false);
+  const lastPicked = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [focusKey, setFocusKey] = useState<string | null>(null);
@@ -341,6 +345,62 @@ export function CalendarPage() {
     );
   }
 
+  // ── 多选与批量（设计 16 §3.11）──
+
+  /** 四个视图的阅读顺序都是时间顺序，Shift 连选就按它取区间。 */
+  const ordered = useMemo(() => {
+    const seen = new Set<string>();
+    return items
+      .slice()
+      .sort((a, b) => new Date(a.startsAt ?? a.dueAt ?? 0).getTime() - new Date(b.startsAt ?? b.dueAt ?? 0).getTime() || a.title.localeCompare(b.title, "zh"))
+      // 重复条目在窗口里展开成好几次，但批量选的是整条序列，所以按 id 去重
+      .filter(i => (seen.has(i.id) ? false : (seen.add(i.id), true)));
+  }, [items]);
+
+  const selection = useMemo<SelectionApi>(() => ({
+    ids: selected,
+    click: (item, e) => {
+      if (!(e.ctrlKey || e.metaKey || e.shiftKey)) return false;
+      setSelected(prev => {
+        const next = new Set(prev);
+        const from = lastPicked.current ? ordered.findIndex(i => i.id === lastPicked.current) : -1;
+        const to = ordered.findIndex(i => i.id === item.id);
+        if (e.shiftKey && from >= 0 && to >= 0) for (const i of ordered.slice(Math.min(from, to), Math.max(from, to) + 1)) next.add(i.id);
+        else if (next.has(item.id)) next.delete(item.id);
+        else next.add(item.id);
+        return next;
+      });
+      lastPicked.current = item.id;
+      return true;
+    },
+  }), [selected, ordered]);
+
+  const clearSelection = useCallback(() => { setSelected(new Set()); lastPicked.current = null; }, []);
+  const selectedRecurring = useMemo(() => ordered.filter(i => i.recurring && selected.has(i.id)).length, [ordered, selected]);
+
+  /** 一次批量在撤销栈里算一步：撤销就是把服务端回的快照原样写回去。 */
+  async function runBatch(payload: BatchPayload, label: string) {
+    const ids = [...selected];
+    if (!ids.length) return;
+    let snapshot: Array<{ id: string }> = [];
+    await act(
+      label,
+      () => {},
+      async () => {
+        const r = await api<{ changed: number; snapshot: Array<{ id: string }>; failed: Array<{ id: string; message: string }> }>(
+          `/api/v1/workspaces/${wsId}/calendar/batch`,
+          { method: "POST", body: JSON.stringify({ ...payload, ids }) },
+        );
+        snapshot = r.snapshot;
+        // 一条都没成才算失败；部分成功是正常结果，说清几条没动就行，别让人以为整批都成了
+        if (!r.changed) throw new Error(r.failed[0]?.message ?? "一条都没能改");
+        if (r.failed.length) toast.error(`${r.failed.length} 项没动`, r.failed[0]!.message);
+      },
+      () => api(`/api/v1/workspaces/${wsId}/calendar/batch`, { method: "POST", body: JSON.stringify({ action: "revert", ids: snapshot.map(s => s.id), snapshot }) }),
+    );
+    clearSelection();
+  }
+
   // ── 键盘：全路径可达，且不和 Ctrl+K / Ctrl+S 打架 ──
   const focused = useMemo(() => items.find(i => `${i.id}:${i.occurrenceStart}` === focusKey) ?? null, [items, focusKey]);
   useEffect(() => {
@@ -364,7 +424,8 @@ export function CalendarPage() {
       else if (key === "arrowleft" || key === "k") jump(-step);
       else if (key === "arrowright" || key === "j") jump(step);
       else if (key === "n") { e.preventDefault(); setQuick(q => ({ ...q, open: true })); setTimeout(() => quickRef.current?.focus(), 0); }
-      else if (key === "escape") { setQuick({ open: false, text: "", preview: null }); setFocusKey(null); }
+      else if (key === "escape") { setQuick({ open: false, text: "", preview: null }); setFocusKey(null); clearSelection(); }
+      // Ctrl/⌘+A 交给浏览器选文字；全选条目用 a 会和「议程视图」的快捷键打架，所以只做 Esc 退出
       else if (key === "arrowup" || key === "arrowdown") {
         // ←→ 管时间，↑↓ 管条目：两个方向各司其职，不互相抢
         e.preventDefault();
@@ -391,7 +452,7 @@ export function CalendarPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cursor, view, focused, tz, items]);
+  }, [cursor, view, focused, tz, items, clearSelection]);
 
   const byDay = useMemo(() => {
     const map = new Map<string, CalendarItem[]>();
@@ -418,7 +479,7 @@ export function CalendarPage() {
     ? `${cursor.getUTCFullYear()}年${cursor.getUTCMonth() + 1}月`
     : `${cursor.getUTCFullYear()}年${cursor.getUTCMonth() + 1}月${cursor.getUTCDate()}日`;
 
-  return <div className="flex h-full min-h-0 flex-col bg-background">
+  return <SelectionCtx.Provider value={selection}><div className="flex h-full min-h-0 flex-col bg-background">
     <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-4">
       <Button variant="ghost" size="sm" onClick={() => nav(`/w/${wsId}`)}><ChevronRight className="rotate-180" />笔记</Button>
       <MiniMonthJump title={title} cursor={cursor} today={today} onPick={d => setCursor(d)} />
@@ -432,6 +493,7 @@ export function CalendarPage() {
         <Button variant="outline" size="sm" onClick={() => setCursor(atMidnight(civil(new Date(), tz)))}>今天</Button>
         <Button variant="ghost" size="sm" onClick={() => setCursor(addDays(cursor, view === "month" ? 30 : view === "week" ? 7 : view === "agenda" ? 14 : 1))} aria-label="下一段">›</Button>
         <Button variant="ghost" size="sm" onClick={() => nav(`/w/${wsId}/today`)}>今天页</Button>
+        <Button variant={panelTab === "templates" ? "secondary" : "ghost"} size="sm" onClick={() => setPanelTab(t => t === "templates" ? null : "templates")}>模板</Button>
         <Button variant={panelTab === "sync" ? "secondary" : "ghost"} size="sm" onClick={() => setPanelTab(t => t === "sync" ? null : "sync")}>订阅</Button>
         <Button size="sm" onClick={() => { setQuick(q => ({ ...q, open: true })); setTimeout(() => quickRef.current?.focus(), 0); }}><Plus />新建</Button>
         <Button variant={panelTab === "tasks" ? "secondary" : "ghost"} size="sm" onClick={() => setPanelTab(t => t === "tasks" ? null : "tasks")}><Inbox />待办{panel.overdue > 0 && <span className="ml-1 rounded-full bg-destructive px-1.5 text-[10px] text-destructive-foreground">{panel.overdue}</span>}</Button>
@@ -439,6 +501,9 @@ export function CalendarPage() {
     </header>
 
     {quick.open && <QuickAddBar wsId={wsId} state={quick} setState={setQuick} inputRef={quickRef} onCreated={() => { void load(); setQuick({ open: false, text: "", preview: null }); }} />}
+    {selected.size > 0 && <BatchBar count={selected.size} recurring={selectedRecurring} members={members}
+      canAssign={panel.workspaceKind !== "personal"} onAction={runBatch}
+      onSaveTemplate={() => setSaveTemplate(true)} onClear={clearSelection} />}
     {loadError && <div className="flex items-center gap-3 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-sm"><span className="flex-1">日历加载失败：{loadError}</span><Button size="sm" variant="outline" onClick={() => void load()}><RotateCcw />重试</Button></div>}
     {!loading && !loadError && view === "month" && items.length === 0 && <div className="flex items-center gap-3 border-b border-border bg-muted/30 px-4 py-2 text-sm">
       <span className="flex-1 text-muted-foreground">这个月还什么都没有。</span>
@@ -455,6 +520,7 @@ export function CalendarPage() {
           : <TimeGrid start={start} days={view === "week" ? 7 : 1} today={today} byDay={byDay} notesByDay={notesByDay} onDrop={reschedule} onToggle={toggleDone} onResize={resizeItem} onCreate={createEvent} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />}
       </div>
       {panelTab === "tasks" && <TaskPanel narrow={narrow} data={panel} members={members} onToggle={toggleDone} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} onCapture={captureToInbox} onDropBack={dropBackToInbox} onReschedule={(i, t) => void reschedule(i, t)} onRemind={setReminder} onAssign={assignTo} pushReady={pushReady} tz={tz} />}
+      {panelTab === "templates" && <TemplatePanel wsId={wsId} narrow={narrow} canEdit={panel.canEdit} today={today} onApplied={() => void load()} onClose={() => setPanelTab(null)} />}
       {panelTab === "sync" && <CalendarSyncPanel wsId={wsId} narrow={narrow} onClose={() => setPanelTab(null)} onChanged={() => void load()} />}
     </div>
 
@@ -472,7 +538,19 @@ export function CalendarPage() {
         </div>
       </DialogContent>
     </Dialog>
-  </div>;
+
+    <Dialog open={saveTemplate} onOpenChange={open => { if (!open) setSaveTemplate(false); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>存为模板</DialogTitle>
+          <DialogDescription>下次选一个日期就能把这一组重新排出来。</DialogDescription>
+        </DialogHeader>
+        <SaveTemplateDialog wsId={wsId} itemIds={[...selected]} canShare={panel.workspaceKind !== "personal"}
+          onDone={() => { setSaveTemplate(false); clearSelection(); setPanelTab("templates"); }}
+          onClose={() => setSaveTemplate(false)} />
+      </DialogContent>
+    </Dialog>
+  </div></SelectionCtx.Provider>;
 }
 
 /** 顶栏的迷你月历：点标题就能跳到任意一天，不必一路 ‹ › 翻过去（设计 16 §3.2）。 */
@@ -526,6 +604,17 @@ function MiniMonthJump({ title, cursor, today, onPick }: { title: string; cursor
 
 // ── 条目 ────────────────────────────────────────────────────────────────
 
+/**
+ * 多选是跨视图的：月 / 周 / 日 / 议程 / 面板都渲染 ItemChip，
+ * 走 context 省掉五层 prop 传递——多选本来就是「整页的一个模式」，不是某个视图的局部状态。
+ */
+type SelectionApi = {
+  ids: ReadonlySet<string>;
+  /** 返回 true 表示这一次点击被多选吃掉了，调用方不要再当成「聚焦 / 打开」。 */
+  click: (item: CalendarItem, e: React.MouseEvent) => boolean;
+};
+const SelectionCtx = createContext<SelectionApi | null>(null);
+
 function priorityDot(p: number) {
   return p >= 3 ? "bg-destructive" : p === 2 ? "bg-[var(--good)]" : p === 1 ? "bg-muted-foreground" : "";
 }
@@ -533,17 +622,21 @@ function priorityDot(p: number) {
 function ItemChip({ item, tz, onToggle, compact, focused, onFocus }: { item: CalendarItem; tz: string; onToggle: (i: CalendarItem, done: boolean) => void; compact?: boolean; focused?: boolean; onFocus?: () => void }) {
   const at = item.startsAt ?? item.dueAt;
   const overdue = item.status === "open" && at && new Date(at).getTime() < Date.now();
+  const selection = useContext(SelectionCtx);
+  const selected = !!selection?.ids.has(item.id);
   return <div
     draggable
     onDragStart={e => e.dataTransfer.setData("text/kb-item", JSON.stringify({ id: item.id, occurrenceStart: item.occurrenceStart }))}
-    onClick={onFocus}
+    onClick={e => { if (selection?.click(item, e)) { e.preventDefault(); e.stopPropagation(); return; } onFocus?.(); }}
     tabIndex={0}
     onFocus={onFocus}
-    aria-label={`${item.title}${item.status === "done" ? "，已完成" : ""}${overdue ? "，已逾期" : ""}`}
+    aria-selected={selection && selection.ids.size > 0 ? selected : undefined}
+    aria-label={`${item.title}${item.status === "done" ? "，已完成" : ""}${overdue ? "，已逾期" : ""}${selected ? "，已选中" : ""}`}
     className={cn(
       "group flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs transition",
       "cursor-grab active:cursor-grabbing hover:bg-muted",
       focused && "ring-2 ring-ring",
+      selected && "bg-primary/10 ring-1 ring-primary",
       // 状态不只靠颜色：完成加删除线，逾期加图标
       item.status === "done" && "text-muted-foreground line-through",
       overdue && "text-destructive",
