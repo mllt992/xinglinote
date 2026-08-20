@@ -17,6 +17,7 @@ import { markdownSyntaxExtensions } from "./markdown-syntax";
 import { slashCompletion } from "./slash-menu";
 import { typewriterScroll } from "./typewriter";
 import { editorHighlighting, editorTheme } from "./theme";
+import { createCollab, type CollabPeer, type CollabSession, type CollabStatus, type CollabUser } from "./collab";
 import { cachedVim, loadVim, vimExtension, vimModeOf, type VimMode } from "./vim";
 import { wikiCompletion, type WikiCompleteOptions } from "./wiki-complete";
 
@@ -25,6 +26,8 @@ const readOnlyCompartment = new Compartment();
 const livePreviewCompartment = new Compartment();
 // Vim 是按需加载的，加载完才往这个隔间里塞，所以它天生就得是隔间而不是初始扩展。
 const vimCompartment = new Compartment();
+// 协同也一样：连上之后才有 Y.Text 可绑，连不上就永远是空扩展（静默退回单机保存）。
+const collabCompartment = new Compartment();
 
 export type MarkdownEditorHandle = {
   /** 把某一源码行滚到视口顶部（0 基，和预览的 `data-line` 同一套编号）。 */
@@ -59,6 +62,8 @@ export function MarkdownEditor({
   wysiwyg = false,
   vim = false,
   onVimMode,
+  collab = null,
+  onCollab,
   readOnly = false,
   placeholder = "",
   resetKey,
@@ -88,6 +93,10 @@ export function MarkdownEditor({
   vim?: boolean;
   /** Vim 模式变了：底栏拿它显示 NORMAL / INSERT / VISUAL；关着时给 null。 */
   onVimMode?: (mode: VimMode | null) => void;
+  /** 开协同。给了才连；连不上会自己退回单机保存，调用方不必处理。 */
+  collab?: CollabUser | null;
+  /** 协同状态与在场的人。宿主拿它显示头像组，以及决定还要不要自己 PATCH 正文。 */
+  onCollab?: (info: { status: CollabStatus; peers: CollabPeer[] }) => void;
   readOnly?: boolean;
   placeholder?: string;
   /** 换一篇笔记时传新的 key，光标与滚动位置会重置。 */
@@ -103,6 +112,10 @@ export function MarkdownEditor({
   latest.current = { onChange, onSave, onWiki, onUpload, onScrollLine, onCursor, onVimMode, completion, typewriter };
   const mine = useRef(value);
   const vimOn = useRef(vim);
+  /** 协同接管期间，正文的事实源是 Y.Text，外面那个受控 value 不能再往回盖。 */
+  const collabSession = useRef<CollabSession | null>(null);
+  const peers = useRef<CollabPeer[]>([]);
+  const status = useRef<CollabStatus>("offline");
 
   useImperativeHandle(ref, () => ({
     scrollToLine: line => {
@@ -166,6 +179,7 @@ export function MarkdownEditor({
             { key: "Mod-Shift-Enter", run: toggleTask },
           ])),
           vimCompartment.of(vim && cachedVim() ? vimExtension(cachedVim()!, () => latest.current.onSave?.()) : []),
+          collabCompartment.of([]),
           history(),
           drawSelection(),
           dropCursor(),
@@ -249,6 +263,8 @@ export function MarkdownEditor({
   // 外部改了正文（冲突后加载对方版本、AI 写作、恢复历史版本、别处插入附件链接）。
   useEffect(() => {
     const instance = view.current;
+    // 协同接管期间正文归 Y.Text 管：这里再盖一次会把别人正在敲的字冲掉
+    if (collabSession.current) return;
     if (!instance || value === mine.current) return;
     mine.current = value;
     const selection = instance.state.selection.main;
@@ -267,6 +283,33 @@ export function MarkdownEditor({
       effects: livePreviewCompartment.reconfigure(livePreview((title, section) => latest.current.onWiki?.(title, section), wysiwyg, resetKey ?? "")),
     });
   }, [wysiwyg, resetKey]);
+
+  /**
+   * 协同。连上之前编辑器照常单机可用；连上那一刻 Y.Text 接管正文，
+   * 所以要先把当前正文塞进空文档，否则第一个进房的人会把自己的正文清成空白。
+   */
+  useEffect(() => {
+    if (!collab || readOnly) { onCollab?.({ status: "offline", peers: [] }); return; }
+    let alive = true;
+    const session = createCollab(resetKey ?? "", collab, {
+      status: s => { if (!alive) return; status.current = s; onCollab?.({ status: s, peers: peers.current }); },
+      peers: list => { if (!alive) return; peers.current = list; onCollab?.({ status: status.current, peers: list }); },
+      synced: text => {
+        if (!alive || !view.current) return;
+        // 服务端总是拿 notes.body_md 初始化房间；房里居然是空的而本地有正文，说明快照坏了，补种一次
+        if (!text.toString() && mine.current) text.insert(0, mine.current);
+        collabSession.current = session;
+        view.current.dispatch({ effects: collabCompartment.reconfigure(session!.extension) });
+      },
+    });
+    if (!session) { onCollab?.({ status: "offline", peers: [] }); return; }
+    return () => {
+      alive = false;
+      collabSession.current = null;
+      view.current?.dispatch({ effects: collabCompartment.reconfigure([]) });
+      session.destroy();
+    };
+  }, [collab?.id, resetKey, readOnly, onCollab]);
 
   // Vim：开了才去下那两百 KB。加载失败就当没开，并把 null 报上去让外面提示。
   useEffect(() => {

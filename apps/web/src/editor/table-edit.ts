@@ -50,7 +50,7 @@ export type TableEditorOptions = {
   /** 这张表在文档里的原始源码，也是替换范围的长度依据。 */
   source: string;
   /** 只读态不挂任何把手。 */
-  editable: boolean;
+  canEdit: boolean;
   /** 列宽偏好的命名空间；换篇笔记不该共用宽度。 */
   noteId: string;
 };
@@ -79,7 +79,7 @@ export function mountTableEditor(box: HTMLElement, opts: TableEditorOptions) {
     cols.append(col);
   }
   table.prepend(cols);
-  if (!opts.editable) return;
+  if (!opts.canEdit) return;
 
   box.classList.add("cm-table-editable");
 

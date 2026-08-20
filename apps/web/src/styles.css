@@ -190,3 +190,15 @@ html[data-mode="dark"] {
   cursor: col-resize; user-select: none;
 }
 .cm-table-grip:hover { background: var(--primary); opacity: .5; }
+
+/* 远端光标与选区（设计 17 §3.4）。y-codemirror.next 吐这几个类，这里改成我们的口径：
+   竖条细、名字只在悬停时出现、选区用同色低透明度底——别人在哪儿是信息，不是指令。 */
+.cm-ySelection { border-radius: 2px; }
+.cm-ySelectionCaret { position: relative; border-left: 1px solid currentColor; border-right: none; margin-left: -1px; box-sizing: border-box; }
+.cm-ySelectionCaretDot, .cm-ySelectionInfo { display: none; }
+.cm-ySelectionCaret:hover .cm-ySelectionInfo {
+  display: block; position: absolute; top: -1.4em; left: -1px;
+  padding: 1px 5px; border-radius: 4px; white-space: nowrap;
+  font-size: 10px; line-height: 1.4; color: #fff; background-color: currentColor;
+}
+.cm-ySelectionInfo { color: inherit; }

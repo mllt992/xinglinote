@@ -1,3 +1,4 @@
+import type { Server } from "node:http";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -25,6 +26,7 @@ import { workbenchRoutes } from "./routes/workbench.ts";
 import { backupRoutes } from "./routes/backups.ts";
 import { calendarFeedRoutes, calendarRoutes } from "./routes/calendar.ts";
 import { pushRoutes } from "./routes/push.ts";
+import { attachCollab } from "./routes/collab.ts";
 import { workspaceLifecycleRoutes } from "./routes/workspace-lifecycle.ts";
 import { db } from "./db/client.ts";
 import { instanceSettings } from "./db/schema.ts";
@@ -79,6 +81,9 @@ await seedBuiltin().catch((e) => {
   console.warn("seed skipped (先跑 pnpm db:push):", (e as Error).message);
 });
 
-serve({ fetch: app.fetch, port: env.port }, () => {
+const server = serve({ fetch: app.fetch, port: env.port }, () => {
   console.log(`api http://127.0.0.1:${env.port}${web ? " (含前端静态托管)" : ""}`);
 });
+
+// 协同房间挂在同一个端口上：另开一个端口意味着反向代理、CORS、Cookie 都要再配一遍
+attachCollab(server as unknown as Server);

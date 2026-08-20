@@ -13,14 +13,19 @@
     "@kb/shared": "workspace:*",
     "drizzle-orm": "^0.41.0",
     "hono": "^4.7.5",
+    "lib0": "^0.2.117",
     "nodemailer": "^9.0.5",
     "pdfjs-dist": "^6.2.108",
     "postgres": "^3.4.5",
+    "ws": "^8.21.3",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.32",
     "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
     "@types/nodemailer": "^8.0.1",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2"
   }

@@ -32,9 +32,13 @@ export async function clearSession(c: Context) {
   deleteCookie(c, COOKIE, { path: "/" });
 }
 
-export async function currentUser(c: Context) {
-  const token = getCookie(c, COOKIE);
-  if (!token) return null;
+/** 按 Cookie 头认人。WebSocket 升级拿不到 hono 的 Context，只有一行原始的 cookie。 */
+export async function userFromCookieHeader(header: string | undefined) {
+  const hit = /(?:^|;\s*)kb_session=([^;]+)/.exec(header ?? "");
+  return hit ? userByToken(decodeURIComponent(hit[1]!)) : null;
+}
+
+async function userByToken(token: string) {
   const rows = await db.select().from(sessions).where(eq(sessions.tokenHash, hashToken(token)));
   const s = rows[0];
   if (!s || s.expiresAt < new Date()) return null;
@@ -42,4 +46,9 @@ export async function currentUser(c: Context) {
   const user = u[0];
   if (!user || user.status === "banned" || user.status === "deleted") return null;
   return user;
+}
+
+export async function currentUser(c: Context) {
+  const token = getCookie(c, COOKIE);
+  return token ? userByToken(token) : null;
 }

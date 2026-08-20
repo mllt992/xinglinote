@@ -466,3 +466,16 @@ export const calendarTemplates = pgTable("calendar_templates", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
+
+/**
+ * 协同房间的 Y.Doc 快照（设计 17 §3.4）。这是**可丢的缓存**：
+ * 删掉它只会让下一个房间从 notes.body_md 重新初始化，不丢任何已落库的内容。
+ */
+export const noteCollab = pgTable("note_collab", {
+  noteId: uuid("note_id").primaryKey().references(() => notes.id),
+  state: text("state").notNull(),
+  updates: integer("updates").notNull().default(0),
+  /** 房间上次落库时写下去的正文，用来认「外面有人改过」。 */
+  bodyMd: text("body_md").notNull().default(""),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});

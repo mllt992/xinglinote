@@ -389,6 +389,15 @@ const statements = [
     updated_at timestamptz NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS calendar_templates_ws_idx ON calendar_templates (workspace_id, scope)`,
+
+  // —— 协同编辑（设计 17 §3.4）。state 是 base64 的 Y 更新，存 text 省得为一张缓存表引入 bytea 的处理分支 ——
+  `CREATE TABLE IF NOT EXISTS note_collab (
+    note_id uuid PRIMARY KEY REFERENCES notes(id),
+    state text NOT NULL,
+    updates integer NOT NULL DEFAULT 0,
+    body_md text NOT NULL DEFAULT '',
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
 ];
 
 async function main() {

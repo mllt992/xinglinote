@@ -100,14 +100,15 @@ class MathWidget extends WidgetType {
  * 可编辑时再挂上增删行列 / 对齐 / 拖列宽的把手（设计 17 §3.5）。
  */
 class TableWidget extends WidgetType {
-  constructor(readonly source: string, readonly noteId: string, readonly editable: boolean) { super(); }
-  eq(other: TableWidget) { return other.source === this.source && other.editable === this.editable && other.noteId === this.noteId; }
+  // 字段名不能叫 editable：WidgetType 基类上有一个同名的只读访问器，赋值会当场抛异常
+  constructor(readonly source: string, readonly noteId: string, readonly canEdit: boolean) { super(); }
+  eq(other: TableWidget) { return other.source === this.source && other.canEdit === this.canEdit && other.noteId === this.noteId; }
   toDOM(view: EditorView) {
     const box = document.createElement("div");
     box.className = "cm-md-table markdown";
     box.innerHTML = toSafeHtml(this.source);
     void hydrateMath(box);
-    mountTableEditor(box, { view, source: this.source, editable: this.editable, noteId: this.noteId });
+    mountTableEditor(box, { view, source: this.source, canEdit: this.canEdit, noteId: this.noteId });
     return box;
   }
   /** 把手上的事件归自己，其余（点一下把光标放进表格）照旧交给 CodeMirror。 */

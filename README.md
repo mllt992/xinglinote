@@ -14,6 +14,11 @@ P2 补上浏览器推送（自签 VAPID、自己加密，不经第三方）、�
 画图（[设计 17 §3.0](docs/设计/17-编辑器方案.md)）走 ` ```mermaid ` 代码块：预览与编辑器里就地渲染、
 渲染库按需加载，外加「AI 画图」——说一句话生成或改一张图，画得出来才让插进正文。
 
+编辑器还有：Vim keymap（默认关、按需加载）、表格的可视化编辑（增删行列 / 对齐 / 拖列宽，改的仍是
+Markdown 源码），以及**协同编辑与远端光标**——CRDT 只做在线这一层，落库仍然回
+`notes.body_md` + `note_versions`，所以搜索、导出、MCP、行级 diff 一个都没动
+（[设计 17 §3.4](docs/设计/17-编辑器方案.md)）。连不上就静默退回单机自动保存。
+
 ## 启动
 
 需要 Node 22、pnpm、Docker。
@@ -64,6 +69,7 @@ node scripts/verify-calendar-recur.mjs  # 重复展开、单次例外、「此�
 node scripts/verify-calendar-ics.mjs    # ICS 导出与订阅（含 SSRF 拦截）、日历 MCP 四工具
 node scripts/verify-calendar-p2.mjs     # 批量操作、模板、去年今日 / 周回顾、AI 提待办不写库、推送
 node --experimental-strip-types scripts/verify-push.mjs   # 推送投递闭环：VAPID 验签、密文解回原文、失效端点停用
+node scripts/verify-collab.mjs      # 协同：两个客户端真收敛、落库、只读发不出更新、无权连不上
 node --experimental-strip-types scripts/verify-transfer.mjs   # 导入向导、zip 导出、版本裁剪（约 3 分钟）
 node scripts/verify-manage-cdp.mjs
 node scripts/verify-gaps-cdp.mjs
