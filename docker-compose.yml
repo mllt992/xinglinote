@@ -19,7 +19,10 @@ name: knowledge
 services:
   migrate:
     profiles: ["app"]
-    build: .
+    build:
+      context: .
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     command: ["migrate"]
     env_file: [.env]
     environment:
@@ -30,7 +33,10 @@ services:
 
   api:
     profiles: ["app"]
-    build: .
+    build:
+      context: .
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     command: ["api"]
     env_file: [.env]
     environment:
@@ -48,7 +54,10 @@ services:
 
   worker:
     profiles: ["app"]
-    build: .
+    build:
+      context: .
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     command: ["worker"]
     env_file: [.env]
     environment:

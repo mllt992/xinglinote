@@ -188,6 +188,56 @@ required variable POSTGRES_USER is missing a value
 | [README.md](README.md) | 快速开始改为「先配 `DATABASE_URL`」，自带库降级为可选段落 |
 | [docs/部署.md](docs/部署.md) | 「起服务」拆成「接自己的数据库」（推荐）与「用自带的」两条路，各给完整命令 |
 
+## 问题 5：线上部署 —— 构建失败的根因是 npm 源，不是配置
+
+远端是一台内网 NAS（Debian 12，绿联），经内网穿透暴露：外网 `:12097` → NAS `127.0.0.1:12099`，
+域名 `wiki.mllt.cc`。数据库用机器上已有的 `postgres_xrilang` 容器（库名 `xinglinote`），
+应用容器经 `docker-compose.override.yml` 接到 `xl_net` 与之同网。
+
+### 现象与根因
+
+`docker compose --profile app up -d --build` 反复失败：
+
+```
+failed to solve: process "/bin/sh -c pnpm install --frozen-lockfile" did not complete successfully: exit code: 1
+```
+
+日志里全是 `error (23)` 重试和 `Tarball download average speed 6 KiB/s`。实测两个源：
+
+| 源 | 速度 |
+|---|---|
+| registry.npmjs.org | **88 KB/s** |
+| registry.npmmirror.com | **5.5 MB/s** |
+
+**64 倍。** 换源后 441 个包 **50 秒**装完，构建一次通过。跟配置、跟 Node 版本都没关系。
+
+### 落到仓库里的改动
+
+不写死镜像源（对国外网络反而更慢），开成 build arg：
+
+| 文件 | 改动 |
+|---|---|
+| [Dockerfile](Dockerfile) | `base` 阶段加 `ARG NPM_REGISTRY=https://registry.npmjs.org`，用 `ENV npm_config_registry` 传给 npm/pnpm；**同时设 `COREPACK_NPM_REGISTRY`** —— 这个仓库用 corepack 装 pnpm，不设的话 corepack 自己仍走官方源 |
+| [docker-compose.yml](docker-compose.yml) | 三个服务的 `build:` 展开成长格式，加 `args: NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}` |
+| [.env.example](.env.example) | 注释掉的 `NPM_REGISTRY` + 说明 |
+| [docs/部署.md](docs/部署.md) | 新增「构建卡在装依赖 / 直接失败」小节，给现象、原因、数据 |
+
+验证：`docker build --check` 无告警；带 `--build-arg` 时镜像内 `npm config get registry` 是 npmmirror，
+不带时回落 `registry.npmjs.org`。
+
+### 部署结果
+
+`xinglinote` 库建了 **46 张表**，api healthy，外网 `:12097` 首页与 `/api/healthz` 均 200，
+`wiki.mllt.cc` 也已确认可正常访问。
+
+### 遗留
+
+- **worker 显示 unhealthy**（功能正常）。`HEALTHCHECK` 写在共用的 `runtime` 阶段去打 `/api/healthz`，
+  但三个镜像同源，worker / migrate 根本不起 HTTP 服务，必然失败。
+  修法：compose 里给 worker 覆盖 `healthcheck: {disable: true}`。**未做。**
+- **服务器上那份源码没有 `.git`**，是手工拷的，Dockerfile 还被就地改过，已与仓库分叉。
+  建议改成 `git clone` + `git pull`。**未做。**
+
 ## 顺带核实过的兼容性
 
 担心 `postgres:18` 不带 pgvector 会跑不了 schema，实测**不是问题**：

@@ -1,6 +1,14 @@
 # 同一镜像三个命令：api / worker / migrate（见 docker/entrypoint.sh）
 FROM node:22-bookworm-slim AS base
-ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
+# npm / pnpm 的源。默认官方源，不写死镜像源——换了对国外网络反而更慢。
+# 国内网络差就在 .env 里设 NPM_REGISTRY=https://registry.npmmirror.com（compose 会传进来），
+# 或者 docker build --build-arg NPM_REGISTRY=...。实测过一台国内 NAS：
+# 官方源 88 KB/s、npmmirror 5.5 MB/s，差 64 倍，不换根本装不完。
+ARG NPM_REGISTRY=https://registry.npmjs.org
+# COREPACK_NPM_REGISTRY 也要给：corepack 自己去下 pnpm，不设的话它仍走官方源。
+ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH \
+    npm_config_registry=$NPM_REGISTRY \
+    COREPACK_NPM_REGISTRY=$NPM_REGISTRY
 RUN corepack enable
 WORKDIR /app
 
