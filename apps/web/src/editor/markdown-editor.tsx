@@ -185,7 +185,7 @@ export function MarkdownEditor({
           EditorView.lineWrapping,
           EditorState.allowMultipleSelections.of(true),
           markdown({ base: markdownLanguage, codeLanguages: languages, extensions: markdownSyntaxExtensions }),
-          livePreviewCompartment.of(livePreview((title, section) => latest.current.onWiki?.(title, section), wysiwyg)),
+          livePreviewCompartment.of(livePreview((title, section) => latest.current.onWiki?.(title, section), wysiwyg, resetKey ?? "")),
           typewriterScroll(() => latest.current.typewriter === true),
           fileDrop(file => latest.current.onUpload?.(file) ?? Promise.resolve(null)),
           editorHighlighting,
@@ -264,9 +264,9 @@ export function MarkdownEditor({
 
   useEffect(() => {
     view.current?.dispatch({
-      effects: livePreviewCompartment.reconfigure(livePreview((title, section) => latest.current.onWiki?.(title, section), wysiwyg)),
+      effects: livePreviewCompartment.reconfigure(livePreview((title, section) => latest.current.onWiki?.(title, section), wysiwyg, resetKey ?? "")),
     });
-  }, [wysiwyg]);
+  }, [wysiwyg, resetKey]);
 
   // Vim：开了才去下那两百 KB。加载失败就当没开，并把 null 报上去让外面提示。
   useEffect(() => {

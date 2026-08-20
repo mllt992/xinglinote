@@ -167,3 +167,26 @@ html[data-mode="dark"] {
 /* 编辑器与预览的正文栏宽。全屏是为了要地方，就别再锁在 1400px。 */
 .editor-measure { width: 100%; max-width: 1400px; }
 [data-zen="1"] .editor-measure { max-width: min(100%, 1760px); }
+
+/* 表格的可视化编辑（设计 17 §3.5）。把手平时不占位，hover 才出现，只读态整套不挂。 */
+.cm-md-table.cm-table-editable { position: relative; }
+.cm-table-tools {
+  position: absolute; z-index: 5; display: flex; gap: 2px;
+  padding: 2px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--background);
+  box-shadow: 0 1px 3px rgb(0 0 0 / .12);
+}
+.cm-table-tools[data-axis="col"] { transform: translateY(-100%); }
+.cm-table-tools[data-axis="row"] { transform: translateX(-100%); flex-direction: column; }
+.cm-table-tools button {
+  min-width: 20px; height: 20px; padding: 0 3px;
+  border: 0; border-radius: 4px; background: transparent;
+  font: inherit; font-size: 11px; line-height: 1; color: var(--muted-foreground); cursor: pointer;
+}
+.cm-table-tools button:hover:not(:disabled) { background: var(--muted); color: var(--foreground); }
+.cm-table-tools button:disabled { opacity: .35; cursor: not-allowed; }
+.cm-table-grip {
+  position: absolute; top: 0; right: -3px; width: 6px; height: 100%;
+  cursor: col-resize; user-select: none;
+}
+.cm-table-grip:hover { background: var(--primary); opacity: .5; }

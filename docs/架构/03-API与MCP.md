@@ -168,6 +168,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | DELETE | `/api/v1/push/devices/:id` | 移除一台 |
 | POST | `/api/v1/push/test` | 给自己发一条测试推送，6 次 / 分钟 |
 | POST | `/api/v1/admin/push/vapid` | 生成 / 轮换 VAPID；轮换会把所有旧订阅一并置 `gone` |
+| WS | `/api/v1/notes/:id/collab` | 协同房间。**升级前**跑 `noteAccess(id, user, 'edit')`：能编辑给 `mode=write`，只能读给 `mode=read`（收得到光标、发不出更新，服务端丢弃其 update 帧），读都不能读直接拒 |
 
 导出内容只含标题、时间与回本实例的 `URL`，**不含 `DESCRIPTION`**，任务导成 `VEVENT`（标题带 `☐` / `☑`）而不是 `VTODO`。
 订阅抓取每一跳都重新做 SSRF 校验（私有网段一律拒），条件请求带 `If-None-Match`，连续失败 5 次自动停用并通知创建者。

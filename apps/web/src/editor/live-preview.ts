@@ -8,6 +8,7 @@ import { diagramBlockAt } from "@kb/shared/markdown";
 import { hydrateMath, loadKatex } from "../lib/katex-hydrate";
 import { renderDiagram } from "../lib/mermaid-hydrate";
 import { toSafeHtml } from "../lib/render-html";
+import { mountTableEditor } from "./table-edit";
 
 /**
  * 就地渲染。标记（`#`、`**`、`[]()`、`[[]]`）平时藏起来只显示内容，光标凑近了才露出原文。
@@ -94,18 +95,23 @@ class MathWidget extends WidgetType {
   ignoreEvent() { return false; }
 }
 
-/** 表格：光标不在里面时渲成真表格，进去了就回源码——改的还是 Markdown，一个字节不动。 */
+/**
+ * 表格：光标不在里面时渲成真表格，进去了就回源码——改的还是 Markdown，一个字节不动。
+ * 可编辑时再挂上增删行列 / 对齐 / 拖列宽的把手（设计 17 §3.5）。
+ */
 class TableWidget extends WidgetType {
-  constructor(readonly source: string) { super(); }
-  eq(other: TableWidget) { return other.source === this.source; }
-  toDOM() {
+  constructor(readonly source: string, readonly noteId: string, readonly editable: boolean) { super(); }
+  eq(other: TableWidget) { return other.source === this.source && other.editable === this.editable && other.noteId === this.noteId; }
+  toDOM(view: EditorView) {
     const box = document.createElement("div");
     box.className = "cm-md-table markdown";
     box.innerHTML = toSafeHtml(this.source);
     void hydrateMath(box);
+    mountTableEditor(box, { view, source: this.source, editable: this.editable, noteId: this.noteId });
     return box;
   }
-  ignoreEvent() { return false; }
+  /** 把手上的事件归自己，其余（点一下把光标放进表格）照旧交给 CodeMirror。 */
+  ignoreEvent(event: Event) { return !!(event.target as HTMLElement | null)?.closest?.("[data-table-handle]"); }
 }
 
 /** ```mermaid：光标不在块里就画成图，进去了就回源码。和表格同一个口径。 */
@@ -158,7 +164,7 @@ function wholeLines(state: EditorState, from: number, to: number): boolean {
  * 「Block decorations may not be specified via plugins」，跨行的替换同理。
  * 所以这里跟下面的行内装饰分成两套，别再合回去。
  */
-function blockField(wysiwyg: boolean) {
+function blockField(wysiwyg: boolean, noteId: string) {
   const build = (state: EditorState): DecorationSet => {
     const ranges: Range<Decoration>[] = [];
     const revealed = revealer(state, wysiwyg);
@@ -190,7 +196,7 @@ function blockField(wysiwyg: boolean) {
           // 表格只在即时渲染模式下就地渲染：整行粒度里光标一进表格就整块跳回源码，
           // 而表格通常有好几行，跳来跳去比不渲染还难用。
           if (!wysiwyg || revealed(node.from, node.to) || !wholeLines(state, node.from, node.to)) return;
-          ranges.push(Decoration.replace({ widget: new TableWidget(state.doc.sliceString(node.from, node.to)), block: true }).range(node.from, node.to));
+          ranges.push(Decoration.replace({ widget: new TableWidget(state.doc.sliceString(node.from, node.to), noteId, !state.readOnly), block: true }).range(node.from, node.to));
           return false;
         }
         return;
@@ -418,6 +424,6 @@ function followHandler(onWiki?: (title: string, section?: string) => void): Exte
   });
 }
 
-export function livePreview(onWiki: ((title: string, section?: string) => void) | undefined, wysiwyg: boolean): Extension {
-  return [blockField(wysiwyg), decorator(wysiwyg), followHandler(onWiki)];
+export function livePreview(onWiki: ((title: string, section?: string) => void) | undefined, wysiwyg: boolean, noteId = ""): Extension {
+  return [blockField(wysiwyg, noteId), decorator(wysiwyg), followHandler(onWiki)];
 }
