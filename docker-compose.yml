@@ -1,43 +1,29 @@
 name: knowledge
 
-# 数据库连哪里，只由 .env 的 DATABASE_URL 决定；下面的 db 服务只是「懒得自己装 Postgres」时的便利品。
-# 已经有现成实例（本机别的容器、云上托管库）就别开 db profile，配好 DATABASE_URL 直接用。
+# 数据库连哪里，只由环境变量决定，这个文件里没有任何数据库实例。
+#   DATABASE_URL           宿主机上的进程（pnpm dev / db:push / verify-* 脚本）怎么连
+#   DATABASE_URL_INTERNAL  容器里的进程怎么连。不配就回落到 DATABASE_URL——
+#                          数据库有真实主机名时这样就够了；只有当 DATABASE_URL 写的是
+#                          127.0.0.1（在容器里指的是容器自己）才必须单独配这个。
 #
-# 只起自带数据库：docker compose --profile db up -d db     （pnpm db:up 就是这个）
-# 整套部署：      docker compose --profile app up -d --build    （db 一并起）
-# 带 TLS：        docker compose --profile app --profile tls up -d --build
+# 整套部署（接你自己的数据库）：
+#   docker compose --profile app up -d --build
+# 带 TLS：
+#   docker compose --profile app --profile tls up -d --build
+#
+# 手上没有现成的 Postgres，想用仓库自带的，叠加 compose.db.yml：
+#   docker compose -f docker-compose.yml -f compose.db.yml --profile app up -d --build
+# 只起一个开发用的库（就是 pnpm db:up）：
+#   docker compose -f docker-compose.yml -f compose.db.yml --profile db up -d db
 
 services:
-  db:
-    # 默认不启动：不开 profile 就不会有人来抢宿主机的 5432。
-    # 同时挂在 app 下，是为了 --profile app 整套部署时它能被 depends_on 拉起来。
-    profiles: ["db", "app"]
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:?在 .env 里设置 POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?在 .env 里设置 POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB:?在 .env 里设置 POSTGRES_DB}
-    ports:
-      # 只绑本机，别把数据库暴露到公网
-      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   migrate:
     profiles: ["app"]
     build: .
     command: ["migrate"]
     env_file: [.env]
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-    depends_on:
-      db:
-        condition: service_healthy
+      DATABASE_URL: ${DATABASE_URL_INTERNAL:-${DATABASE_URL}}
     volumes:
       - kbdata:/data
     restart: "no"
@@ -48,11 +34,9 @@ services:
     command: ["api"]
     env_file: [.env]
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DATABASE_URL: ${DATABASE_URL_INTERNAL:-${DATABASE_URL}}
       API_PORT: "12099"
     depends_on:
-      db:
-        condition: service_healthy
       migrate:
         condition: service_completed_successfully
     ports:
@@ -68,10 +52,8 @@ services:
     command: ["worker"]
     env_file: [.env]
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DATABASE_URL: ${DATABASE_URL_INTERNAL:-${DATABASE_URL}}
     depends_on:
-      db:
-        condition: service_healthy
       migrate:
         condition: service_completed_successfully
     volumes:
@@ -94,7 +76,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  pgdata:
   kbdata:
   caddydata:
   caddyconfig:

@@ -67,17 +67,23 @@ pnpm lint
 **数据库连哪里，只看 `.env` 的 `DATABASE_URL`**，可以是任何一个 Postgres 实例。
 `apps/api/src/env.ts` 不给兜底默认值，没配就直接报错——宁可起不来，也好过连到别的库上。
 
-仓库自带的 `db` 服务（`docker-compose.yml`）**默认不启动**，只是「懒得自己装 Postgres」时的便利品：
+`docker-compose.yml` 里**没有数据库服务**。自带的那个在单独的 [compose.db.yml](compose.db.yml)，
+是「懒得自己装 Postgres」时才叠加的可选件：
 
 ```bash
 set COMPOSE_PROJECT_NAME=knowledge   # 目录名含中文，Docker 需要显式项目名
-pnpm db:up          # = docker compose --profile db up -d db
+pnpm db:up          # = docker compose -f docker-compose.yml -f compose.db.yml --profile db up -d db
 pnpm db:down        # 停掉它
 ```
 
 已经有现成实例的，**不要**跑 `pnpm db:up`——它会去抢 `POSTGRES_HOST_PORT`（默认 5432），
 把别的实例顶掉或自己起不来。这台机器上就并存着好几个 Postgres 容器，踩过这个坑。
 真要两边都留着，在 `.env` 里改 `POSTGRES_HOST_PORT` 错开端口。
+
+拆成两个文件而不是在主文件里挂 profile，是因为 **compose 的变量插值是全局的，不看 profile**：
+`POSTGRES_USER` 这些一旦写成 `${VAR:?}` 必填，哪怕根本不启用 db 服务，光跑 `docker compose config`
+都会因为缺变量报错，把所有接外部数据库的人挡在门外。反过来在主文件写 `${DATABASE_URL_INTERNAL:?}`
+也会同样堵死自带库那条路。这个坑踩过两次，别再往回改。
 
 - 前端 http://127.0.0.1:12098 ，API http://127.0.0.1:12099/api/healthz
 - 第一个注册的用户是实例管理员。

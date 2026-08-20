@@ -33,7 +33,7 @@ pnpm dev
 ```
 
 数据库连哪里只由 `.env` 的 `DATABASE_URL` 决定，用哪个 Postgres 实例都行。
-手上没有现成的，可以用仓库自带的（**默认不启动**，要显式开）：
+手上没有现成的，可以用仓库自带的 —— 它在单独的 [compose.db.yml](compose.db.yml) 里，是可选件：
 
 ```bash
 # 目录名含中文时 Docker 需要项目名

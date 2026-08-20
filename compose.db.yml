@@ -1,0 +1,62 @@
+# 可选的自带 Postgres —— 只在「懒得自己装数据库」时叠加这个文件。
+#
+# 单独用它没意义，永远和主文件一起 -f 叠加：
+#   起开发用的库：docker compose -f docker-compose.yml -f compose.db.yml --profile db up -d db
+#                （就是 pnpm db:up）
+#   整套部署：    docker compose -f docker-compose.yml -f compose.db.yml --profile app up -d --build
+#
+# 为什么单独成文件、而不是在主文件里挂个 profile：
+# compose 的变量插值是**全局**的，不看 profile。POSTGRES_USER 这些一旦写成 ${VAR:?...} 必填，
+# 那么哪怕你压根不启用 db 服务，光是 docker compose config 都会因为缺变量直接报错，
+# 把所有接外部数据库的人挡在门外。拆出去，主文件就只认一个 DATABASE_URL_INTERNAL。
+
+services:
+  db:
+    profiles: ["db", "app"]
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?用自带数据库时，请在 .env 里设置 POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?用自带数据库时，请在 .env 里设置 POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?用自带数据库时，请在 .env 里设置 POSTGRES_DB}
+    ports:
+      # 只绑本机，别把数据库暴露到公网。
+      # 机器上已经有别的 Postgres 占着 5432 时，在 .env 改 POSTGRES_HOST_PORT 错开。
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # 叠加这个文件时，三个应用服务改连自带库，并等它健康后再启动。
+  # 这里的 DATABASE_URL 覆盖掉主文件的 ${DATABASE_URL_INTERNAL}，所以用自带库时
+  # .env 里不必也不该再配 DATABASE_URL_INTERNAL。
+  migrate:
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:

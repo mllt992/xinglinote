@@ -12,6 +12,10 @@
 
 当前状态：应用可正常连库，数据完好（users=22 / notes=77 / workspaces=70 / notebooks=98，46 张表）。
 
+> 🔴 **另有一件待你决定的事**：排查中留下的孤儿卷 `knowledge_pgdata` 里有 **223 篇笔记**，
+> 比现用库（77 篇）多。我一开始误判它是过期副本，实际是分叉数据。已备份，卷未删。
+> 详见下方「遗留问题」第 1 点。
+
 ---
 
 ## 问题 1：postgres18 端口映射失效
@@ -103,11 +107,32 @@ ALTER SCHEMA public OWNER TO xinglinote;
 
 ## ⚠️ 遗留问题（需要你拍板）
 
-1. **孤儿卷 `knowledge_pgdata`**
+1. 🔴 **孤儿卷 `knowledge_pgdata` —— 不要删，里面有现用库没有的数据**
+
    排查早期我照 `CLAUDE.md` §3 跑了 `pnpm db:up`，创建了 `knowledge-db-1`（`pgvector/pgvector:pg16`）并占用 5432 —— 该容器**已被你删除**，但卷还在。
-   卷里是一份**过期**的库（44 张表，缺 `calendar_templates`/`moderation_reviews`/`note_collab`/`push_subscriptions`）。
-   我当时误判它是主库，对它跑过一次 `pnpm db:push`（属无用操作，未影响 postgres18）。
-   确认不需要后可清理：`docker volume rm knowledge_pgdata`。
+
+   我一度把它描述成「过期副本」，**这个判断是错的**。它比现用库少 4 张新表（`calendar_templates`/`moderation_reviews`/`note_collab`/`push_subscriptions`，是我当时对它跑 `pnpm db:push` 补上的），
+   但**内容不是子集，是分叉**：
+
+   | | 孤儿卷 `knowledge_pgdata` | 现用库 `postgres18/xinglinote` |
+   |---|---|---|
+   | notes | **223** | 77 |
+   | note_versions | **1672** | 157 |
+   | attachments | **35** | 7 |
+   | workspaces | **87** | 70 |
+   | users | 13 | **22** |
+   | 最新笔记 | 2026-08-18 05:58 | 2026-08-20 10:36 |
+
+   直接 `docker volume rm` 会丢掉 146 篇笔记、1500 条版本、28 个附件。
+   已经导出一份备份到桌面：`knowledge_pgdata-备份-20260820.dump`（pg_dump 自定义格式，0.33 MB）。
+
+   卷和备份都**原样保留**，等你确认这两份数据谁是想要的、要不要合并。
+   读取卷内容的方法（它是 pg16 数据目录，必须用 pg16 镜像挂载）：
+
+   ```bash
+   docker run -d --name kb-tmp -v knowledge_pgdata:/var/lib/postgresql/data pgvector/pgvector:pg16
+   docker exec kb-tmp psql -U kb -d knowledge -c "select title from notes order by updated_at desc limit 20"
+   ```
 
 2. ~~`pnpm db:up` 仍会与 postgres18 抢 5432~~ → **已解决，见下节**。
 
@@ -121,34 +146,53 @@ ALTER SCHEMA public OWNER TO xinglinote;
 2. **自带 `db` 服务放进 profile，默认不启动**。用自带库就显式 `--profile db`；接外部实例就只配 `.env`。
 
 原先这个仓库正好是反的：`db` 没有 profile 所以永远默认启动，`api`/`worker` 反而在 `app` profile 里。
-现在：
 
-```yaml
-db:
-  profiles: ["db", "app"]   # 不开 profile 就不会有人来抢宿主机 5432
-                            # 挂在 app 下是为了整套部署时能被 depends_on 拉起来
+### 走过的弯路：profile 挡不住全局插值
+
+第一版只是给 `db` 加了 `profiles: ["db", "app"]`。看起来对，实测**不成立**：
+
+**compose 的变量插值是全局的，不看 profile。** 只要文件里写了 `${POSTGRES_USER:?...}`，
+哪怕根本不启用 `db` 服务，光跑 `docker compose config` 都会报错：
+
+```
+error while interpolating services.db.environment.POSTGRES_USER:
+required variable POSTGRES_USER is missing a value
 ```
 
-验证（`docker compose config --services`）：
+也就是说，任何接外部数据库、没设 `POSTGRES_*` 的人，连 `docker compose config` 都跑不了。
+反过来把主文件写成 `${DATABASE_URL_INTERNAL:?...}` 必填，又会同样堵死自带库那条路
+（实测 B/C/D 三个场景全报错）。**`:?` 在 compose 里对任何「可选」的东西都不能用。**
 
-| 命令 | 启动的服务 |
-|---|---|
-| 默认（不带 profile） | *（空）* |
-| `--profile db` | `db` |
-| `--profile app` | `db` `migrate` `api` `worker` |
+### 最终方案：拆成两个文件 + 一个回落变量
+
+- [docker-compose.yml](docker-compose.yml)：只有应用，**不含任何数据库实例**。
+  三个服务的连库地址是 `${DATABASE_URL_INTERNAL:-${DATABASE_URL}}` —— 不配就回落到
+  `DATABASE_URL`，数据库有真实主机名时零配置即可；只有当 `DATABASE_URL` 写的是
+  `127.0.0.1`（容器里指容器自己）才需要单独配 `DATABASE_URL_INTERNAL`。
+- [compose.db.yml](compose.db.yml)：自带的 Postgres，叠加才生效。
+  叠加时会把三个应用服务的 `DATABASE_URL` 直接覆盖成 `@db:5432`，
+  所以走自带库这条路**不需要**配 `DATABASE_URL_INTERNAL`。
+
+四种场景实测（`docker compose config --services`）：
+
+| 场景 | 命令 | 服务 | 容器连的库 |
+|---|---|---|---|
+| A 外部库，`POSTGRES_*` 全不设 | `--profile app` | `migrate` `api` `worker` | 回落到 `DATABASE_URL` ✅ |
+| B 自带库整套部署 | `-f … -f compose.db.yml --profile app` | `db` `migrate` `api` `worker` | `@db:5432` ✅ |
+| C 只起开发库 | `-f … -f compose.db.yml --profile db` | `db` | — |
+| D 默认不带 profile | *（无）* | *（空）* | — |
+
+场景 A 是关键：第一版在这里直接报错，现在通了。
 
 配套改动：
 
 | 文件 | 改动 |
 |---|---|
-| [package.json](package.json) | `db:up` → `docker compose --profile db up -d db`；新增 `db:down` |
-| [CLAUDE.md](CLAUDE.md) §3 | 常用命令里去掉 `db:up`；新增说明：连哪个库只看 `DATABASE_URL`，自带 db 是可选便利品，已有实例就别跑 `db:up` 否则抢端口 |
+| [package.json](package.json) | `db:up` / `db:down` 改为 `-f docker-compose.yml -f compose.db.yml --profile db …` |
+| [.env.example](.env.example) | `DATABASE_URL` 提为唯一必填项并说明无兜底；新增注释掉的 `DATABASE_URL_INTERNAL`；`POSTGRES_*` 降级为「只在用自带库时才需要，接自己的库可整段删掉」 |
+| [CLAUDE.md](CLAUDE.md) §3 | 去掉 `db:up`；写明主文件不含数据库、拆文件的原因，并标注这个坑踩过两次别往回改 |
 | [README.md](README.md) | 快速开始改为「先配 `DATABASE_URL`」，自带库降级为可选段落 |
-| [docs/部署.md](docs/部署.md) | 补充 profile 说明；**接外部库时要删掉 `api`/`worker`/`migrate` 三处 `environment.DATABASE_URL` 覆盖**，否则它们仍指向 `@db:5432` |
-
-> 已知取舍：compose 里三个应用服务显式把 `DATABASE_URL` 覆盖成 `@db:5432`，
-> 这让自带库的路径开箱即用，但走外部库时必须手工删掉那三行。
-> 想彻底干净可以再引一个 `DATABASE_URL_INTERNAL` 变量，暂未做。
+| [docs/部署.md](docs/部署.md) | 「起服务」拆成「接自己的数据库」（推荐）与「用自带的」两条路，各给完整命令 |
 
 ## 顺带核实过的兼容性
 
@@ -160,14 +204,16 @@ db:
 
 ## 下一步
 
-1. 重启 `pnpm dev` —— 之前那次启动时库不通，日志里 `seed skipped`，种子没跑。
-2. 定「遗留问题」第 2 点，再改 `CLAUDE.md`。
-3. 确认后清理 `knowledge_pgdata`。
+1. 🔴 **决定 `knowledge_pgdata` 里那 223 篇笔记怎么办**（见「遗留问题」第 1 点）——
+   是现用库丢过数据，还是那份本来就是另一条线的？在这之前别删卷、别删桌面上的备份。
+2. 重启 `pnpm dev` —— 之前那次启动时库不通，日志里 `seed skipped`，种子没跑。
 
 ## 改动清单
 
-- 代码 / 文档：`docker-compose.yml`、`apps/api/src/env.ts`、`.env.example`、`docs/部署.md`、本文件。
+- 代码 / 文档：`docker-compose.yml`、新增 `compose.db.yml`、`apps/api/src/env.ts`、
+  `package.json`、`.env.example`、`CLAUDE.md`、`README.md`、`docs/部署.md`、本文件。
 - 本地未提交：`.env`。
-- **未执行任何 git 提交 / 推送，未切分支。**
-- Docker：`docker network connect bridge postgres18`。
+- 桌面：`knowledge_pgdata-备份-20260820.dump`（孤儿卷的 pg_dump，**别删**）。
+- Docker：`docker network connect bridge postgres18`；临时容器 `kb-tmp-inspect` 用完已删。
+  孤儿卷 `knowledge_pgdata` **保留未删**。
 - 数据库（`postgres18`，与 BoyaERP 共用实例）：建 `xinglinote` 角色、`knowledge` 改名为 `xinglinote`、移交属主、删除我先前误建的 `kb` 角色。BoyaERP 的 `boya_erp_local` / `boya_erp_drill` 未触碰。
