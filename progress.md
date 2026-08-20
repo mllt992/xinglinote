@@ -109,13 +109,46 @@ ALTER SCHEMA public OWNER TO xinglinote;
    我当时误判它是主库，对它跑过一次 `pnpm db:push`（属无用操作，未影响 postgres18）。
    确认不需要后可清理：`docker volume rm knowledge_pgdata`。
 
-2. **`pnpm db:up` 仍会与 postgres18 抢 5432**
-   仓库 compose 仍定义着 `db` 服务并绑 `127.0.0.1:${POSTGRES_HOST_PORT:-5432}`。
-   照 `CLAUDE.md` 跑 `pnpm db:up` 会再造一个容器来抢端口。二选一收口：
-   - 开发环境统一用 `postgres18`：从 compose 移除 `db` 服务（或只留 `app` profile 用），并同步改 `CLAUDE.md` §3 的命令说明；
-   - 或让 compose 的 db 换端口（现在只需在 `.env` 改 `POSTGRES_HOST_PORT`），项目回归 compose 那套。
+2. ~~`pnpm db:up` 仍会与 postgres18 抢 5432~~ → **已解决，见下节**。
 
-3. **`CLAUDE.md` §3 未更新** —— 里面仍写着 `pnpm db:up` 起 Postgres。等第 2 点定了再一并改。
+3. ~~`CLAUDE.md` §3 未更新~~ → **已解决，见下节**。
+
+## 问题 4：自带 db 服务改为默认不启动
+
+参考主流自托管项目（Gitea、Outline、Plausible、Miniflux、Sentry self-hosted）的通行做法，两条：
+
+1. **应用只认 `DATABASE_URL`**，不假定库一定是 compose 起的 —— 问题 3 已做到。
+2. **自带 `db` 服务放进 profile，默认不启动**。用自带库就显式 `--profile db`；接外部实例就只配 `.env`。
+
+原先这个仓库正好是反的：`db` 没有 profile 所以永远默认启动，`api`/`worker` 反而在 `app` profile 里。
+现在：
+
+```yaml
+db:
+  profiles: ["db", "app"]   # 不开 profile 就不会有人来抢宿主机 5432
+                            # 挂在 app 下是为了整套部署时能被 depends_on 拉起来
+```
+
+验证（`docker compose config --services`）：
+
+| 命令 | 启动的服务 |
+|---|---|
+| 默认（不带 profile） | *（空）* |
+| `--profile db` | `db` |
+| `--profile app` | `db` `migrate` `api` `worker` |
+
+配套改动：
+
+| 文件 | 改动 |
+|---|---|
+| [package.json](package.json) | `db:up` → `docker compose --profile db up -d db`；新增 `db:down` |
+| [CLAUDE.md](CLAUDE.md) §3 | 常用命令里去掉 `db:up`；新增说明：连哪个库只看 `DATABASE_URL`，自带 db 是可选便利品，已有实例就别跑 `db:up` 否则抢端口 |
+| [README.md](README.md) | 快速开始改为「先配 `DATABASE_URL`」，自带库降级为可选段落 |
+| [docs/部署.md](docs/部署.md) | 补充 profile 说明；**接外部库时要删掉 `api`/`worker`/`migrate` 三处 `environment.DATABASE_URL` 覆盖**，否则它们仍指向 `@db:5432` |
+
+> 已知取舍：compose 里三个应用服务显式把 `DATABASE_URL` 覆盖成 `@db:5432`，
+> 这让自带库的路径开箱即用，但走外部库时必须手工删掉那三行。
+> 想彻底干净可以再引一个 `DATABASE_URL_INTERNAL` 变量，暂未做。
 
 ## 顺带核实过的兼容性
 

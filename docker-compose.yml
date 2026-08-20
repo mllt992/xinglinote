@@ -1,11 +1,17 @@
 name: knowledge
 
-# 开发：docker compose up -d db          只起数据库（pnpm db:up 就是这个）
-# 部署：docker compose --profile app up -d --build
-# 带 TLS：docker compose --profile app --profile tls up -d --build
+# 数据库连哪里，只由 .env 的 DATABASE_URL 决定；下面的 db 服务只是「懒得自己装 Postgres」时的便利品。
+# 已经有现成实例（本机别的容器、云上托管库）就别开 db profile，配好 DATABASE_URL 直接用。
+#
+# 只起自带数据库：docker compose --profile db up -d db     （pnpm db:up 就是这个）
+# 整套部署：      docker compose --profile app up -d --build    （db 一并起）
+# 带 TLS：        docker compose --profile app --profile tls up -d --build
 
 services:
   db:
+    # 默认不启动：不开 profile 就不会有人来抢宿主机的 5432。
+    # 同时挂在 app 下，是为了 --profile app 整套部署时它能被 depends_on 拉起来。
+    profiles: ["db", "app"]
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?在 .env 里设置 POSTGRES_USER}

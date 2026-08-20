@@ -57,14 +57,27 @@ themes/       主题包（出厂皮肤 mono-modern「现代墨白」）
 
 ```bash
 pnpm install
-set COMPOSE_PROJECT_NAME=knowledge   # 目录名含中文，Docker 需要显式项目名
-pnpm db:up          # 起 Postgres
 pnpm db:push        # 同步 schema（apps/api/src/db/push.ts，不是 drizzle-kit 迁移）
 pnpm dev            # api + web + worker 并行
 pnpm typecheck      # 五个 tsconfig 全过一遍
 pnpm test           # shared + core + api 的 node:test
 pnpm lint
 ```
+
+**数据库连哪里，只看 `.env` 的 `DATABASE_URL`**，可以是任何一个 Postgres 实例。
+`apps/api/src/env.ts` 不给兜底默认值，没配就直接报错——宁可起不来，也好过连到别的库上。
+
+仓库自带的 `db` 服务（`docker-compose.yml`）**默认不启动**，只是「懒得自己装 Postgres」时的便利品：
+
+```bash
+set COMPOSE_PROJECT_NAME=knowledge   # 目录名含中文，Docker 需要显式项目名
+pnpm db:up          # = docker compose --profile db up -d db
+pnpm db:down        # 停掉它
+```
+
+已经有现成实例的，**不要**跑 `pnpm db:up`——它会去抢 `POSTGRES_HOST_PORT`（默认 5432），
+把别的实例顶掉或自己起不来。这台机器上就并存着好几个 Postgres 容器，踩过这个坑。
+真要两边都留着，在 `.env` 里改 `POSTGRES_HOST_PORT` 错开端口。
 
 - 前端 http://127.0.0.1:12098 ，API http://127.0.0.1:12099/api/healthz
 - 第一个注册的用户是实例管理员。

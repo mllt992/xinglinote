@@ -25,14 +25,24 @@ Markdown 源码），以及**协同编辑与远端光标**——CRDT 只做在�
 
 ```bash
 copy .env.example .env
+# 编辑 .env，把 DATABASE_URL 指向你的 Postgres
 pnpm install
-# 目录名含中文时 Docker 需要项目名
-set COMPOSE_PROJECT_NAME=knowledge
-pnpm db:up
 pnpm db:push
 pnpm test
 pnpm dev
 ```
+
+数据库连哪里只由 `.env` 的 `DATABASE_URL` 决定，用哪个 Postgres 实例都行。
+手上没有现成的，可以用仓库自带的（**默认不启动**，要显式开）：
+
+```bash
+# 目录名含中文时 Docker 需要项目名
+set COMPOSE_PROJECT_NAME=knowledge
+pnpm db:up
+```
+
+它会按 `.env` 里的 `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` 建库，
+并把 `POSTGRES_HOST_PORT`（默认 5432）映射到本机。已经有别的 Postgres 占着 5432 的，改这个值错开。
 
 - 前端：http://127.0.0.1:12098（固定监听 IPv4）
 - API：http://127.0.0.1:12099/api/healthz
