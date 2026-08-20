@@ -8,16 +8,16 @@ services:
   db:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: kb
-      POSTGRES_PASSWORD: kb
-      POSTGRES_DB: knowledge
+      POSTGRES_USER: ${POSTGRES_USER:?在 .env 里设置 POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?在 .env 里设置 POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?在 .env 里设置 POSTGRES_DB}
     ports:
       # 只绑本机，别把数据库暴露到公网
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kb -d knowledge"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -28,7 +28,7 @@ services:
     command: ["migrate"]
     env_file: [.env]
     environment:
-      DATABASE_URL: postgres://kb:kb@db:5432/knowledge
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
     depends_on:
       db:
         condition: service_healthy
@@ -42,7 +42,7 @@ services:
     command: ["api"]
     env_file: [.env]
     environment:
-      DATABASE_URL: postgres://kb:kb@db:5432/knowledge
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       API_PORT: "12099"
     depends_on:
       db:
@@ -62,7 +62,7 @@ services:
     command: ["worker"]
     env_file: [.env]
     environment:
-      DATABASE_URL: postgres://kb:kb@db:5432/knowledge
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
     depends_on:
       db:
         condition: service_healthy
