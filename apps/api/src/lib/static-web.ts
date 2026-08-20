@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import { env } from "../env.ts";
 
 const TYPES: Record<string, string> = {
@@ -37,7 +37,7 @@ export function mountWeb(app: Hono) {
   const indexPath = join(root, "index.html");
   if (!existsSync(indexPath)) return false;
 
-  async function send(c: any, file: string, immutable: boolean) {
+  async function send(c: Context, file: string, immutable: boolean) {
     const info = await stat(file);
     const tag = etag(info.size, info.mtimeMs);
     if (c.req.header("If-None-Match") === tag) return c.body(null, 304);

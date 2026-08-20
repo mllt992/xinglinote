@@ -36,8 +36,10 @@ export function canReadNote(input: {
 }): boolean {
   const { actor, note, notebook, wsRole, nbMemberRole, canSeeTrash } = input;
   if (actor.kind === "guest") return false;
-  if (note.trashed) return canSeeTrash;
+  // 工作区成员资格与笔记本可见性先过，再看回收站开关——
+  // 反过来写的话 canSeeTrash=true 会让非成员也能读到已删除的笔记。
   if (!wsRole) return false;
+  if (note.trashed && !canSeeTrash) return false;
   if (notebook.visibility === "private") return actor.userId === notebook.createdBy;
   if (notebook.visibility === "restricted") {
     return actor.userId === notebook.createdBy || nbMemberRole !== null;

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import { hashPassword, verifyPassword } from "@kb/core";
@@ -15,6 +15,9 @@ import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
 import { noteAccess } from "../lib/note-access.ts";
 import { notebookAccess } from "../lib/notebook-access.ts";
+import { limit } from "../lib/rate-limit.ts";
+import { clientIp } from "../lib/client-ip.ts";
+import { shareCookieName, shareCookieValid, shareCookieValue } from "../lib/share-cookie.ts";
 
 export const shareRoutes = new Hono();
 
@@ -62,7 +65,6 @@ function publicShare(s: typeof shareLinks.$inferSelect) {
     revokedAt: s.revokedAt,
   };
 }
-function shareCookie(token: string) { return `share_${token.slice(0, 16)}`; }
 function effective(s: typeof shareLinks.$inferSelect) { return s.status === "active" && (!s.expiresAt || s.expiresAt.getTime() > Date.now()); }
 
 /** 标题锚点：和前端渲染用的一套规则，中文直接保留。 */
@@ -99,6 +101,13 @@ const shareInput = z.object({
   correctionsEnabled: z.boolean().default(false),
   showBacklinks: z.boolean().default(false),
 });
+/**
+ * 分享 token 是**明文**存的，和仓库里其它凭据（会话、MCP 钥匙、邀请码）不一样。
+ * 这是刻意的：分享管理页要能反复把完整链接显示出来给人复制，hash 存就取不回原文了。
+ * 代价是数据库泄露等于这些链接泄露，所以它们被设计成低权限、可吊销、可设密码、
+ * 可设有效期的一次性能力 URL，而不是账号级凭据；`X-Robots-Tag: noindex` 也一直带着。
+ * 日历订阅地址（calendar_feed_tokens）同理。
+ */
 async function issue(body: z.infer<typeof shareInput>, base: { workspaceId: string; targetType: string; targetId: string; headingAnchor?: string | null; createdBy: string }) {
   const [created] = await db.insert(shareLinks).values({
     token: randomBytes(24).toString("base64url"),
@@ -150,7 +159,15 @@ shareRoutes.get("/workspaces/:id/shares", async (c) => {
   if (!role) throw fail("FORBIDDEN", "不是工作区成员");
   const rows = await db.select().from(shareLinks).where(eq(shareLinks.workspaceId, workspaceId)).orderBy(desc(shareLinks.createdAt));
   const mine = role === "owner" || role === "admin" ? rows : rows.filter(s => s.createdBy === user.id);
-  const [ns, fs2, as] = [await db.select().from(notes).where(eq(notes.workspaceId, workspaceId)), await db.select().from(folders).where(eq(folders.workspaceId, workspaceId)), await db.select().from(attachments).where(eq(attachments.workspaceId, workspaceId))];
+  // 只按分享指到的那几个 id 取标题。以前是把整个工作区的 notes（含全部 bodyMd）、
+  // folders、attachments 三张表全拉出来，只为了 find 一个 title。
+  const wanted = (kind: string) => mine.filter(s => (kind === "note" ? s.targetType === "note" || s.targetType === "heading" : s.targetType === kind)).map(s => s.targetId);
+  const pick = async <T>(ids: string[], run: (ids: string[]) => Promise<T[]>) => (ids.length ? run(ids) : []);
+  const [ns, fs2, as] = await Promise.all([
+    pick(wanted("note"), ids => db.select({ id: notes.id, title: notes.title }).from(notes).where(inArray(notes.id, ids))),
+    pick(wanted("folder"), ids => db.select({ id: folders.id, title: folders.title }).from(folders).where(inArray(folders.id, ids))),
+    pick(wanted("attachment"), ids => db.select({ id: attachments.id, filename: attachments.filename }).from(attachments).where(inArray(attachments.id, ids))),
+  ]);
   const label = (s: typeof shareLinks.$inferSelect) => s.targetType === "folder" ? fs2.find(f => f.id === s.targetId)?.title
     : s.targetType === "attachment" ? as.find(a => a.id === s.targetId)?.filename
     : ns.find(n => n.id === s.targetId)?.title;
@@ -195,7 +212,9 @@ const gone = () => fail("NOT_FOUND", "分享不存在或已失效");
 shareRoutes.get("/public/shares/:token", async (c) => {
   const share = await loadShare(c.req.param("token"));
   if (!share.allowRobots) c.header("X-Robots-Tag", "noindex, nofollow");
-  if (share.passwordHash && getCookie(c, shareCookie(share.token)) !== share.id) return ok(c, { requiresPassword: true, type: share.targetType, title: "受保护的分享" });
+  if (share.passwordHash && !shareCookieValid(getCookie(c, shareCookieName(share.token)), share.id, share.passwordHash)) {
+    return ok(c, { requiresPassword: true, type: share.targetType, title: "受保护的分享" });
+  }
   const common = { requiresPassword: false, type: share.targetType, shareToken: share.token, commentsEnabled: share.commentsEnabled, correctionsEnabled: share.correctionsEnabled, showBacklinks: share.showBacklinks };
 
   if (share.targetType === "attachment") {
@@ -230,7 +249,7 @@ shareRoutes.get("/public/shares/:token", async (c) => {
 shareRoutes.get("/public/shares/:token/file", async (c) => {
   const share = await loadShare(c.req.param("token"));
   if (share.targetType !== "attachment") throw gone();
-  if (share.passwordHash && getCookie(c, shareCookie(share.token)) !== share.id) throw fail("FORBIDDEN", "请先解锁分享");
+  if (share.passwordHash && !shareCookieValid(getCookie(c, shareCookieName(share.token)), share.id, share.passwordHash)) throw fail("FORBIDDEN", "请先解锁分享");
   const [file] = await db.select().from(attachments).where(eq(attachments.id, share.targetId));
   if (!file || file.trashedAt) throw gone();
   const [note] = await db.select().from(notes).where(eq(notes.id, file.noteId));
@@ -244,11 +263,22 @@ shareRoutes.get("/public/shares/:token/file", async (c) => {
 });
 
 shareRoutes.post("/public/shares/:token/unlock", async (c) => {
-  const share = await loadShare(c.req.param("token"));
+  const token = c.req.param("token");
+  // 没有限流的话，这就是个可以对着分享密码无限猜的接口。
+  // 按 token 和来源各限一道：换 IP 换不掉对同一个分享的总次数。
+  limit(`share-unlock:${token}`, 10, 600_000);
+  limit(`share-unlock:${clientIp(c)}`, 30, 600_000);
+  const share = await loadShare(token);
   if (!share.passwordHash) return ok(c, {});
   const body = z.object({ password: z.string().max(100) }).parse(await c.req.json());
   if (!(await verifyPassword(share.passwordHash, body.password))) throw fail("FORBIDDEN", "密码错误");
-  setCookie(c, shareCookie(share.token), share.id, { httpOnly: true, sameSite: "Lax", secure:new URL(c.req.url).protocol==="https:", path: "/api/v1/public", maxAge: 86400 });
+  setCookie(c, shareCookieName(share.token), shareCookieValue(share.id, share.passwordHash), {
+    httpOnly: true,
+    sameSite: "Lax",
+    secure: new URL(c.req.url).protocol === "https:",
+    path: "/api/v1/public",
+    maxAge: 86400,
+  });
   return ok(c, {});
 });
 

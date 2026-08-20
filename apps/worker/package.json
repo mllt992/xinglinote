@@ -1,5 +1,26 @@
 {
-  "name":"@kb/worker","version":"0.0.1","type":"module","scripts":{"dev":"tsx watch src/index.ts","start":"tsx src/index.ts","build":"tsc --noEmit"},
-  "dependencies":{"@kb/shared":"workspace:*","drizzle-orm":"^0.41.0","postgres":"^3.4.5"},
-  "devDependencies":{"@types/node":"^22.13.10","tsx":"^4.19.3","typescript":"^5.8.2"}
+  "name": "@kb/worker",
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc --noEmit"
+  },
+  "//": "worker 直接跑 apps/api 里的库代码（备份、推送、日历、AI 索引、PDF 抽取），所以 api 的运行时依赖这里也得声明一份，不能靠 node_modules 恰好能解析到。",
+  "dependencies": {
+    "@kb/core": "workspace:*",
+    "@kb/shared": "workspace:*",
+    "drizzle-orm": "^0.41.0",
+    "nodemailer": "^9.0.5",
+    "pdfjs-dist": "^6.2.108",
+    "postgres": "^3.4.5",
+    "tsx": "^4.19.3",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/nodemailer": "^8.0.1",
+    "typescript": "^5.8.2"
+  }
 }

@@ -1,8 +1,8 @@
-import { and,asc,eq,lte,or,lt,sql } from "drizzle-orm";
+import { and,asc,eq,inArray,lte,lt,or,sql } from "drizzle-orm";
 import { readFile,rm } from "node:fs/promises";
 import { join } from "node:path";
 import { db } from "../../api/src/db/client.ts";
-import { aiChunks,aiProviders,aiUsage,attachments,backupRuns,backupTargets,auditLogs,authTokens,backgroundJobs,calendarItems,calendarReminders,calendarSubscriptions,comments,corrections,folders,links,mcpTokens,notebookMembers,notebooks,notes,noteVersions,notifications,posts,postReactions,pushSubscriptions,sessions,shareLinks,users,workspaceInvites,workspaceMembers,workspaces } from "../../api/src/db/schema.ts";
+import { aiChunks,aiProviders,aiUsage,attachments,backupRuns,backupTargets,auditLogs,authTokens,backgroundJobs,calendarFeedTokens,comments,calendarItems,calendarOverrides,calendarReminders,calendarSubscriptions,calendarTemplates,folders,mcpTokens,notebookMembers,notebooks,notes,notifications,posts,pushSubscriptions,sessions,shareLinks,users,workspaceInvites,workspaceMembers,workspaces } from "../../api/src/db/schema.ts";
 import { nextOccurrence,reminderFireAt,rescheduleReminders,syncNoteTasks } from "../../api/src/lib/calendar.ts";
 import { pushToUser } from "../../api/src/lib/push.ts";
 import { syncSubscription } from "../../api/src/lib/ics.ts";
@@ -13,6 +13,7 @@ import { checksum,encryptPackage,workspaceSnapshot } from "../../api/src/lib/bac
 import { upload,remove } from "../../api/src/lib/backup-transfer.ts";
 import { open } from "../../api/src/lib/secrets.ts";
 import { pruneNoteVersions } from "../../api/src/lib/versions.ts";
+import { purgeNotes } from "../../api/src/lib/trash.ts";
 import { extractPdfText } from "../../api/src/lib/pdf-text.ts";
 const interval=Number(process.env.WORKER_INTERVAL_MS??5000); // durable worker cadence
 async function claim(){return db.transaction(async tx=>{const[job]=await tx.select().from(backgroundJobs).where(and(or(eq(backgroundJobs.status,"pending"),and(eq(backgroundJobs.status,"running"),lt(backgroundJobs.lockedAt,new Date(Date.now()-300000)))),lte(backgroundJobs.runAfter,new Date()))).orderBy(asc(backgroundJobs.createdAt)).limit(1).for("update",{skipLocked:true});if(!job)return null;const[claimed]=await tx.update(backgroundJobs).set({status:"running",lockedAt:new Date(),attempts:job.attempts+1}).where(eq(backgroundJobs.id,job.id)).returning();return claimed;});}
@@ -23,13 +24,56 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
   catch{await db.update(attachments).set({extractStatus:"failed"}).where(eq(attachments.id,a.id));}   // 抽不出来就只留文件
   return;}
  if(job.type==="prune_versions"){await pruneNoteVersions();return;}
- if(job.type==="purge_trash"){const cutoff=new Date(Date.now()-30*86400000);const old=await db.select().from(attachments).where(lt(attachments.trashedAt,cutoff));for(const a of old){await rm(join(env.dataDir,"attachments",a.workspaceId,a.storedName),{force:true});await db.delete(attachments).where(eq(attachments.id,a.id));}const oldNotes=await db.select({id:notes.id}).from(notes).where(lt(notes.trashedAt,cutoff));for(const n of oldNotes){const ats=await db.select().from(attachments).where(eq(attachments.noteId,n.id));for(const a of ats)await rm(join(env.dataDir,"attachments",a.workspaceId,a.storedName),{force:true});await db.transaction(async tx=>{await tx.delete(attachments).where(eq(attachments.noteId,n.id));await tx.delete(links).where(or(eq(links.fromNoteId,n.id),eq(links.targetNoteId,n.id)));await tx.delete(noteVersions).where(eq(noteVersions.noteId,n.id));await tx.delete(comments).where(eq(comments.targetId,n.id));await tx.delete(corrections).where(eq(corrections.noteId,n.id));await tx.update(posts).set({noteId:null}).where(eq(posts.noteId,n.id));await tx.delete(notes).where(eq(notes.id,n.id));});}return;}
+ if(job.type==="purge_trash"){
+   const cutoff=new Date(Date.now()-30*86400000);
+   // 单独被删掉的附件（笔记还在）
+   const orphanFiles=await db.select().from(attachments).where(lt(attachments.trashedAt,cutoff));
+   for(const a of orphanFiles){await rm(join(env.dataDir,"attachments",a.workspaceId,a.storedName),{force:true});await db.delete(attachments).where(eq(attachments.id,a.id));}
+   // 笔记走 purgeNotes 这唯一一个入口，别在这儿再抄一份删表清单
+   const oldNotes=await db.select({id:notes.id}).from(notes).where(lt(notes.trashedAt,cutoff));
+   await purgeNotes(oldNotes.map(n=>n.id));
+   return;}
  if(job.type==="cleanup_tokens"){await db.delete(authTokens).where(lt(authTokens.expiresAt,new Date(Date.now()-86400000)));return;}
  if(job.type==="expire_shares"){await db.update(shareLinks).set({status:"expired"}).where(and(eq(shareLinks.status,"active"),lt(shareLinks.expiresAt,new Date())));return;}
- if(job.type==="test_backup_target"){const targetId=String((job.payload as any).targetId??''),[t]=await db.select().from(backupTargets).where(eq(backupTargets.id,targetId));if(!t)throw new Error('backup target missing');const credentials=JSON.parse(open(t.credentials)),path=`connection-test-${crypto.randomUUID()}.txt`;await upload(t,credentials,path,Buffer.from('knowledge backup target test'));await remove(t,credentials,path);return;}
+ if(job.type==="test_backup_target"){const targetId=String((job.payload as {targetId?:string}).targetId??''),[t]=await db.select().from(backupTargets).where(eq(backupTargets.id,targetId));if(!t)throw new Error('backup target missing');const credentials=JSON.parse(open(t.credentials)),path=`connection-test-${crypto.randomUUID()}.txt`;await upload(t,credentials,path,Buffer.from('knowledge backup target test'));await remove(t,credentials,path);return;}
  if(job.type==="backup_workspace"){const{targetId,runId}=job.payload as {targetId:string;runId:string};const[t]=await db.select().from(backupTargets).where(eq(backupTargets.id,targetId));if(!t?.workspaceId)throw new Error('backup target missing');await db.update(backupRuns).set({status:'running',startedAt:new Date()}).where(eq(backupRuns.id,runId));try{const snapshot=await workspaceSnapshot(t.workspaceId),raw=Buffer.from(JSON.stringify(snapshot)),data=t.encryptionKey?encryptPackage(raw,open(t.encryptionKey)):raw,sum=checksum(data),path=`workspace-${t.workspaceId}-${new Date().toISOString().replace(/[:.]/g,'-')}.kbbackup`;await upload(t,JSON.parse(open(t.credentials)),path,data);await db.update(backupRuns).set({status:'success',bytes:data.length,checksumSha256:sum,remotePath:path,manifest:{format:snapshot.format,version:snapshot.version,notebooks:snapshot.notebooks.length,notes:snapshot.notes.length,attachments:snapshot.attachments.length,encrypted:!!t.encryptionKey},finishedAt:new Date()}).where(eq(backupRuns.id,runId));await db.update(backupTargets).set({lastRunAt:new Date()}).where(eq(backupTargets.id,t.id));}catch(e){await db.update(backupRuns).set({status:'failed',error:e instanceof Error?e.message:String(e),finishedAt:new Date()}).where(eq(backupRuns.id,runId));throw e;}return;}
  if(job.type==="index_note"){const noteId=String((job.payload as {noteId?:string}).noteId??"");const[n]=await db.select().from(notes).where(eq(notes.id,noteId));if(!n||!n.aiIndex||n.trashedAt){await db.delete(aiChunks).where(eq(aiChunks.noteId,noteId));return;}const p=await aiProvider(n.workspaceId);if(!p?.embeddingModel)return;   /* 没配 AI 就不是错误，等配好了再重建索引，别把队列堵死 */const pieces=chunks(n.title,n.bodyMd),vectors=await embed(p,pieces);if(vectors.length!==pieces.length)throw new Error("embedding result count mismatch");await db.transaction(async tx=>{await tx.delete(aiChunks).where(eq(aiChunks.noteId,n.id));for(let i=0;i<pieces.length;i++)await tx.insert(aiChunks).values({noteId:n.id,workspaceId:n.workspaceId,notebookId:n.notebookId,chunkIndex:i,content:pieces[i],embedding:vector(vectors[i])});});return;}
- if(job.type==="delete_workspace"){const workspaceId=String((job.payload as {workspaceId?:string}).workspaceId??"");const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,workspaceId));if(!ws||ws.kind==="personal"||!ws.deletionScheduledAt||ws.deletionScheduledAt.getTime()>Date.now())return;const ns=await db.select({id:notes.id}).from(notes).where(eq(notes.workspaceId,workspaceId));for(const n of ns){const ats=await db.select().from(attachments).where(eq(attachments.noteId,n.id));for(const a of ats)await rm(join(env.dataDir,"attachments",a.workspaceId,a.storedName),{force:true});await db.transaction(async tx=>{await tx.delete(attachments).where(eq(attachments.noteId,n.id));await tx.delete(links).where(or(eq(links.fromNoteId,n.id),eq(links.targetNoteId,n.id)));await tx.delete(noteVersions).where(eq(noteVersions.noteId,n.id));await tx.delete(comments).where(eq(comments.targetId,n.id));await tx.delete(corrections).where(eq(corrections.noteId,n.id));await tx.update(posts).set({noteId:null}).where(eq(posts.noteId,n.id));await tx.delete(notes).where(eq(notes.id,n.id));});}const nbs=await db.select({id:notebooks.id}).from(notebooks).where(eq(notebooks.workspaceId,workspaceId));await db.transaction(async tx=>{for(const nb of nbs)await tx.delete(notebookMembers).where(eq(notebookMembers.notebookId,nb.id));await tx.delete(folders).where(eq(folders.workspaceId,workspaceId));await tx.delete(notebooks).where(eq(notebooks.workspaceId,workspaceId));await tx.delete(shareLinks).where(eq(shareLinks.workspaceId,workspaceId));await tx.delete(mcpTokens).where(eq(mcpTokens.workspaceId,workspaceId));await tx.delete(aiProviders).where(eq(aiProviders.workspaceId,workspaceId));await tx.delete(aiUsage).where(eq(aiUsage.workspaceId,workspaceId));await tx.delete(workspaceInvites).where(eq(workspaceInvites.workspaceId,workspaceId));await tx.delete(workspaceMembers).where(eq(workspaceMembers.workspaceId,workspaceId));await tx.update(posts).set({workspaceId:null,status:"deleted"}).where(eq(posts.workspaceId,workspaceId));await tx.delete(workspaces).where(eq(workspaces.id,workspaceId));});return;}
+ if(job.type==="delete_workspace"){
+   const workspaceId=String((job.payload as {workspaceId?:string}).workspaceId??"");
+   const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,workspaceId));
+   if(!ws||ws.kind==="personal"||!ws.deletionScheduledAt||ws.deletionScheduledAt.getTime()>Date.now())return;
+   const ns=await db.select({id:notes.id}).from(notes).where(eq(notes.workspaceId,workspaceId));
+   await purgeNotes(ns.map(n=>n.id));
+   const nbs=await db.select({id:notebooks.id}).from(notebooks).where(eq(notebooks.workspaceId,workspaceId));
+   const items=await db.select({id:calendarItems.id}).from(calendarItems).where(eq(calendarItems.workspaceId,workspaceId));
+   const targets=await db.select({id:backupTargets.id}).from(backupTargets).where(eq(backupTargets.workspaceId,workspaceId));
+   await db.transaction(async tx=>{
+     if(nbs.length)await tx.delete(notebookMembers).where(inArray(notebookMembers.notebookId,nbs.map(nb=>nb.id)));
+     // 这几张表以前是漏掉的，工作区删完还留着一堆孤儿行
+     if(items.length){
+       await tx.delete(calendarReminders).where(inArray(calendarReminders.itemId,items.map(i=>i.id)));
+       await tx.delete(calendarOverrides).where(inArray(calendarOverrides.itemId,items.map(i=>i.id)));
+     }
+     await tx.delete(calendarItems).where(eq(calendarItems.workspaceId,workspaceId));
+     await tx.delete(calendarTemplates).where(eq(calendarTemplates.workspaceId,workspaceId));
+     await tx.delete(calendarFeedTokens).where(eq(calendarFeedTokens.workspaceId,workspaceId));
+     await tx.delete(calendarSubscriptions).where(eq(calendarSubscriptions.workspaceId,workspaceId));
+     if(targets.length)await tx.delete(backupRuns).where(inArray(backupRuns.targetId,targets.map(t=>t.id)));
+     await tx.delete(backupRuns).where(eq(backupRuns.workspaceId,workspaceId));
+     await tx.delete(backupTargets).where(eq(backupTargets.workspaceId,workspaceId));
+     await tx.delete(auditLogs).where(eq(auditLogs.workspaceId,workspaceId));
+     await tx.delete(folders).where(eq(folders.workspaceId,workspaceId));
+     await tx.delete(notebooks).where(eq(notebooks.workspaceId,workspaceId));
+     await tx.delete(shareLinks).where(eq(shareLinks.workspaceId,workspaceId));
+     await tx.delete(mcpTokens).where(eq(mcpTokens.workspaceId,workspaceId));
+     await tx.delete(aiProviders).where(eq(aiProviders.workspaceId,workspaceId));
+     await tx.delete(aiUsage).where(eq(aiUsage.workspaceId,workspaceId));
+     await tx.delete(workspaceInvites).where(eq(workspaceInvites.workspaceId,workspaceId));
+     await tx.delete(workspaceMembers).where(eq(workspaceMembers.workspaceId,workspaceId));
+     await tx.update(posts).set({workspaceId:null,status:"deleted"}).where(eq(posts.workspaceId,workspaceId));
+     await tx.delete(workspaces).where(eq(workspaces.id,workspaceId));
+   });
+   return;}
  if(job.type==="delete_user"){const userId=String((job.payload as {userId?:string}).userId??"");const[u]=await db.select().from(users).where(eq(users.id,userId));if(!u||u.status!=="pending_deletion"||!u.deletionScheduledAt||u.deletionScheduledAt.getTime()>Date.now())return;const[pws]=await db.select().from(workspaces).where(eq(workspaces.personalUserId,userId));await db.transaction(async tx=>{if(pws)await tx.update(notes).set({trashedAt:new Date()}).where(eq(notes.workspaceId,pws.id));await tx.update(posts).set({status:"deleted",updatedAt:new Date()}).where(eq(posts.authorUserId,userId));await tx.update(comments).set({authorUserId:null}).where(eq(comments.authorUserId,userId));await tx.update(mcpTokens).set({status:"revoked"}).where(eq(mcpTokens.userId,userId));await tx.delete(sessions).where(eq(sessions.userId,userId));await tx.update(users).set({status:"deleted",email:`deleted-${userId}@invalid.local`,displayName:"已注销用户",bio:null,deletionScheduledAt:null,updatedAt:new Date()}).where(eq(users.id,userId));});return;}
  if(job.type==="sync_note_tasks"){await syncNoteTasks(String((job.payload as {noteId?:string}).noteId??""));return;}
  if(job.type==="calendar_reminder"){
@@ -91,4 +135,17 @@ async function schedule(){const now=new Date();for(const t of await db.select().
  // ICS 轮询自己续期，这里只负责点火：认「不带 subscriptionId」的那条才是轮询job，否则一条手动同步就能把轮询挡住
  const polls=await db.select().from(backgroundJobs).where(and(eq(backgroundJobs.type,"calendar_ics_sync"),or(eq(backgroundJobs.status,"pending"),eq(backgroundJobs.status,"running")),sql`payload->>'subscriptionId' IS NULL`));
  if(!polls.length)await db.insert(backgroundJobs).values({type:"calendar_ics_sync",payload:{},runAfter:new Date()});}
-console.log(`knowledge worker started (${interval}ms)`);await schedule();setInterval(()=>void tick(),interval);setInterval(()=>void schedule(),86400000);void tick();
+// 一轮没跑完就不排下一轮：备份、索引这类任务远超 interval，
+// 重叠进来只会让并发无上限地堆（claim() 的 SKIP LOCKED 保证不会重复执行，
+// 但拦不住连接数被吃光）。
+let ticking = false;
+async function safeTick(){
+  if(ticking)return;
+  ticking=true;
+  try{await tick();}catch(e){console.error("tick failed:",e);}finally{ticking=false;}
+}
+console.log(`knowledge worker started (${interval}ms)`);
+await schedule();
+setInterval(()=>void safeTick(),interval);
+setInterval(()=>void schedule().catch(e=>console.error("schedule failed:",e)),86400000);
+void safeTick();

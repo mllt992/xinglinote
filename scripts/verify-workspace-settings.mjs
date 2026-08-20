@@ -1,7 +1,7 @@
 // 工作区设置页（成员 + 管理合并后）的接口验收：概览统计、改名、邀请生命周期、主动退出。
 // 用法：KB_EMAIL=... KB_PASSWORD=... node scripts/verify-workspace-settings.mjs
 // 账号需要是实例管理员：脚本要发注册码临时拉一个协作者进来。
-import { KB_EMAIL as email, KB_PASSWORD as password } from './creds.mjs';
+import { KB_EMAIL as email, KB_PASSWORD as password, TEST_PASSWORD } from './creds.mjs';
 const base = (process.env.KB_BASE_URL ?? 'http://127.0.0.1:12098') + '/api/v1';
 
 async function q(path, opt = {}, cookie = '') {
@@ -19,7 +19,7 @@ const admin = (await q('/auth/login', { method: 'POST', body: JSON.stringify({ e
 const me = (await q('/me', {}, admin)).data;
 const suffix = crypto.randomUUID().replaceAll('-', '').slice(0, 8);
 const code = (await q('/admin/registration-codes', { method: 'POST', body: JSON.stringify({ quantity: 1, maxUses: 1, skipEmailVerification: true }) }, admin)).data.codes[0];
-const guest = await q('/auth/register', { method: 'POST', body: JSON.stringify({ email: `wsset-${suffix}@example.test`, password: 'Password1234', handle: `wsset${suffix}`, displayName: '设置页验收成员', registrationCode: code }) });
+const guest = await q('/auth/register', { method: 'POST', body: JSON.stringify({ email: `wsset-${suffix}@example.test`, password: TEST_PASSWORD, handle: `wsset${suffix}`, displayName: '设置页验收成员', registrationCode: code }) });
 const gc = guest.cookie;
 const guestMe = (await q('/me', {}, gc)).data;
 

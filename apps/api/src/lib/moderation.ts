@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import { instanceSettings, moderationReviews, notifications, users, workspaceMembers } from "../db/schema.ts";
+import { safeFetch } from "./net-guard.ts";
 import { open } from "./secrets.ts";
 import { isRisky, MODERATION_CATEGORIES, parseVerdict, SCOPE_LABEL, type ModerationScope } from "./moderation-verdict.ts";
 
@@ -62,7 +63,7 @@ export async function moderate(text: string, scope: ModerationScope, settings?: 
   }
   let raw: string;
   try {
-    const res = await fetch(`${cfg.moderationBaseUrl.replace(/\/$/, "")}/chat/completions`, {
+    const res = await safeFetch(`${cfg.moderationBaseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${open(cfg.moderationApiKey)}` },
       body: JSON.stringify({
@@ -73,7 +74,7 @@ export async function moderate(text: string, scope: ModerationScope, settings?: 
         ],
       }),
       signal: AbortSignal.timeout(20000),
-    });
+    }, "审核模型地址");
     if (!res.ok) return onError(cfg, `模型返回 ${res.status}`, model);
     const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
     raw = String(data.choices?.[0]?.message?.content ?? "");

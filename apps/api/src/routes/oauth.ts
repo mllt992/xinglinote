@@ -1,7 +1,9 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import type { Context } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { Hono } from "hono";
 import { z } from "zod";
-import { eq, lt } from "drizzle-orm";
+import { eq, inArray, lt } from "drizzle-orm";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { mcpTokens, oauthClients, oauthRequests, workspaceMembers, workspaces } from "../db/schema.ts";
@@ -9,8 +11,9 @@ import { env } from "../env.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { notebookAccess } from "../lib/notebook-access.ts";
-import { limit } from "../lib/rate-limit.ts";
-import { secureToken, tokenHash } from "../lib/tokens.ts";
+import { tryLimit } from "../lib/rate-limit.ts";
+import { clientIp } from "../lib/client-ip.ts";
+import { hashSecret, matchesSecret, secretHashes, secureToken } from "../lib/tokens.ts";
 import { memberRole } from "../lib/workspace.ts";
 
 /**
@@ -26,7 +29,7 @@ const SCOPES = ["knowledge.read", "knowledge.write", "knowledge.manage"];
 const resourceUrl = () => `${env.publicUrl}/api/v1/mcp`;
 
 /** OAuth 的错误必须是 {error, error_description}，不能套项目自己的 {ok:false} 信封。 */
-function oerr(c: any, status: number, error: string, description?: string) {
+function oerr(c: Context, status: ContentfulStatusCode, error: string, description?: string) {
   return c.json({ error, ...(description ? { error_description: description } : {}) }, status, {
     "Cache-Control": "no-store",
   });
@@ -46,7 +49,7 @@ function validRedirect(uri: string) {
   return /^[a-z][a-z0-9+.-]*:$/.test(u.protocol);
 }
 
-function redirectBack(c: any, uri: string, params: Record<string, string | undefined>) {
+function redirectBack(c: Context, uri: string, params: Record<string, string | undefined>) {
   const u = new URL(uri);
   for (const [k, v] of Object.entries(params)) if (v !== undefined) u.searchParams.set(k, v);
   return c.redirect(u.toString(), 302);
@@ -80,8 +83,9 @@ wellKnownRoutes.get("/.well-known/oauth-protected-resource/api/v1/mcp", (c) => c
 
 // —— 动态客户端注册（RFC 7591）——————————————————————————————
 oauthRoutes.post("/oauth/register", async (c) => {
-  const ip = c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
-  if (!limit(`oauth:register:${ip}`, 10, 60_000)) return oerr(c, 429, "temporarily_unavailable", "注册过于频繁");
+  // tryLimit 而不是 limit：OAuth 的错误必须是 {error, error_description} 信封，
+  // 让 limit() 抛出去会被 onError 包成项目自己的 {ok:false} 信封。
+  if (!tryLimit(`oauth:register:${clientIp(c)}`, 10, 60_000)) return oerr(c, 429, "temporarily_unavailable", "注册过于频繁");
   let body: unknown;
   try { body = await c.req.json(); } catch { return oerr(c, 400, "invalid_client_metadata", "请求体必须是 JSON"); }
   const parsed = z.object({
@@ -99,7 +103,7 @@ oauthRoutes.post("/oauth/register", async (c) => {
   const secret = token_endpoint_auth_method === "none" ? null : `kbs_${secureToken(24)}`;
   await db.insert(oauthClients).values({
     clientId,
-    clientSecretHash: secret ? tokenHash(secret) : null,
+    clientSecretHash: secret ? hashSecret(secret) : null,
     clientName: name,
     redirectUris: redirect_uris,
   });
@@ -117,8 +121,7 @@ oauthRoutes.post("/oauth/register", async (c) => {
 
 // —— 授权端点 ————————————————————————————————————————————
 oauthRoutes.get("/oauth/authorize", async (c) => {
-  const ip = c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
-  if (!limit(`oauth:authorize:${ip}`, 30, 60_000)) return oerr(c, 429, "temporarily_unavailable", "请求过于频繁");
+  if (!tryLimit(`oauth:authorize:${clientIp(c)}`, 30, 60_000)) return oerr(c, 429, "temporarily_unavailable", "请求过于频繁");
   // 顺手清掉过期一天以上的请求，免得这张表只涨不落
   await db.delete(oauthRequests).where(lt(oauthRequests.expiresAt, new Date(Date.now() - 86_400_000)));
   const q = c.req.query();
@@ -211,7 +214,7 @@ oauthRoutes.post("/oauth/requests/:id/approve", async (c) => {
 
   const code = `kba_${secureToken(32)}`;
   await db.update(oauthRequests)
-    .set({ userId: u.id, policy: p, codeHash: tokenHash(code), expiresAt: new Date(Date.now() + CODE_TTL_MS) })
+    .set({ userId: u.id, policy: p, codeHash: hashSecret(code), expiresAt: new Date(Date.now() + CODE_TTL_MS) })
     .where(eq(oauthRequests.id, r.id));
   const back = new URL(r.redirectUri);
   back.searchParams.set("code", code);
@@ -242,9 +245,22 @@ oauthRoutes.post("/oauth/token", async (c) => {
   if (form.grant_type !== "authorization_code") return oerr(c, 400, "unsupported_grant_type", "只支持 authorization_code");
   if (!form.code || !form.code_verifier) return oerr(c, 400, "invalid_request", "缺少 code 或 code_verifier");
 
-  const [r] = await db.select().from(oauthRequests).where(eq(oauthRequests.codeHash, tokenHash(form.code)));
+  // 取号并**当场上锁**：从 select 到 update usedAt 之间没有锁的话，
+  // 两个并发请求拿同一个 code 都能过 `if (r.usedAt)`，各自签出一把钥匙，
+  // 而重放检测只会吊销其中一把。邀请码兑换那边（members.ts）本来就是这么写的。
+  const claimed = await db.transaction(async (tx) => {
+    const [row] = await tx.select().from(oauthRequests)
+      .where(inArray(oauthRequests.codeHash, secretHashes(form.code!)))
+      .for("update");
+    if (!row) return { row: null, replayed: false as const };
+    if (row.usedAt) return { row, replayed: true as const };
+    // 先占住：后面任何一步失败都只是让这个 code 作废，不会留下可重放的窗口
+    await tx.update(oauthRequests).set({ usedAt: new Date() }).where(eq(oauthRequests.id, row.id));
+    return { row, replayed: false as const };
+  });
+  const r = claimed.row;
   if (!r || !r.policy || !r.userId) return oerr(c, 400, "invalid_grant", "授权码无效");
-  if (r.usedAt) {
+  if (claimed.replayed) {
     // 授权码被重放：把它换出去的那把钥匙一并吊销（OAuth 2.1 要求）
     if (r.tokenId) await db.update(mcpTokens).set({ status: "revoked" }).where(eq(mcpTokens.id, r.tokenId));
     return oerr(c, 400, "invalid_grant", "授权码已被使用，关联的访问令牌已吊销");
@@ -262,7 +278,7 @@ oauthRoutes.post("/oauth/token", async (c) => {
       const decoded = Buffer.from(basic, "base64").toString();
       secret = decodeURIComponent(decoded.slice(decoded.indexOf(":") + 1));
     }
-    if (!secret || !safeEqual(tokenHash(secret), client.clientSecretHash)) {
+    if (!secret || !matchesSecret(secretHashes(secret), client.clientSecretHash)) {
       return oerr(c, 401, "invalid_client", "客户端认证失败");
     }
   }
@@ -275,7 +291,7 @@ oauthRoutes.post("/oauth/token", async (c) => {
   const secret = `kbk_${id.slice(0, 8)}_${secureToken(24)}`;
   await db.insert(mcpTokens).values({
     id,
-    secretHash: tokenHash(secret),
+    secretHash: hashSecret(secret),
     name: client.clientName,
     userId: r.userId,
     workspaceId: p.workspaceId,
@@ -292,7 +308,7 @@ oauthRoutes.post("/oauth/token", async (c) => {
     clientId: client.clientId,
     source: "oauth",
   });
-  await db.update(oauthRequests).set({ usedAt: new Date(), tokenId: id }).where(eq(oauthRequests.id, r.id));
+  await db.update(oauthRequests).set({ tokenId: id }).where(eq(oauthRequests.id, r.id));
 
   const scope = p.rw === "manage" ? "knowledge.manage" : p.rw === "write" ? "knowledge.write" : "knowledge.read";
   return c.json({

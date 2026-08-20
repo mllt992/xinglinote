@@ -11,11 +11,16 @@ export async function userStorage(userId: string) {
   const [user] = await db.select({ quota: users.storageQuotaBytes }).from(users).where(eq(users.id, userId));
   if (!user) throw fail("NOT_FOUND", "用户不存在");
   const [settings] = await db.select({ defaultQuota: instanceSettings.defaultUserStorageBytes }).from(instanceSettings);
-  const ownedNotes = await db.select({ title: notes.title, body: notes.bodyMd }).from(notes)
+  // 字节数交给 PG 算。以前是把这个人所有笔记的标题和正文全查出来在 Node 里
+  // Buffer.byteLength 求和——而 /me 每次打开页面都会调它，每次保存笔记、
+  // 每次传附件前的 assertUserStorage 也都会调。
+  const [{ bytes: noteBytesRaw }] = await db
+    .select({ bytes: sql<number>`coalesce(sum(octet_length(${notes.title}) + octet_length(${notes.bodyMd})), 0)::bigint` })
+    .from(notes)
     .where(and(eq(notes.createdBy, userId), isNull(notes.trashedAt)));
   const [{ bytes: attachmentBytes }] = await db.select({ bytes: sql<number>`coalesce(sum(${attachments.bytes}), 0)::bigint` }).from(attachments)
     .where(and(eq(attachments.createdBy, userId), isNull(attachments.trashedAt)));
-  const noteBytes = ownedNotes.reduce((sum, n) => sum + textBytes(n.title, n.body), 0);
+  const noteBytes = Number(noteBytesRaw ?? 0);
   const usedBytes = noteBytes + Number(attachmentBytes ?? 0);
   const quotaBytes = user.quota ?? settings?.defaultQuota ?? 1073741824;
   return { usedBytes, quotaBytes, remainingBytes: Math.max(0, quotaBytes - usedBytes), noteBytes, attachmentBytes: Number(attachmentBytes ?? 0) };

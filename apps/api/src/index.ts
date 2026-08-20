@@ -33,6 +33,42 @@ import { instanceSettings } from "./db/schema.ts";
 
 const app = new Hono();
 
+/**
+ * 安全响应头。这是个渲染用户 Markdown、还对外开公开分享页和文档站的应用：
+ * DOMPurify 只是第一道，CSP 是它被绕过时的第二道。
+ *
+ * - script-src 'self'：构建产物里没有内联脚本（apps/web/index.html 只有一个 module src）。
+ * - style-src 允许 inline：mermaid 的 SVG 和 KaTeX 都会写行内样式，去不掉。
+ * - connect-src 'self'：CSP3 里 'self' 同时覆盖同源的 ws:／wss:，协同编辑走的就是它。
+ * - frame-ancestors 'none'：全站不打算被别人嵌，顺手把点击劫持堵上。
+ */
+const CSP = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "style-src 'self' 'unsafe-inline'",
+  "script-src 'self'",
+  "connect-src 'self'",
+  "worker-src 'self' blob:",
+].join("; ");
+
+app.use("*", async (c, next) => {
+  await next();
+  c.header("Content-Security-Policy", CSP);
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("X-Frame-Options", "DENY");
+  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  c.header("Cross-Origin-Opener-Policy", "same-origin");
+  // HSTS 只在确实跑在 https 上时发，否则本地 http 调试会被浏览器记住并强制升级
+  if (env.publicUrl.startsWith("https:")) {
+    c.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+});
+
 app.use(
   "*",
   cors({
@@ -53,8 +89,11 @@ app.onError((e, c) => {
 app.route("/", wellKnownRoutes);
 app.route("/", calendarFeedRoutes);
 
-app.get("/api/healthz", (c) => c.json({ ok: true, service:"knowledge-api" }));
-app.get("/api/readyz", async c=>{await db.select({id:instanceSettings.id}).from(instanceSettings).limit(1);return c.json({ok:true,database:true});});
+app.get("/api/healthz", (c) => c.json({ ok: true, service: "knowledge-api" }));
+app.get("/api/readyz", async (c) => {
+  await db.select({ id: instanceSettings.id }).from(instanceSettings).limit(1);
+  return c.json({ ok: true, database: true });
+});
 app.route("/api/v1", auth);
 app.route("/api/v1", knowledge);
 app.route("/api/v1", themeRoutes);

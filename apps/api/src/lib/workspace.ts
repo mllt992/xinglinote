@@ -29,11 +29,19 @@ export async function createPersonalWorkspace(userId: string, displayName: strin
 
 export async function migratePrivateNotebooks(userId:string,fromWorkspaceId:string){const[personal]=await db.select().from(workspaces).where(eq(workspaces.personalUserId,userId));if(!personal)return[];const owned=(await db.select().from(notebooks).where(eq(notebooks.workspaceId,fromWorkspaceId))).filter(n=>n.visibility==="private"&&n.createdBy===userId);for(const nb of owned){const movedNotes=await db.select({id:notes.id}).from(notes).where(eq(notes.notebookId,nb.id));await db.transaction(async tx=>{await tx.update(notebooks).set({workspaceId:personal.id,slug:`migrated-${nb.id.slice(0,8)}`,title:`从工作区迁回 · ${nb.title}`}).where(eq(notebooks.id,nb.id));await tx.update(folders).set({workspaceId:personal.id}).where(eq(folders.notebookId,nb.id));await tx.update(notes).set({workspaceId:personal.id}).where(eq(notes.notebookId,nb.id));for(const n of movedNotes){await tx.update(attachments).set({workspaceId:personal.id}).where(eq(attachments.noteId,n.id));await tx.update(shareLinks).set({workspaceId:personal.id}).where(and(eq(shareLinks.targetType,"note"),eq(shareLinks.targetId,n.id)));}});}return owned.map(n=>n.id);}
 
+/**
+ * 这个人在这个工作区是什么角色。
+ *
+ * 注意条件里必须带上 userId：之前只按 workspaceId 查、再在 JS 里 find，
+ * 而这个函数几乎在每条请求链路上（noteAccess 每次调一遍，`/search`、
+ * `export.zip`、backlinks 更是**逐篇**调），一个几百人的工作区等于每篇笔记
+ * 扫一遍全成员表。
+ */
 export async function memberRole(workspaceId: string, userId: string): Promise<WsRole | null> {
-  const rows = await db
-    .select()
+  const [m] = await db
+    .select({ role: workspaceMembers.role })
     .from(workspaceMembers)
-    .where(eq(workspaceMembers.workspaceId, workspaceId));
-  const m = rows.find((r) => r.userId === userId);
+    .where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, userId)))
+    .limit(1);
   return (m?.role as WsRole) ?? null;
 }

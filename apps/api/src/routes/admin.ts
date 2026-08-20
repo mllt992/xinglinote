@@ -6,7 +6,8 @@ import { db } from "../db/client.ts";
 import { instanceSettings, mcpTokens, moderationReviews, registrationCodes, sessions, users, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
-import { registrationCode, tokenHash } from "../lib/tokens.ts";
+import { hashCode, registrationCode } from "../lib/tokens.ts";
+import { assertSafeOutboundUrl } from "../lib/net-guard.ts";
 import { seal } from "../lib/secrets.ts";
 
 function pageQuery(c: { req: { query: (k: string) => string | undefined } }) {
@@ -65,10 +66,17 @@ adminRoutes.patch("/admin/settings", async c => {
     moderationRules: z.string().max(4000).nullable().optional(), moderationCategories: z.array(z.string().min(1).max(40)).max(20).optional(),
     moderationThreshold: z.number().int().min(1).max(100).optional(), moderationOnError: z.enum(["pass", "review"]).optional(),
     pushEnabled: z.boolean().optional(), vapidSubject: z.string().max(200).nullable().optional() }).parse(await c.req.json());
-  // 前端回填的是掩码，别把 •••••••• 当成新 Key 存进去。
-  const key = body.moderationApiKey === undefined || body.moderationApiKey?.startsWith("••") ? undefined : body.moderationApiKey ? seal(body.moderationApiKey) : null;
-  const values={...body,smtpPassword:body.smtpPassword?seal(body.smtpPassword):body.smtpPassword,moderationApiKey:key,updatedAt:new Date()};
-  if (key === undefined) delete (values as Record<string, unknown>).moderationApiKey;
+  // 前端回填的是掩码，别把 •••••••• 当成新密钥存进去。
+  // 两个密钥字段都要这么处理——以前只有 moderationApiKey 有这层保护。
+  const secret = (raw: string | null | undefined) =>
+    raw === undefined || raw?.startsWith("••") ? undefined : raw ? seal(raw) : null;
+  const key = secret(body.moderationApiKey);
+  const smtpPassword = secret(body.smtpPassword);
+  // 审核模型也是服务端去 fetch 的用户填地址，同样要过出站护栏
+  if (body.moderationBaseUrl) await assertSafeOutboundUrl(body.moderationBaseUrl, "审核模型地址");
+  const values: Record<string, unknown> = { ...body, updatedAt: new Date() };
+  if (key === undefined) delete values.moderationApiKey; else values.moderationApiKey = key;
+  if (smtpPassword === undefined) delete values.smtpPassword; else values.smtpPassword = smtpPassword;
   const [saved] = await db.update(instanceSettings).set(values).where(eq(instanceSettings.id, 1)).returning();
   return ok(c, maskSettings(saved));
 });
@@ -105,7 +113,7 @@ adminRoutes.post("/admin/registration-codes", async c => {
   const actor = await admin(c);
   const body = z.object({ quantity: z.number().int().min(1).max(200), maxUses: z.number().int().min(1).max(1000).default(1), expiresInDays: z.number().int().min(1).max(3650).nullable().optional(), note: z.string().max(200).optional(), bindWorkspaceId: z.string().uuid().nullable().optional(), bindRole: z.enum(["admin", "editor", "viewer"]).nullable().optional(), skipEmailVerification: z.boolean().default(false) }).parse(await c.req.json());
   const plain = Array.from({ length: body.quantity }, registrationCode);
-  await db.insert(registrationCodes).values(plain.map(code => ({ codeHash: tokenHash(code), codePrefix: code.slice(0, 9), maxUses: body.maxUses, expiresAt: body.expiresInDays ? new Date(Date.now() + body.expiresInDays * 86400000) : null, note: body.note, bindWorkspaceId: body.bindWorkspaceId, bindRole: body.bindRole, skipEmailVerification: body.skipEmailVerification, createdBy: actor.id })));
+  await db.insert(registrationCodes).values(plain.map(code => ({ codeHash: hashCode(code), codePrefix: code.slice(0, 9), maxUses: body.maxUses, expiresAt: body.expiresInDays ? new Date(Date.now() + body.expiresInDays * 86400000) : null, note: body.note, bindWorkspaceId: body.bindWorkspaceId, bindRole: body.bindRole, skipEmailVerification: body.skipEmailVerification, createdBy: actor.id })));
   return ok(c, { codes: plain }, 201);
 });
 adminRoutes.get("/admin/registration-codes", async c => {

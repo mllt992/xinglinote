@@ -16,5 +16,7 @@ export function err(c: Context, error: AppError) {
 export function onError(e: unknown, c: Context) {
   if (e instanceof AppError) return err(c, e);
   console.error(e);
-  return c.json({ ok: false, error: { code: "VALIDATION" as ErrorCode, message: "服务器错误" } }, 500);
+  // 500 就说 500。以前这里回的是 VALIDATION，前端只看 code，
+  // 分不出「我参数传错了」和「服务器炸了」。
+  return c.json({ ok: false, error: { code: "INTERNAL" as ErrorCode, message: "服务器错误" } }, 500);
 }

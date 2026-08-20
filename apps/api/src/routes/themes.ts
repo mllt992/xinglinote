@@ -86,8 +86,17 @@ themeRoutes.post("/themes/import", async (c) => {
   const m = checked.value;
   if (m.id === BUILTIN_THEME_ID) throw fail("VALIDATION", "不能覆盖出厂主题 id，请换一个 id");
   const [old] = await db.select().from(themes).where(eq(themes.id, m.id));
-  if (old && compareSemver(m.version, old.version) <= 0) {
-    throw fail("VALIDATION", "版本必须比已安装的更高才能升级");
+  if (old) {
+    // themes 是**实例级共享表**：装同一个 id 的新版本会改掉所有正在用它的人的界面。
+    // 以前谁都能这么干（只要 semver 更高），等于 A 用户能改 B 用户的配色。
+    if (old.builtin) throw fail("FORBIDDEN", "出厂主题不能被覆盖");
+    const mine = old.installedBy === user.id;
+    if (!mine && user.roleInstance !== "admin") {
+      throw fail("FORBIDDEN", "这个主题 id 是别人装的，升级它请找实例管理员，或者换一个 id");
+    }
+    if (compareSemver(m.version, old.version) <= 0) {
+      throw fail("VALIDATION", "版本必须比已安装的更高才能升级");
+    }
   }
   await db
     .insert(themes)
@@ -100,10 +109,11 @@ themeRoutes.post("/themes/import", async (c) => {
       builtin: false,
       enabled: true,
       manifest: m,
+      installedBy: user.id,
     })
     .onConflictDoUpdate({
       target: themes.id,
-      set: { name: m.name, description: m.description ?? null, author: m.author ?? null, version: m.version, manifest: m },
+      set: { name: m.name, description: m.description ?? null, author: m.author ?? null, version: m.version, manifest: m, installedBy: user.id },
     });
   return ok(c, { id: m.id }, old ? 200 : 201);
 });

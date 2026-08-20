@@ -80,6 +80,7 @@ node scripts/verify-calendar-ics.mjs    # ICS 导出与订阅（含 SSRF 拦截�
 node scripts/verify-calendar-p2.mjs     # 批量操作、模板、去年今日 / 周回顾、AI 提待办不写库、推送
 node --experimental-strip-types scripts/verify-push.mjs   # 推送投递闭环：VAPID 验签、密文解回原文、失效端点停用
 node scripts/verify-collab.mjs      # 协同：两个客户端真收敛、落库、只读发不出更新、无权连不上
+node scripts/verify-hardening.mjs   # 安全加固：CSP 头、验证码、出站 SSRF 护栏、目录归属、搜索分页
 node --experimental-strip-types scripts/verify-transfer.mjs   # 导入向导、zip 导出、版本裁剪（约 3 分钟）
 node scripts/verify-manage-cdp.mjs
 node scripts/verify-gaps-cdp.mjs

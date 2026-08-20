@@ -1,6 +1,12 @@
-import { and,eq,inArray,isNull } from "drizzle-orm";
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
+import { and,eq,inArray,isNull,or } from "drizzle-orm";
 import { db } from "../db/client.ts";
-import { folders,notebooks,notes } from "../db/schema.ts";
+import {
+  aiChunks,attachments,calendarItems,calendarReminders,comments,corrections,folders,links,
+  noteFavorites,notebooks,notes,noteVersions,noteVisits,posts,
+} from "../db/schema.ts";
+import { env } from "../env.ts";
 export async function descendantFolderIds(rootId:string){const all=await db.select({id:folders.id,parentId:folders.parentId}).from(folders);const ids=[rootId];for(let i=0;i<ids.length;i++)for(const f of all)if(f.parentId===ids[i]&&!ids.includes(f.id))ids.push(f.id);return ids;}
 export async function trashNotebook(notebookId:string,userId:string){const at=new Date(),batch=crypto.randomUUID();await db.transaction(async tx=>{await tx.update(notebooks).set({trashedAt:at,trashedBy:userId,trashBatchId:batch}).where(eq(notebooks.id,notebookId));await tx.update(folders).set({trashedAt:at,trashedBy:userId,trashBatchId:batch}).where(and(eq(folders.notebookId,notebookId),isNull(folders.trashedAt)));await tx.update(notes).set({trashedAt:at,trashedBy:userId,trashBatchId:batch}).where(and(eq(notes.notebookId,notebookId),isNull(notes.trashedAt)));});return batch;}
 export async function trashFolder(folderId:string,userId:string){const ids=await descendantFolderIds(folderId),at=new Date(),batch=crypto.randomUUID();await db.transaction(async tx=>{await tx.update(folders).set({trashedAt:at,trashedBy:userId,trashBatchId:batch}).where(and(inArray(folders.id,ids),isNull(folders.trashedAt)));await tx.update(notes).set({trashedAt:at,trashedBy:userId,trashBatchId:batch}).where(and(inArray(notes.folderId,ids),isNull(notes.trashedAt)));});return batch;}
@@ -8,19 +14,22 @@ export async function restoreNotebook(id:string,batch:string){await db.transacti
 export async function restoreFolder(id:string,batch:string){await db.transaction(async tx=>{await tx.update(folders).set({trashedAt:null,trashedBy:null,trashBatchId:null}).where(eq(folders.trashBatchId,batch));await tx.update(notes).set({trashedAt:null,trashedBy:null,trashBatchId:null}).where(eq(notes.trashBatchId,batch));});}
 
 // —— 立即销毁与恢复时的重名处理（规格 12 的 4.4 与 5.2）——
-import { rm } from "node:fs/promises";
-import { join } from "node:path";
-import { or } from "drizzle-orm";
-import { aiChunks,attachments,comments,corrections,links,noteVersions,posts } from "../db/schema.ts";
-import { env } from "../env.ts";
 
-/** 物理销毁若干笔记：附件文件、附件行、双链、版本、评论纠错、向量块，一并清掉。 */
+/**
+ * 物理销毁若干笔记：文件、附件行、双链、版本、评论纠错、向量块、收藏、访问记录、
+ * 以及挂在这篇笔记上的日历条目，一并清掉。
+ *
+ * **销毁笔记只有这一个入口。** 以前 worker 的 purge_trash 和 delete_workspace
+ * 各自抄了一份，而且已经抄漏了：那两份都不删 ai_chunks，30 天自动清盘之后
+ * 留下一堆孤儿向量块。
+ */
 export async function purgeNotes(ids:string[]){
   for(const id of ids){
     const files=await db.select().from(attachments).where(eq(attachments.noteId,id));
     for(const a of files)await rm(join(env.dataDir,"attachments",a.workspaceId,a.storedName),{force:true});
     const [note]=await db.select().from(notes).where(eq(notes.id,id));
     if(note)await rm(join(env.dataDir,"workspaces",note.workspaceId,"notes",note.notebookId,`${note.id}.md`),{force:true});
+    const doomedItems=await db.select({id:calendarItems.id}).from(calendarItems).where(eq(calendarItems.sourceNoteId,id));
     await db.transaction(async tx=>{
       await tx.delete(attachments).where(eq(attachments.noteId,id));
       await tx.delete(links).where(or(eq(links.fromNoteId,id),eq(links.targetNoteId,id)));
@@ -28,6 +37,12 @@ export async function purgeNotes(ids:string[]){
       await tx.delete(comments).where(eq(comments.targetId,id));
       await tx.delete(corrections).where(eq(corrections.noteId,id));
       await tx.delete(aiChunks).where(eq(aiChunks.noteId,id));
+      await tx.delete(noteFavorites).where(eq(noteFavorites.noteId,id));
+      await tx.delete(noteVisits).where(eq(noteVisits.noteId,id));
+      if(doomedItems.length){
+        await tx.delete(calendarReminders).where(inArray(calendarReminders.itemId,doomedItems.map(x=>x.id)));
+        await tx.delete(calendarItems).where(eq(calendarItems.sourceNoteId,id));
+      }
       await tx.update(posts).set({noteId:null}).where(eq(posts.noteId,id));
       await tx.delete(notes).where(eq(notes.id,id));
     });

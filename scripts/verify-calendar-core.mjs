@@ -1,6 +1,6 @@
 // 日历核心验收（设计 16 §7.2）：CRUD、时区边界、ACL、弱冲突 409、提醒、今天页、日记。
 // 用法：KB_EMAIL=... KB_PASSWORD=... node scripts/verify-calendar-core.mjs
-import { KB_EMAIL, KB_PASSWORD } from './creds.mjs';
+import { KB_EMAIL, KB_PASSWORD, TEST_PASSWORD } from './creds.mjs';
 const base = (process.env.KB_BASE_URL ?? 'http://127.0.0.1:12098') + '/api/v1';
 
 async function q(path, opt = {}, cookie = '') {
@@ -87,7 +87,7 @@ try {
   // —— ACL：私密笔记本里的待办不能从日历漏给别人 ——
   const code = (await q('/admin/registration-codes', { method: 'POST', body: JSON.stringify({ quantity: 1, maxUses: 1, skipEmailVerification: true, bindWorkspaceId: ws.id, bindRole: 'editor' }) }, c)).data.codes[0];
   const suffix = crypto.randomUUID().replaceAll('-', '').slice(0, 8);
-  const member = (await q('/auth/register', { method: 'POST', body: JSON.stringify({ email: `cal-${suffix}@example.test`, password: 'Password1234', handle: `cal${suffix}`, displayName: '日历验收成员', registrationCode: code }) })).cookie;
+  const member = (await q('/auth/register', { method: 'POST', body: JSON.stringify({ email: `cal-${suffix}@example.test`, password: TEST_PASSWORD, handle: `cal${suffix}`, displayName: '日历验收成员', registrationCode: code }) })).cookie;
 
   const secretNb = (await q(`/workspaces/${ws.id}/notebooks`, { method: 'POST', body: JSON.stringify({ title: '私密本', visibility: 'private' }) }, c)).data;
   let secretNote = (await q('/notes', { method: 'POST', body: JSON.stringify({ notebookId: secretNb.id, title: '私密计划' }) }, c)).data;

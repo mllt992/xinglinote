@@ -22,8 +22,26 @@ function requireEnv(name: string): string {
   return v;
 }
 
+const DEV_SECRET = "dev-only-change-me";
+const isProduction = process.env.NODE_ENV === "production";
+
+/**
+ * APP_SECRET 是 lib/secrets.ts 的 AES 密钥（加密 SMTP 密码、AI Key、VAPID 私钥、
+ * 备份凭据）和验证码 HMAC 的根。生产忘了设就等于这些密文人人可解，
+ * 所以宁可起不来也不能悄悄用默认值。
+ */
+function requireAppSecret() {
+  const value = process.env.APP_SECRET;
+  if (!isProduction) return value || DEV_SECRET;
+  if (!value || value === DEV_SECRET || value.length < 32) {
+    throw new Error("APP_SECRET 必须设置为至少 32 位的随机串（生产环境不接受默认值）");
+  }
+  return value;
+}
+
 export const env = {
-  appSecret: process.env.APP_SECRET ?? "dev-only-change-me",
+  isProduction,
+  appSecret: requireAppSecret(),
   publicUrl: process.env.PUBLIC_URL ?? "http://127.0.0.1:12098",
   port: Number(process.env.API_PORT ?? 12099),
   // 不给默认值：凭据不写死在代码里，缺了就早失败，别让人以为连上了其实连的是别的库。

@@ -1,15 +1,16 @@
 import { Hono } from "hono";
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { hashPassword, validPassword, verifyPassword } from "@kb/core";
 import { HANDLE_RE, fail } from "@kb/shared";
 import { env } from "../env.ts";
 import { db } from "../db/client.ts";
 import { authTokens, backgroundJobs, instanceSettings, mcpTokens, registrationCodes, registrationCodeUsages, sessions, users, workspaceMembers, workspaces } from "../db/schema.ts";
-import { secureToken, tokenHash } from "../lib/tokens.ts";
+import { hashCode, hashSecret, secretHashes, secureToken } from "../lib/tokens.ts";
 import { sendMail } from "../lib/mail.ts";
 import { userStorage } from "../lib/quota.ts";
 import { limit } from "../lib/rate-limit.ts";
+import { clientIp } from "../lib/client-ip.ts";
 import { ok } from "../http.ts";
 import { clearSession, createSession, currentUser } from "../lib/session.ts";
 import { createPersonalWorkspace } from "../lib/workspace.ts";
@@ -38,6 +39,7 @@ auth.get("/meta", async (c) => {
 });
 
 auth.post("/auth/register", async (c) => {
+  limit(`register:${clientIp(c)}`, 10, 600_000);
   const body = registerBody.parse(await c.req.json());
   if (!HANDLE_RE.test(body.handle)) throw fail("VALIDATION", "用户名格式不正确", { handle: "小写字母开头，3–32 位" });
   if (!validPassword(body.password)) throw fail("VALIDATION", "密码至少 10 位且含字母和数字", { password: "太弱" });
@@ -46,7 +48,7 @@ auth.post("/auth/register", async (c) => {
   const [settings] = await db.select().from(instanceSettings);
   let code: typeof registrationCodes.$inferSelect | undefined;
   if (body.registrationCode) {
-    [code] = await db.select().from(registrationCodes).where(eq(registrationCodes.codeHash, tokenHash(body.registrationCode)));
+    [code] = await db.select().from(registrationCodes).where(eq(registrationCodes.codeHash, hashCode(body.registrationCode)));
     if (!code || code.status !== "active") throw fail("VALIDATION", "注册码无效或已作废", { registrationCode: "无效" });
     if (code.expiresAt && code.expiresAt.getTime() <= Date.now()) throw fail("VALIDATION", "注册码已过期", { registrationCode: "已过期" });
     if (code.usedCount >= code.maxUses) throw fail("VALIDATION", "注册码已用完", { registrationCode: "已用完" });
@@ -89,20 +91,79 @@ auth.post("/auth/register", async (c) => {
   }
   await createPersonalWorkspace(user.id, user.displayName);
   if (!verifiedNow) {
-    const token=secureToken(24);await db.insert(authTokens).values({userId:user.id,tokenHash:tokenHash(token),purpose:"verify_email",expiresAt:new Date(Date.now()+86400000)});
-    const link=`${env.publicUrl}/verify-email?token=${token}`;const mail=await sendMail(user.email,"验证你的知识库账号",`请在 24 小时内打开：${link}`);
-    return ok(c,{id:user.id,isFirst,requiresVerification:true,mailSent:mail.sent,developmentToken:mail.sent?undefined:token},201);
+    const token = secureToken(24);
+    await db.insert(authTokens).values({
+      userId: user.id,
+      tokenHash: hashSecret(token),
+      purpose: "verify_email",
+      expiresAt: new Date(Date.now() + 86400000),
+    });
+    const link = `${env.publicUrl}/verify-email?token=${token}`;
+    const mail = await sendMail(user.email, "验证你的知识库账号", `请在 24 小时内打开：${link}`);
+    // developmentToken 是开发态没配 SMTP 时的兜底。生产环境绝不能回它——
+    // 那等于把验证链接直接交给未认证的调用方，邮箱验证这道闸就白设了。
+    return ok(c, {
+      id: user.id,
+      isFirst,
+      requiresVerification: true,
+      mailSent: mail.sent,
+      developmentToken: !mail.sent && !env.isProduction ? token : undefined,
+    }, 201);
   }
   await createSession(c, user.id);
-  return ok(c, { id: user.id, isFirst, requiresVerification:false }, 201);
+  return ok(c, { id: user.id, isFirst, requiresVerification: false }, 201);
 });
 
-auth.post("/auth/verify-email",async c=>{const body=z.object({token:z.string().min(20)}).parse(await c.req.json());const [t]=await db.select().from(authTokens).where(eq(authTokens.tokenHash,tokenHash(body.token)));if(!t||t.purpose!=="verify_email"||t.usedAt||t.expiresAt.getTime()<=Date.now())throw fail("EXPIRED","验证链接无效或已过期");await db.transaction(async tx=>{await tx.update(users).set({emailVerifiedAt:new Date()}).where(eq(users.id,t.userId));await tx.update(authTokens).set({usedAt:new Date()}).where(eq(authTokens.id,t.id));});await createSession(c,t.userId);return ok(c,{});});
-auth.post("/auth/forgot-password",async c=>{const body=z.object({email:z.string().email()}).parse(await c.req.json());const [u]=await db.select().from(users).where(eq(users.email,body.email.toLowerCase()));if(u){const token=secureToken(24);await db.insert(authTokens).values({userId:u.id,tokenHash:tokenHash(token),purpose:"reset_password",expiresAt:new Date(Date.now()+3600000)});const link=`${env.publicUrl}/reset-password?token=${token}`;await sendMail(u.email,"重置知识库密码",`请在 1 小时内打开：${link}`);}return ok(c,{message:"如果邮箱存在，重置说明已经发送"});});
-auth.post("/auth/reset-password",async c=>{const body=z.object({token:z.string().min(20),password:z.string()}).parse(await c.req.json());if(!validPassword(body.password))throw fail("VALIDATION","密码至少 10 位且含字母和数字");const [t]=await db.select().from(authTokens).where(eq(authTokens.tokenHash,tokenHash(body.token)));if(!t||t.purpose!=="reset_password"||t.usedAt||t.expiresAt.getTime()<=Date.now())throw fail("EXPIRED","重置链接无效或已过期");await db.transaction(async tx=>{await tx.update(users).set({passwordHash:await hashPassword(body.password),updatedAt:new Date()}).where(eq(users.id,t.userId));await tx.update(authTokens).set({usedAt:new Date()}).where(eq(authTokens.id,t.id));await tx.delete(sessions).where(eq(sessions.userId,t.userId));});return ok(c,{});});
+auth.post("/auth/verify-email", async (c) => {
+  const body = z.object({ token: z.string().min(20) }).parse(await c.req.json());
+  const [t] = await db.select().from(authTokens).where(inArray(authTokens.tokenHash, secretHashes(body.token)));
+  if (!t || t.purpose !== "verify_email" || t.usedAt || t.expiresAt.getTime() <= Date.now()) {
+    throw fail("EXPIRED", "验证链接无效或已过期");
+  }
+  await db.transaction(async (tx) => {
+    await tx.update(users).set({ emailVerifiedAt: new Date() }).where(eq(users.id, t.userId));
+    await tx.update(authTokens).set({ usedAt: new Date() }).where(eq(authTokens.id, t.id));
+  });
+  await createSession(c, t.userId);
+  return ok(c, {});
+});
+auth.post("/auth/forgot-password", async (c) => {
+  limit(`forgot:${clientIp(c)}`, 5, 600_000);
+  const body = z.object({ email: z.string().email() }).parse(await c.req.json());
+  const [u] = await db.select().from(users).where(eq(users.email, body.email.toLowerCase()));
+  if (u) {
+    const token = secureToken(24);
+    await db.insert(authTokens).values({
+      userId: u.id,
+      tokenHash: hashSecret(token),
+      purpose: "reset_password",
+      expiresAt: new Date(Date.now() + 3600000),
+    });
+    const link = `${env.publicUrl}/reset-password?token=${token}`;
+    // sendMail 自己吞异常：发信失败也必须回同一句话，否则「存在的邮箱 500 /
+    // 不存在的邮箱 200」就是一个现成的用户枚举接口。
+    await sendMail(u.email, "重置知识库密码", `请在 1 小时内打开：${link}`);
+  }
+  return ok(c, { message: "如果邮箱存在，重置说明已经发送" });
+});
+auth.post("/auth/reset-password", async (c) => {
+  const body = z.object({ token: z.string().min(20), password: z.string() }).parse(await c.req.json());
+  if (!validPassword(body.password)) throw fail("VALIDATION", "密码至少 10 位且含字母和数字");
+  const [t] = await db.select().from(authTokens).where(inArray(authTokens.tokenHash, secretHashes(body.token)));
+  if (!t || t.purpose !== "reset_password" || t.usedAt || t.expiresAt.getTime() <= Date.now()) {
+    throw fail("EXPIRED", "重置链接无效或已过期");
+  }
+  const passwordHash = await hashPassword(body.password);
+  await db.transaction(async (tx) => {
+    await tx.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, t.userId));
+    await tx.update(authTokens).set({ usedAt: new Date() }).where(eq(authTokens.id, t.id));
+    await tx.delete(sessions).where(eq(sessions.userId, t.userId));
+  });
+  return ok(c, {});
+});
 
 auth.post("/auth/login", async (c) => {
-  limit(`login:${c.req.header("x-forwarded-for")??"local"}`,10,60000);
+  limit(`login:${clientIp(c)}`, 10, 60_000);
   const body = z.object({ email: z.string().email(), password: z.string() }).parse(await c.req.json());
   const [user] = await db.select().from(users).where(eq(users.email, body.email.toLowerCase()));
   if (!user || !(await verifyPassword(user.passwordHash, body.password))) {
@@ -126,8 +187,7 @@ auth.post("/auth/logout", async (c) => {
 auth.get("/me", async (c) => {
   const user = await currentUser(c);
   if (!user) throw fail("UNAUTHENTICATED", "未登录");
-  const { workspaces } = await import("../db/schema.ts");
-  const [ws] = await db.select().from(workspaces).where(eq(workspaces.personalUserId, user.id));
+  const [ws] = await db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.personalUserId, user.id));
   const storage = await userStorage(user.id);
   return ok(c, {
     id: user.id,
@@ -138,8 +198,8 @@ auth.get("/me", async (c) => {
     appearance: user.appearance,
     themeId: user.themeId,
     accent: user.accent,
-    status:user.status,
-    deletionScheduledAt:user.deletionScheduledAt,
+    status: user.status,
+    deletionScheduledAt: user.deletionScheduledAt,
     personalWorkspaceId: ws?.id ?? null,
     storage,
   });

@@ -1,17 +1,17 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { Context } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { db } from "../db/client.ts";
 import { env } from "../env.ts";
 import { sessions, users } from "../db/schema.ts";
+import { hashSecret } from "./tokens.ts";
 
 const COOKIE = "kb_session";
 const DAYS = 30;
 
-export function hashToken(token: string) {
-  return createHash("sha256").update(token).digest("hex");
-}
+/** 会话 token 的 hash。和其它机器生成的令牌共用 `hashSecret`，别再各写一份。 */
+export const hashToken = hashSecret;
 
 export async function createSession(c: Context, userId: string) {
   const token = randomBytes(32).toString("base64url");

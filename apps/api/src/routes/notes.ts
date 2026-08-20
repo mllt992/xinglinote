@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, asc, desc, eq, ilike, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 import { canEditNote, canReadNote, recencyBoost, scoreNote, tokenize, type WsRole } from "@kb/core";
 import { fail, nextSortKey } from "@kb/shared";
@@ -14,6 +14,7 @@ import { assertUserStorage, textBytes } from "../lib/quota.ts";
 import { noteAccess } from "../lib/note-access.ts";
 import { notebookAccess } from "../lib/notebook-access.ts";
 import { instanceConfig, lastReviewedAt, moderate, moderationOn, pendingMessage, recordReview } from "../lib/moderation.ts";
+import { notebookVisibleTo } from "../lib/notebook-access.ts";
 import { purgeFolder,purgeNotebook,purgeNotes,restoreFolder,restoreFolderId,restoreNotebook,restoreTitle,trashFolder,trashNotebook } from "../lib/trash.ts";
 
 export const knowledge = new Hono();
@@ -32,16 +33,42 @@ async function loadNotebook(notebookId: string) {
   return { nb, ws };
 }
 
+/**
+ * 目录必须属于目标笔记本。
+ *
+ * 建笔记的 folderId 和建/改目录的 parentId 以前完全不校验归属：
+ * 笔记可以挂到别的笔记本（甚至别的工作区）的目录下。代码里那几处
+ * `const seen = new Set()` 的环检测，就是在下游给这个洞打补丁。
+ */
+async function assertFolderInNotebook(folderId: string | null | undefined, notebookId: string) {
+  if (!folderId) return;
+  const [f] = await db.select({ notebookId: folders.notebookId, trashedAt: folders.trashedAt })
+    .from(folders).where(eq(folders.id, folderId));
+  if (!f || f.trashedAt || f.notebookId !== notebookId) throw fail("VALIDATION", "目录不属于这个笔记本");
+}
+
+/** 别让目录成为自己的后代——成环之后目录树遍历就没有终点了。 */
+async function assertNoFolderCycle(folderId: string, nextParentId: string | null | undefined) {
+  if (!nextParentId) return;
+  if (nextParentId === folderId) throw fail("VALIDATION", "目录不能挂到自己下面");
+  const all = await db.select({ id: folders.id, parentId: folders.parentId }).from(folders);
+  const parentOf = new Map(all.map(f => [f.id, f.parentId]));
+  const seen = new Set<string>([folderId]);
+  for (let cur: string | null | undefined = nextParentId; cur; cur = parentOf.get(cur)) {
+    if (seen.has(cur)) throw fail("VALIDATION", "这样会让目录成环");
+    seen.add(cur);
+  }
+}
+
 knowledge.get("/workspaces", async (c) => {
   const user = await requireUser(c);
-  const { workspaceMembers } = await import("../db/schema.ts");
   const mine = await db.select().from(workspaceMembers).where(eq(workspaceMembers.userId, user.id));
   const ids = mine.map((m) => m.workspaceId);
   if (!ids.length) return ok(c, { workspaces: [] });
-  const list = await db.select().from(workspaces);
+  // 按 id 取，别把全实例的工作区都拉出来再 filter
+  const list = await db.select().from(workspaces).where(inArray(workspaces.id, ids));
   return ok(c, {
     workspaces: list
-      .filter((w) => ids.includes(w.id))
       .map((w) => ({
         id: w.id,
         name: w.name,
@@ -101,6 +128,7 @@ knowledge.post("/notes", async (c) => {
   const user = await requireUser(c);
   const body = z.object({ notebookId: z.string().uuid(), folderId: z.string().uuid().nullish(), title: z.string().min(1).max(200).optional() }).parse(await c.req.json());
   const {notebook:nb,workspace:ws}=await notebookAccess(body.notebookId,user.id,"edit");
+  await assertFolderInNotebook(body.folderId, nb.id);
   const title = body.title?.trim() || "未命名";
   await assertUserStorage(user.id, textBytes(title, ""));
   const existing = await db.select({ sortKey: notes.sortKey }).from(notes).where(and(eq(notes.notebookId, nb.id), isNull(notes.trashedAt)));
@@ -201,9 +229,14 @@ knowledge.patch("/notes/:id", async (c) => {
 
 knowledge.post("/workspaces", async (c) => {
   const user = await requireUser(c);
+  // allowUserCreateWorkspace 这个开关一直没人读：管理员在设置页关掉了，
+  // 任何人照样能建工作区。实例管理员自己不受限。
+  const settings = await instanceConfig();
+  if (settings && !settings.allowUserCreateWorkspace && user.roleInstance !== "admin") {
+    throw fail("FORBIDDEN", "管理员关闭了自行创建工作区");
+  }
   const body = z.object({ name: z.string().min(1).max(40) }).parse(await c.req.json());
   const slug = `w-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
-  const { workspaceMembers } = await import("../db/schema.ts");
   const [ws] = await db.insert(workspaces).values({ name: body.name.trim(), slug, kind: "normal", ownerId: user.id }).returning();
   await db.insert(workspaceMembers).values({ workspaceId: ws.id, userId: user.id, role: "owner" });
   const [nb] = await db.insert(notebooks).values({ workspaceId: ws.id, slug: "inbox", title: "收件箱", createdBy: user.id }).returning();
@@ -250,6 +283,7 @@ knowledge.post("/folders", async (c) => {
   const user = await requireUser(c);
   const body = z.object({ notebookId: z.string().uuid(), parentId: z.string().uuid().nullable().optional(), title: z.string().min(1).max(100) }).parse(await c.req.json());
   const {notebook:nb,workspace:ws}=await notebookAccess(body.notebookId,user.id,"edit");
+  await assertFolderInNotebook(body.parentId, nb.id);
   const [folder] = await db.insert(folders).values({ workspaceId: ws.id, notebookId: nb.id, parentId: body.parentId ?? null, title: body.title.trim() }).returning();
   return ok(c, folder, 201);
 });
@@ -260,6 +294,10 @@ knowledge.patch("/folders/:id", async (c) => {
   if (!folder || folder.trashedAt) throw fail("NOT_FOUND", "目录不存在");
   await notebookAccess(folder.notebookId,user.id,"edit");
   const body = z.object({ title: z.string().min(1).max(100).optional(), parentId: z.string().uuid().nullable().optional() }).parse(await c.req.json());
+  if (body.parentId !== undefined) {
+    await assertFolderInNotebook(body.parentId, folder.notebookId);
+    await assertNoFolderCycle(folder.id, body.parentId);
+  }
   const [saved] = await db.update(folders).set({ title: body.title ?? folder.title, parentId: body.parentId === undefined ? folder.parentId : body.parentId }).where(eq(folders.id, folder.id)).returning();
   return ok(c, saved);
 });
@@ -281,7 +319,9 @@ knowledge.delete("/notes/:id", async (c) => {
 });
 
 knowledge.get("/notes/:id/versions", async (c) => {
-  const user = await requireUser(c); const {note}=await noteAccess(c.req.param("id"),user.id,"read"); const rows=await db.select().from(noteVersions).where(eq(noteVersions.noteId,note.id)).orderBy(asc(noteVersions.version)); return ok(c,{total:rows.length,versions:rows.reverse().slice(0,100).map(v=>({id:v.id,version:v.version,title:v.title,bodyMd:v.bodyMd,source:v.source,createdAt:v.createdAt}))});
+  const user = await requireUser(c); const {note}=await noteAccess(c.req.param("id"),user.id,"read"); const [{ value: total }] = await db.select({ value: count() }).from(noteVersions).where(eq(noteVersions.noteId, note.id));
+  const rows = await db.select().from(noteVersions).where(eq(noteVersions.noteId, note.id)).orderBy(desc(noteVersions.version)).limit(100);
+  return ok(c, { total, versions: rows.map(v => ({ id: v.id, version: v.version, title: v.title, bodyMd: v.bodyMd, source: v.source, createdAt: v.createdAt })) });
 });
 knowledge.post("/notes/:id/versions/:version/restore", async (c) => {
   const user=await requireUser(c);const {note}=await noteAccess(c.req.param("id"),user.id,"edit");const version=Number(c.req.param("version"));const [old]=await db.select().from(noteVersions).where(and(eq(noteVersions.noteId,note.id),eq(noteVersions.version,version)));if(!old)throw fail("NOT_FOUND","版本不存在");await assertUserStorage(note.createdBy,textBytes(old.title,old.bodyMd)-textBytes(note.title,note.bodyMd));const [saved]=await db.update(notes).set({title:old.title,bodyMd:old.bodyMd,version:note.version+1,updatedBy:user.id,updatedAt:new Date()}).where(eq(notes.id,note.id)).returning();await db.insert(noteVersions).values({noteId:note.id,version:saved.version,title:saved.title,bodyMd:saved.bodyMd,editorId:user.id,source:"restore"});await writeNoteFile({...saved,noteId:saved.id});await rebuildLinks(saved.id,saved.workspaceId,saved.bodyMd);return ok(c,saved);
@@ -334,52 +374,160 @@ knowledge.get("/search", async (c) => {
     }
   }
   scored.sort((a, b) => b.score - a.score);
-  const hits = [];
+  // ACL 要逐条过，但没必要把全部命中都过一遍：只要凑够「这一页 + 1」就能判断
+  // 还有没有下一页。以前是先 break 再算 total，于是 total 恒等于被截断后的条数、
+  // hasMore 在最后一页也恒为 true，前端拿到的分页信息一直是错的。
+  const want = offset + limit;
+  const page = [];
+  let allowed = 0;
+  let more = false;
   for (const s of scored) {
-    if (hits.length >= offset + limit) break;
-    try { await noteAccess(s.note.id, user.id, "read"); hits.push({ id: s.note.id, title: s.note.title, snippet: s.snippet, notebookId: s.note.notebookId, workspaceId: s.note.workspaceId, tags: s.note.tags, score: Math.round(s.score * 100) / 100 }); } catch { /* 无权就当不存在 */ }
+    let visible = true;
+    try { await noteAccess(s.note.id, user.id, "read"); } catch { visible = false; }
+    if (!visible) continue;
+    allowed++;
+    if (allowed > want) { more = true; break; }
+    if (allowed > offset) {
+      page.push({ id: s.note.id, title: s.note.title, snippet: s.snippet, notebookId: s.note.notebookId, workspaceId: s.note.workspaceId, tags: s.note.tags, score: Math.round(s.score * 100) / 100 });
+    }
   }
-  return ok(c, { hits: hits.slice(offset, offset + limit), total: hits.length, hasMore: hits.length >= offset + limit });
+  return ok(c, { hits: page, total: allowed, hasMore: more });
 });
+
+/**
+ * 回收站的可见范围。
+ *
+ * 两道关，缺一不可：
+ *  1. 工作区角色 —— owner/admin 看全区，其余人只看自己删的（原有逻辑）；
+ *  2. 笔记本可见性 —— 私密 / 受限笔记本里的东西，不该因为「进了回收站」
+ *     就对工作区管理员敞开。以前这里只有第 1 道，于是管理员能看到别人私密本
+ *     里被删笔记的标题和完整路径，还能恢复、甚至永久销毁它。
+ */
+async function trashScope(workspaceId: string, userId: string) {
+  const role = await memberRole(workspaceId, userId);
+  if (!role) throw fail("FORBIDDEN", "不是工作区成员");
+  const allNotebooks = await db.select().from(notebooks).where(eq(notebooks.workspaceId, workspaceId));
+  const myNbRoles = await db.select({ notebookId: notebookMembers.notebookId, role: notebookMembers.role })
+    .from(notebookMembers).where(eq(notebookMembers.userId, userId));
+  const roleOf = new Map(myNbRoles.map(m => [m.notebookId, m.role as "edit" | "view"]));
+  const visibleNotebook = (id: string) => {
+    const nb = allNotebooks.find(x => x.id === id);
+    return !!nb && notebookVisibleTo(nb, userId, roleOf.get(id) ?? null);
+  };
+  return { role, canAll: role === "owner" || role === "admin", allNotebooks, visibleNotebook };
+}
 
 knowledge.get("/workspaces/:id/trash", async (c) => {
   const user = await requireUser(c);
   const workspaceId = c.req.param("id");
-  const role = await memberRole(workspaceId, user.id);
-  if (!role) throw fail("FORBIDDEN", "不是工作区成员");
-  const canAll=role==="owner"||role==="admin";const allNotes=await db.select().from(notes).where(eq(notes.workspaceId,workspaceId));const allFolders=await db.select().from(folders).where(eq(folders.workspaceId,workspaceId));const allNotebooks=await db.select().from(notebooks).where(eq(notebooks.workspaceId,workspaceId));const own=<T extends {trashedAt:Date|null;trashedBy:string|null}>(rows:T[])=>rows.filter(x=>x.trashedAt&&(canAll||x.trashedBy===user.id));
-  const people=await db.select({id:users.id,displayName:users.displayName}).from(users);const who=(id:string|null)=>people.find(p=>p.id===id)?.displayName??"已注销用户";
-  const nbTitle=(id:string)=>allNotebooks.find(x=>x.id===id)?.title??"已销毁的笔记本";
-  const path=(n:typeof allNotes[number])=>{const parts=[nbTitle(n.notebookId)];let cur=n.folderId?allFolders.find(f=>f.id===n.folderId):undefined;const guard=new Set<string>();while(cur&&!guard.has(cur.id)){guard.add(cur.id);parts.splice(1,0,cur.title);cur=cur.parentId?allFolders.find(f=>f.id===cur!.parentId):undefined;}return parts.join(" / ");};
-  const meta=(x:{trashedAt:Date|null;trashedBy:string|null})=>({trashedAt:x.trashedAt,trashedBy:x.trashedBy,trashedByName:who(x.trashedBy),purgeAt:x.trashedAt?new Date(x.trashedAt.getTime()+30*86400000):null});
-  return ok(c,{notes:own(allNotes).map(n=>({id:n.id,title:n.title,path:path(n),...meta(n)})),folders:own(allFolders).map(f=>({id:f.id,title:f.title,path:nbTitle(f.notebookId),...meta(f)})),notebooks:own(allNotebooks).map(n=>({id:n.id,title:n.title,path:"整本",...meta(n)}))});
+  const { canAll, allNotebooks, visibleNotebook } = await trashScope(workspaceId, user.id);
+
+  const allNotes = await db.select().from(notes).where(and(eq(notes.workspaceId, workspaceId), isNotNull(notes.trashedAt)));
+  const allFolders = await db.select().from(folders).where(and(eq(folders.workspaceId, workspaceId), isNotNull(folders.trashedAt)));
+  const mineOnly = <T extends { trashedBy: string | null }>(rows: T[]) => rows.filter(x => canAll || x.trashedBy === user.id);
+
+  const visibleNotes = mineOnly(allNotes).filter(n => visibleNotebook(n.notebookId));
+  const visibleFolders = mineOnly(allFolders).filter(f => visibleNotebook(f.notebookId));
+  const visibleNotebooks = mineOnly(allNotebooks.filter(n => n.trashedAt)).filter(n => visibleNotebook(n.id));
+
+  const actorIds = [...new Set([...visibleNotes, ...visibleFolders, ...visibleNotebooks].map(x => x.trashedBy).filter((x): x is string => !!x))];
+  const people = actorIds.length ? await db.select({ id: users.id, displayName: users.displayName }).from(users).where(inArray(users.id, actorIds)) : [];
+  const who = (id: string | null) => people.find(p => p.id === id)?.displayName ?? "已注销用户";
+  const nbTitle = (id: string) => allNotebooks.find(x => x.id === id)?.title ?? "已销毁的笔记本";
+  const path = (n: typeof allNotes[number]) => {
+    const parts = [nbTitle(n.notebookId)];
+    let cur = n.folderId ? allFolders.find(f => f.id === n.folderId) : undefined;
+    const guard = new Set<string>();
+    while (cur && !guard.has(cur.id)) {
+      guard.add(cur.id);
+      parts.splice(1, 0, cur.title);
+      cur = cur.parentId ? allFolders.find(f => f.id === cur!.parentId) : undefined;
+    }
+    return parts.join(" / ");
+  };
+  const meta = (x: { trashedAt: Date | null; trashedBy: string | null }) => ({
+    trashedAt: x.trashedAt,
+    trashedBy: x.trashedBy,
+    trashedByName: who(x.trashedBy),
+    purgeAt: x.trashedAt ? new Date(x.trashedAt.getTime() + 30 * 86400000) : null,
+  });
+  return ok(c, {
+    notes: visibleNotes.map(n => ({ id: n.id, title: n.title, path: path(n), ...meta(n) })),
+    folders: visibleFolders.map(f => ({ id: f.id, title: f.title, path: nbTitle(f.notebookId), ...meta(f) })),
+    notebooks: visibleNotebooks.map(n => ({ id: n.id, title: n.title, path: "整本", ...meta(n) })),
+  });
 });
+
+/** 恢复 / 销毁的共同前置：工作区角色 + 笔记本可见性 + 「只能动自己删的」。 */
+async function trashTarget(
+  c: Parameters<typeof requireUser>[0],
+  row: { workspaceId: string; trashedAt: Date | null; trashedBy: string | null },
+  notebookId: string,
+  action: string,
+) {
+  const user = await requireUser(c);
+  if (!row.trashedAt) throw fail("NOT_FOUND", "回收站里没有这一项");
+  const { role, canAll, visibleNotebook } = await trashScope(row.workspaceId, user.id);
+  if (role === "viewer") throw fail("FORBIDDEN", `无权${action}`);
+  if (!visibleNotebook(notebookId)) throw fail("NOT_FOUND", "回收站里没有这一项");
+  if (!canAll && row.trashedBy !== user.id) throw fail("FORBIDDEN", `只能${action}自己删除的内容`);
+  return user;
+}
 
 knowledge.post("/trash/note/:id/restore", async (c) => {
-  const user = await requireUser(c);
   const [note] = await db.select().from(notes).where(eq(notes.id, c.req.param("id")));
-  if (!note || !note.trashedAt) throw fail("NOT_FOUND", "回收站中没有这篇笔记");
-  const role = await memberRole(note.workspaceId, user.id);
-  if (!role || role === "viewer") throw fail("FORBIDDEN", "无权恢复");
-  await assertUserStorage(note.createdBy,textBytes(note.title,note.bodyMd));
-  if(role!=="owner"&&role!=="admin"&&note.trashedBy!==user.id)throw fail("FORBIDDEN","只能恢复自己删除的内容");
-  const title=await restoreTitle(note),folderId=await restoreFolderId(note);
-  await db.update(notes).set({ trashedAt: null,trashedBy:null,trashBatchId:null,title,folderId }).where(eq(notes.id, note.id));
+  if (!note) throw fail("NOT_FOUND", "回收站中没有这篇笔记");
+  const user = await trashTarget(c, note, note.notebookId, "恢复");
+  await assertUserStorage(note.createdBy, textBytes(note.title, note.bodyMd));
+  const title = await restoreTitle(note), folderId = await restoreFolderId(note);
+  await db.update(notes).set({ trashedAt: null, trashedBy: null, trashBatchId: null, title, folderId }).where(eq(notes.id, note.id));
   await rebuildLinks(note.id, note.workspaceId, note.bodyMd);
+  void user;
   return ok(c, { title, folderId, renamed: title !== note.title, movedToRoot: !!note.folderId && !folderId });
 });
-knowledge.post("/trash/folder/:id/restore",async c=>{const user=await requireUser(c);const[f]=await db.select().from(folders).where(eq(folders.id,c.req.param("id")));if(!f?.trashedAt||!f.trashBatchId)throw fail("NOT_FOUND","回收站中没有此目录");const role=await memberRole(f.workspaceId,user.id);if(!role||(role!=="owner"&&role!=="admin"&&f.trashedBy!==user.id))throw fail("FORBIDDEN","无权恢复");const affected=await db.select().from(notes).where(eq(notes.trashBatchId,f.trashBatchId));for(const n of affected)await assertUserStorage(n.createdBy,textBytes(n.title,n.bodyMd));await restoreFolder(f.id,f.trashBatchId);for(const n of affected)await rebuildLinks(n.id,n.workspaceId,n.bodyMd);return ok(c,{});});
-knowledge.post("/trash/notebook/:id/restore",async c=>{const user=await requireUser(c);const[nb]=await db.select().from(notebooks).where(eq(notebooks.id,c.req.param("id")));if(!nb?.trashedAt||!nb.trashBatchId)throw fail("NOT_FOUND","回收站中没有此笔记本");const role=await memberRole(nb.workspaceId,user.id);if(role!=="owner"&&role!=="admin")throw fail("FORBIDDEN","只有管理员能恢复笔记本");const affected=await db.select().from(notes).where(eq(notes.trashBatchId,nb.trashBatchId));for(const n of affected)await assertUserStorage(n.createdBy,textBytes(n.title,n.bodyMd));await restoreNotebook(nb.id,nb.trashBatchId);for(const n of affected)await rebuildLinks(n.id,n.workspaceId,n.bodyMd);return ok(c,{});});
 
-async function purgeTarget(c:any,kind:"note"|"folder"|"notebook"){const user=await requireUser(c);const id=c.req.param("id");
-  const [row]=kind==="note"?await db.select().from(notes).where(eq(notes.id,id)):kind==="folder"?await db.select().from(folders).where(eq(folders.id,id)):await db.select().from(notebooks).where(eq(notebooks.id,id));
-  if(!row||!row.trashedAt)throw fail("NOT_FOUND","回收站里没有这一项");
-  const role=await memberRole(row.workspaceId,user.id);
-  if(!role||role==="viewer")throw fail("FORBIDDEN","无权销毁");
-  if(role!=="owner"&&role!=="admin"&&row.trashedBy!==user.id)throw fail("FORBIDDEN","只能销毁自己删除的内容");
-  if(kind==="note")await purgeNotes([id]);else if(kind==="folder")await purgeFolder(id);else await purgeNotebook(id);
-  await db.insert(auditLogs).values({userId:user.id,workspaceId:row.workspaceId,actorType:"user",action:`${kind}.purge`,result:"ok",targetType:kind,targetId:id});
-  return ok(c,{});}
+knowledge.post("/trash/folder/:id/restore", async (c) => {
+  const [f] = await db.select().from(folders).where(eq(folders.id, c.req.param("id")));
+  if (!f?.trashedAt || !f.trashBatchId) throw fail("NOT_FOUND", "回收站中没有此目录");
+  await trashTarget(c, f, f.notebookId, "恢复");
+  const affected = await db.select().from(notes).where(eq(notes.trashBatchId, f.trashBatchId));
+  for (const n of affected) await assertUserStorage(n.createdBy, textBytes(n.title, n.bodyMd));
+  await restoreFolder(f.id, f.trashBatchId);
+  for (const n of affected) await rebuildLinks(n.id, n.workspaceId, n.bodyMd);
+  return ok(c, {});
+});
+
+knowledge.post("/trash/notebook/:id/restore", async (c) => {
+  const user = await requireUser(c);
+  const [nb] = await db.select().from(notebooks).where(eq(notebooks.id, c.req.param("id")));
+  if (!nb?.trashedAt || !nb.trashBatchId) throw fail("NOT_FOUND", "回收站中没有此笔记本");
+  const { canAll, visibleNotebook } = await trashScope(nb.workspaceId, user.id);
+  if (!visibleNotebook(nb.id)) throw fail("NOT_FOUND", "回收站中没有此笔记本");
+  if (!canAll) throw fail("FORBIDDEN", "只有管理员能恢复笔记本");
+  const affected = await db.select().from(notes).where(eq(notes.trashBatchId, nb.trashBatchId));
+  for (const n of affected) await assertUserStorage(n.createdBy, textBytes(n.title, n.bodyMd));
+  await restoreNotebook(nb.id, nb.trashBatchId);
+  for (const n of affected) await rebuildLinks(n.id, n.workspaceId, n.bodyMd);
+  return ok(c, {});
+});
+
+async function purgeTarget(c: Parameters<typeof requireUser>[0], kind: "note" | "folder" | "notebook") {
+  const id = c.req.param("id") ?? "";
+  const [row] = kind === "note"
+    ? await db.select().from(notes).where(eq(notes.id, id))
+    : kind === "folder"
+      ? await db.select().from(folders).where(eq(folders.id, id))
+      : await db.select().from(notebooks).where(eq(notebooks.id, id));
+  if (!row || !row.trashedAt) throw fail("NOT_FOUND", "回收站里没有这一项");
+  const notebookId = kind === "notebook" ? row.id : (row as { notebookId: string }).notebookId;
+  const user = await trashTarget(c, row, notebookId, "销毁");
+  if (kind === "note") await purgeNotes([id]);
+  else if (kind === "folder") await purgeFolder(id);
+  else await purgeNotebook(id);
+  await db.insert(auditLogs).values({ userId: user.id, workspaceId: row.workspaceId, actorType: "user", action: `${kind}.purge`, result: "ok", targetType: kind, targetId: id });
+  return ok(c, {});
+}
+
 knowledge.delete("/trash/note/:id",c=>purgeTarget(c,"note"));
 knowledge.delete("/trash/folder/:id",c=>purgeTarget(c,"folder"));
 knowledge.delete("/trash/notebook/:id",c=>purgeTarget(c,"notebook"));

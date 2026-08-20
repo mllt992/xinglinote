@@ -23,6 +23,8 @@ export function PublicInteractions({noteId,shareToken,siteNotebookId,commentsEna
     e.preventDefault();setSendErr("");
     try{
       const d=await api<{status:string}>(`/api/v1/public/notes/${noteId}/comments?${source}`,{method:"POST",body:JSON.stringify({body,parentId:replyTo?.id??null,guestName:name||undefined,challengeToken:challenge?.token,challengeAnswer:answer||undefined})});
+      // 验证码 token 现在是一次性的，发完就换一题
+      void newChallenge();
       setBody("");setReplyTo(null);
       if(d.status==="pending")toast.success("评论已提交","等待作者审核后才会公开显示。");else toast.success("评论已发布");
       void newChallenge();void load();
@@ -36,11 +38,13 @@ export function PublicInteractions({noteId,shareToken,siteNotebookId,commentsEna
     </div>
 
     {correctionsEnabled&&fixOpen&&<form className="mt-5 space-y-3 rounded-xl border bg-muted/30 p-4" onSubmit={async e=>{e.preventDefault();setFixErr("");
-      try{await api(`/api/v1/public/notes/${noteId}/corrections?${source}`,{method:"POST",body:JSON.stringify({...fix,guestName:name||undefined})});setFix({originalExcerpt:"",suggested:"",comment:""});setFixOpen(false);toast.success("纠错已提交","等待作者审核，接受后会直接改到正文。")}catch(x){setFixErr((x as Error).message)}}}>
+      // 纠错和评论走同一套访客门槛：服务端现在也要验证码了
+      try{await api(`/api/v1/public/notes/${noteId}/corrections?${source}`,{method:"POST",body:JSON.stringify({...fix,guestName:name||undefined,challengeToken:challenge?.token,challengeAnswer:answer||undefined})});setFix({originalExcerpt:"",suggested:"",comment:""});setFixOpen(false);setAnswer("");void newChallenge();toast.success("纠错已提交","等待作者审核，接受后会直接改到正文。")}catch(x){setFixErr((x as Error).message);void newChallenge()}}}>
       <p className="text-xs text-muted-foreground">把原文里要改的那一段原样粘进来，作者接受后会直接打补丁到正文。</p>
       <Textarea required value={fix.originalExcerpt} onChange={e=>setFix({...fix,originalExcerpt:e.target.value})} placeholder="原文片段（必须能在正文里找到）" className="min-h-16"/>
       <Textarea value={fix.suggested} onChange={e=>setFix({...fix,suggested:e.target.value})} placeholder="建议改成" className="min-h-16"/>
       <Input value={fix.comment} onChange={e=>setFix({...fix,comment:e.target.value})} placeholder="说明（可选）"/>
+      {challenge&&<div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">访客请作答：{challenge.question}</span><Input className="w-24" value={answer} onChange={e=>setAnswer(e.target.value)} inputMode="numeric" placeholder="答案"/><Button type="button" variant="ghost" size="sm" onClick={()=>void newChallenge()}>换一题</Button></div>}
       <div className="flex gap-2"><Button size="sm" disabled={!fix.originalExcerpt.trim()||!bodyMd.includes(fix.originalExcerpt.trim())}>提交纠错</Button><Button size="sm" variant="ghost" type="button" onClick={()=>setFixOpen(false)}>取消</Button>
         {fix.originalExcerpt.trim()&&!bodyMd.includes(fix.originalExcerpt.trim())&&<span className="self-center text-xs text-destructive">这段文字在正文里找不到</span>}</div>
       <FormError>{fixErr}</FormError>

@@ -1,34 +1,47 @@
 import { Hono } from "hono";
-import { and, desc, eq, isNull, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { z } from "zod";
-import { fail } from "@kb/shared";
+import { fail, normalizeTitle } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { instanceSettings, moderationReviews, notes, postReactions, posts, users, workspaceMembers, workspaces } from "../db/schema.ts";
+import { auditLogs, instanceSettings, moderationReviews, notebooks, notes, noteVersions, postReactions, posts, users, workspaceMembers, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
 import { moderate, pendingMessage, recordReview } from "../lib/moderation.ts";
+import { notebookAccess } from "../lib/notebook-access.ts";
+import { parseWikiLinks, rebuildLinks } from "../lib/links.ts";
+import { writeNoteFile } from "../lib/files.ts";
+import { assertUserStorage, textBytes } from "../lib/quota.ts";
+import { limit } from "../lib/rate-limit.ts";
 export const feedRoutes=new Hono();
 async function user(c:Parameters<typeof currentUser>[0]){const u=await currentUser(c);if(!u)throw fail("UNAUTHENTICATED","未登录");return u;}
 /** 只有作者本人能在时间线里看到自己待审 / 被驳回的帖子，别人看不见。 */
 function readable(viewer?:string){return viewer?or(eq(posts.status,"visible"),and(eq(posts.authorUserId,viewer),inArray(posts.status,["pending_review","rejected"]))):eq(posts.status,"visible");}
-async function hydrate(rows:typeof posts.$inferSelect[], viewer?:string){const authors=await db.select().from(users);const reactions=await db.select().from(postReactions);const ns=await db.select().from(notes);const held=rows.filter(p=>p.status!=="visible").map(p=>p.id);const reviews=held.length?await db.select().from(moderationReviews).where(and(eq(moderationReviews.targetType,"post"),inArray(moderationReviews.targetId,held))).orderBy(desc(moderationReviews.createdAt)):[];return rows.map(p=>({id:p.id,status:p.status,moderationReason:p.status==="visible"?null:(()=>{const r=reviews.find(r=>r.targetId===p.id);return r?(r.reviewNote??r.aiReason??null):null;})(),body:p.body,visibility:p.visibility,workspaceId:p.workspaceId,createdAt:p.createdAt,author:authors.find(u=>u.id===p.authorUserId)?{handle:authors.find(u=>u.id===p.authorUserId)!.handle,displayName:authors.find(u=>u.id===p.authorUserId)!.displayName}:null,note:p.noteId?(()=>{const n=ns.find(n=>n.id===p.noteId);return n?{id:n.id,title:n.title}:null})():null,likes:reactions.filter(r=>r.postId===p.id&&r.kind==="like").length,liked:!!viewer&&reactions.some(r=>r.postId===p.id&&r.userId===viewer&&r.kind==="like"),editedAt:p.editedAt,mine:!!viewer&&p.authorUserId===viewer}));}
-feedRoutes.get("/feed/public",async c=>{const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");const viewer=await currentUser(c);const rows=await db.select().from(posts).where(and(eq(posts.visibility,"public"),readable(viewer?.id))).orderBy(desc(posts.createdAt));return ok(c,{posts:await hydrate(rows.slice(0,50),viewer?.id)});});
-feedRoutes.get("/feed/workspaces/:id",async c=>{const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");const rows=await db.select().from(posts).where(and(eq(posts.workspaceId,wsId),readable(u.id))).orderBy(desc(posts.createdAt));return ok(c,{posts:await hydrate(rows.slice(0,50),u.id)});});
+/**
+ * 给一页动态补上作者、点赞数、关联笔记标题。
+ *
+ * 这三样以前是 `select * from users` + `select * from post_reactions` +
+ * `select * from notes`（含全部正文）——而 `/feed/public` 是匿名可达的，
+ * 一个 curl 循环就能把整库读进内存。现在一律按这一页涉及到的 id 取。
+ */
+async function hydrate(rows:typeof posts.$inferSelect[], viewer?:string){
+  const pickIds=<T,>(ids:string[],run:(ids:string[])=>Promise<T[]>)=>ids.length?run(ids):Promise.resolve([] as T[]);
+  const postIds=rows.map(p=>p.id);
+  const authorIds=[...new Set(rows.map(p=>p.authorUserId).filter((x):x is string=>!!x))];
+  const noteIds=[...new Set(rows.map(p=>p.noteId).filter((x):x is string=>!!x))];
+  const [authors,reactions,ns]=await Promise.all([
+    pickIds(authorIds,ids=>db.select({id:users.id,handle:users.handle,displayName:users.displayName}).from(users).where(inArray(users.id,ids))),
+    pickIds(postIds,ids=>db.select({postId:postReactions.postId,userId:postReactions.userId,kind:postReactions.kind}).from(postReactions).where(inArray(postReactions.postId,ids))),
+    pickIds(noteIds,ids=>db.select({id:notes.id,title:notes.title}).from(notes).where(inArray(notes.id,ids))),
+  ]);
+  const held=rows.filter(p=>p.status!=="visible").map(p=>p.id);const reviews=held.length?await db.select().from(moderationReviews).where(and(eq(moderationReviews.targetType,"post"),inArray(moderationReviews.targetId,held))).orderBy(desc(moderationReviews.createdAt)):[];return rows.map(p=>({id:p.id,status:p.status,moderationReason:p.status==="visible"?null:(()=>{const r=reviews.find(r=>r.targetId===p.id);return r?(r.reviewNote??r.aiReason??null):null;})(),body:p.body,visibility:p.visibility,workspaceId:p.workspaceId,createdAt:p.createdAt,author:(()=>{const a=authors.find(u=>u.id===p.authorUserId);return a?{handle:a.handle,displayName:a.displayName}:null;})(),note:p.noteId?(()=>{const n=ns.find(n=>n.id===p.noteId);return n?{id:n.id,title:n.title}:null})():null,likes:reactions.filter(r=>r.postId===p.id&&r.kind==="like").length,liked:!!viewer&&reactions.some(r=>r.postId===p.id&&r.userId===viewer&&r.kind==="like"),editedAt:p.editedAt,mine:!!viewer&&p.authorUserId===viewer}));}
+feedRoutes.get("/feed/public",async c=>{const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");const viewer=await currentUser(c);const rows=await db.select().from(posts).where(and(eq(posts.visibility,"public"),readable(viewer?.id))).orderBy(desc(posts.createdAt)).limit(50);return ok(c,{posts:await hydrate(rows,viewer?.id)});});
+feedRoutes.get("/feed/workspaces/:id",async c=>{const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");const rows=await db.select().from(posts).where(and(eq(posts.workspaceId,wsId),readable(u.id))).orderBy(desc(posts.createdAt)).limit(50);return ok(c,{posts:await hydrate(rows,u.id)});});
 feedRoutes.post("/posts",async c=>{const u=await user(c);const body=z.object({body:z.string().min(1).max(5000),visibility:z.enum(["public","workspace"]),workspaceId:z.string().uuid().nullable().optional(),noteId:z.string().uuid().nullable().optional()}).parse(await c.req.json());if(body.visibility==="workspace"){if(!body.workspaceId)throw fail("VALIDATION","缺少工作区");const role=await memberRole(body.workspaceId,u.id);if(!role||role==="viewer")throw fail("FORBIDDEN","无权发布工作区动态");const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,body.workspaceId));if(ws?.frozen)throw fail("FORBIDDEN","工作区已冻结，暂时只读");}if(body.visibility==="public"&&body.workspaceId)throw fail("VALIDATION","公开动态不能指定工作区");if(body.noteId){const [n]=await db.select().from(notes).where(eq(notes.id,body.noteId));if(!n||n.trashedAt||!n.published)throw fail("VALIDATION","只能附加已发布笔记");if(body.visibility==="workspace"&&n.workspaceId!==body.workspaceId)throw fail("FORBIDDEN","不能附加其他工作区的笔记");if(body.visibility==="public"&&!(await memberRole(n.workspaceId,u.id)))throw fail("FORBIDDEN","不能附加无权访问的笔记");}const scope=body.visibility==="public"?"square":"circle";const verdict=await moderate(body.body,scope);const held=verdict.decision==="review";const [p]=await db.insert(posts).values({authorUserId:u.id,workspaceId:body.workspaceId,visibility:body.visibility,body:body.body,noteId:body.noteId,status:held?"pending_review":"visible"}).returning();await recordReview({targetType:"post",targetId:p.id,scope,workspaceId:p.workspaceId,authorUserId:u.id,snapshot:body.body,verdict});return ok(c,{...p,moderation:{held,message:held?pendingMessage(verdict):null}},201);});
 feedRoutes.delete("/posts/:id",async c=>{const u=await user(c);const [p]=await db.select().from(posts).where(eq(posts.id,c.req.param("id")));if(!p)throw fail("NOT_FOUND","动态不存在");if(p.authorUserId!==u.id&&u.roleInstance!=="admin")throw fail("FORBIDDEN","无权删除");await db.update(posts).set({status:"deleted",updatedAt:new Date()}).where(eq(posts.id,p.id));return ok(c,{});});
 feedRoutes.post("/posts/:id/like",async c=>{const u=await user(c);const postId=c.req.param("id");const [post]=await db.select().from(posts).where(eq(posts.id,postId));if(!post||post.status!=="visible")throw fail("NOT_FOUND","动态不存在");if(post.visibility==="workspace"&&(!post.workspaceId||!(await memberRole(post.workspaceId,u.id))))throw fail("FORBIDDEN","无权操作此动态");const existing=await db.select().from(postReactions).where(and(eq(postReactions.postId,postId),eq(postReactions.userId,u.id),eq(postReactions.kind,"like")));if(existing.length)await db.delete(postReactions).where(and(eq(postReactions.postId,postId),eq(postReactions.userId,u.id),eq(postReactions.kind,"like")));else await db.insert(postReactions).values({postId,userId:u.id,kind:"like"});return ok(c,{liked:!existing.length});});
 
 // —— 泄漏检查、编辑、圈子转广场、转正为笔记、公开主页（规格 09）——
-import { inArray } from "drizzle-orm";
-import { normalizeTitle } from "@kb/shared";
-import { auditLogs,notebooks,noteVersions } from "../db/schema.ts";
-import { parseWikiLinks } from "../lib/links.ts";
-import { writeNoteFile } from "../lib/files.ts";
-import { rebuildLinks } from "../lib/links.ts";
-import { assertUserStorage,textBytes } from "../lib/quota.ts";
-import { notebookAccess } from "../lib/notebook-access.ts";
-import { limit } from "../lib/rate-limit.ts";
 
 /** 公开可见 = 所在笔记本已发布成文档站，且这篇自己也 published。只有分享链接不算。 */
 async function leakScan(body:string,viewerId:string){

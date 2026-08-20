@@ -1,6 +1,7 @@
 import {
   bigint,
   boolean,
+  index,
   integer,
   jsonb,
   pgTable,
@@ -116,7 +117,11 @@ export const workspaceMembers = pgTable(
     role: text("role").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (t) => [primaryKey({ columns: [t.workspaceId, t.userId] })],
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.userId] }),
+    // memberRole() 几乎在每条请求链路上，`/search` 和 export.zip 更是逐篇调它
+    index("workspace_members_user_idx").on(t.userId),
+  ],
 );
 
 export const workspaceInvites = pgTable("workspace_invites", {
@@ -170,7 +175,11 @@ export const folders = pgTable("folders", {
   trashedAt: timestamp("trashed_at", { withTimezone: true }),
   trashedBy: uuid("trashed_by").references(() => users.id),
   trashBatchId: uuid("trash_batch_id"),
-});
+}, (t) => [
+  index("folders_notebook_idx").on(t.notebookId),
+  index("folders_workspace_idx").on(t.workspaceId),
+  index("folders_batch_idx").on(t.trashBatchId),
+]);
 
 export const notes = pgTable("notes", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -191,13 +200,23 @@ export const notes = pgTable("notes", {
   trashBatchId: uuid("trash_batch_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (t) => [
+  index("notes_workspace_idx").on(t.workspaceId),
+  index("notes_notebook_idx").on(t.notebookId),
+  index("notes_folder_idx").on(t.folderId),
+  index("notes_created_by_idx").on(t.createdBy),
+  index("notes_batch_idx").on(t.trashBatchId),
+]);
 
 export const attachments = pgTable("attachments", {
   id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id), noteId: uuid("note_id").notNull().references(() => notes.id),
   filename: text("filename").notNull(), storedName: text("stored_name").notNull(), mime: text("mime").notNull(), bytes: bigint("bytes", {mode:"number"}).notNull(), sha256: text("sha256").notNull(), extractedText: text("extracted_text"), extractStatus: text("extract_status").notNull().default("none"),
   createdBy: uuid("created_by").notNull().references(() => users.id), createdAt: timestamp("created_at", {withTimezone:true}).defaultNow().notNull(), trashedAt: timestamp("trashed_at", {withTimezone:true}),
-});
+}, (t) => [
+  index("attachments_note_idx").on(t.noteId),
+  index("attachments_workspace_idx").on(t.workspaceId),
+  index("attachments_created_by_idx").on(t.createdBy),
+]);
 
 export const links = pgTable("links", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -287,6 +306,8 @@ export const themes = pgTable("themes", {
   builtin: boolean("builtin").notNull().default(false),
   enabled: boolean("enabled").notNull().default(true),
   manifest: jsonb("manifest").notNull(),
+  /** 谁装的。themes 是实例级共享表，升级同 id 的主题只能是原安装者或实例管理员。 */
+  installedBy: uuid("installed_by").references(() => users.id),
   installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow().notNull(),
 });
 

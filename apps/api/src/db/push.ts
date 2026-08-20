@@ -390,6 +390,53 @@ const statements = [
   )`,
   `CREATE INDEX IF NOT EXISTS calendar_templates_ws_idx ON calendar_templates (workspace_id, scope)`,
 
+  `ALTER TABLE themes ADD COLUMN IF NOT EXISTS installed_by uuid REFERENCES users(id)`,
+
+  // —— 热路径上的索引。之前只有 links / comments / calendar 等几张表有，
+  // 而 memberRole()、笔记树、附件、版本这些每次请求都要走的查询是全表扫的。——
+  `CREATE INDEX IF NOT EXISTS workspace_members_user_idx ON workspace_members(user_id)`,
+  `CREATE INDEX IF NOT EXISTS notes_workspace_idx ON notes(workspace_id)`,
+  `CREATE INDEX IF NOT EXISTS notes_notebook_idx ON notes(notebook_id)`,
+  `CREATE INDEX IF NOT EXISTS notes_folder_idx ON notes(folder_id)`,
+  `CREATE INDEX IF NOT EXISTS notes_created_by_idx ON notes(created_by)`,
+  `CREATE INDEX IF NOT EXISTS notes_batch_idx ON notes(trash_batch_id)`,
+  `CREATE INDEX IF NOT EXISTS folders_notebook_idx ON folders(notebook_id)`,
+  `CREATE INDEX IF NOT EXISTS folders_workspace_idx ON folders(workspace_id)`,
+  `CREATE INDEX IF NOT EXISTS folders_batch_idx ON folders(trash_batch_id)`,
+  `CREATE INDEX IF NOT EXISTS notebooks_workspace_idx ON notebooks(workspace_id)`,
+  `CREATE INDEX IF NOT EXISTS notebook_members_user_idx ON notebook_members(user_id)`,
+  `CREATE INDEX IF NOT EXISTS attachments_note_idx ON attachments(note_id)`,
+  `CREATE INDEX IF NOT EXISTS attachments_workspace_idx ON attachments(workspace_id)`,
+  `CREATE INDEX IF NOT EXISTS attachments_created_by_idx ON attachments(created_by)`,
+  `CREATE INDEX IF NOT EXISTS note_versions_note_idx ON note_versions(note_id, version DESC)`,
+  `CREATE INDEX IF NOT EXISTS share_links_workspace_idx ON share_links(workspace_id, status)`,
+  `CREATE INDEX IF NOT EXISTS mcp_tokens_user_idx ON mcp_tokens(user_id, status)`,
+  `CREATE INDEX IF NOT EXISTS audit_logs_workspace_idx ON audit_logs(workspace_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(user_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS posts_feed_idx ON posts(visibility, status, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS post_reactions_post_idx ON post_reactions(post_id)`,
+  `CREATE INDEX IF NOT EXISTS corrections_note_idx ON corrections(note_id, status)`,
+  `CREATE INDEX IF NOT EXISTS backup_runs_ws_idx ON backup_runs(workspace_id, created_at DESC)`,
+
+  // —— 枚举列的 CHECK。这些值全靠应用层 zod 把关，漏一处就直接落库了。
+  // 用 DO 块是因为 ADD CONSTRAINT 没有 IF NOT EXISTS，而 push 会反复跑。——
+  ...([
+    ["users", "users_role_chk", "role_instance IN ('admin','user')"],
+    ["users", "users_status_chk", "status IN ('active','banned','pending_verification','pending_deletion','deleted')"],
+    ["workspaces", "workspaces_kind_chk", "kind IN ('personal','normal')"],
+    ["workspace_members", "ws_members_role_chk", "role IN ('owner','admin','editor','viewer')"],
+    ["notebooks", "notebooks_visibility_chk", "visibility IN ('open','private','restricted')"],
+    ["notebook_members", "nb_members_role_chk", "role IN ('edit','view')"],
+    ["mcp_tokens", "mcp_tokens_rw_chk", "rw IN ('read','write','manage')"],
+    ["mcp_tokens", "mcp_tokens_mode_chk", "notebook_mode IN ('inherit','allowlist')"],
+    ["share_links", "share_links_status_chk", "status IN ('active','revoked','expired')"],
+  ].map(([table, name, expr]) => `DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${name}') THEN
+      ALTER TABLE ${table} ADD CONSTRAINT ${name} CHECK (${expr}) NOT VALID;
+    END IF;
+  END $$`)),
+
+
   // —— 协同编辑（设计 17 §3.4）。state 是 base64 的 Y 更新，存 text 省得为一张缓存表引入 bytea 的处理分支 ——
   `CREATE TABLE IF NOT EXISTS note_collab (
     note_id uuid PRIMARY KEY REFERENCES notes(id),

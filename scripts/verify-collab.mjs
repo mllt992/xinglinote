@@ -7,7 +7,7 @@ import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
-import { KB_EMAIL, KB_PASSWORD } from './creds.mjs';
+import { KB_EMAIL, KB_PASSWORD, TEST_PASSWORD } from './creds.mjs';
 
 const origin = process.env.KB_BASE_URL ?? 'http://127.0.0.1:12098';
 const base = origin + '/api/v1';
@@ -144,7 +144,7 @@ try {
     }, c)).data.codes[0];
     return (await q('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ email: `collab-${suffix}@example.test`, password: 'Password1234', handle: `cb${suffix}`, displayName: label, registrationCode: code }),
+      body: JSON.stringify({ email: `collab-${suffix}@example.test`, password: TEST_PASSWORD, handle: `cb${suffix}`, displayName: label, registrationCode: code }),
     })).cookie;
   }
 

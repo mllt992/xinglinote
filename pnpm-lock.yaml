@@ -62,6 +62,9 @@ importers:
       postgres:
         specifier: ^3.4.5
         version: 3.4.9
+      tsx:
+        specifier: ^4.19.3
+        version: 4.23.12
       ws:
         specifier: ^8.21.3
         version: 8.21.3
@@ -84,9 +87,6 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
-      tsx:
-        specifier: ^4.19.3
-        version: 4.23.12
       typescript:
         specifier: ^5.8.2
         version: 5.9.3
@@ -229,22 +229,37 @@ importers:
 
   apps/worker:
     dependencies:
+      '@kb/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@kb/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       drizzle-orm:
         specifier: ^0.41.0
         version: 0.41.0(postgres@3.4.9)
+      nodemailer:
+        specifier: ^9.0.5
+        version: 9.0.5
+      pdfjs-dist:
+        specifier: ^6.2.108
+        version: 6.2.108
       postgres:
         specifier: ^3.4.5
         version: 3.4.9
+      tsx:
+        specifier: ^4.19.3
+        version: 4.23.12
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^22.13.10
         version: 22.20.1
-      tsx:
-        specifier: ^4.19.3
-        version: 4.23.12
+      '@types/nodemailer':
+        specifier: ^8.0.1
+        version: 8.0.1
       typescript:
         specifier: ^5.8.2
         version: 5.9.3

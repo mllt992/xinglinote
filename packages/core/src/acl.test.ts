@@ -80,3 +80,45 @@ test("ai_index off blocks AI even if readable", () => {
   assert.equal(canAiReadNote(args), false);
   assert.equal(canAiReadNote({ ...args, aiIndex: true }), true);
 });
+
+// —— 回收站：canSeeTrash 是「额外放行已删除的」，不是「跳过前面所有检查」——
+const trashedNote = { ...note, trashed: true };
+
+test("canSeeTrash 不能让非成员读到已删除的笔记", () => {
+  // 以前 `if (note.trashed) return canSeeTrash;` 排在 wsRole 判断前面，
+  // 这一条会返回 true——任何登录用户都能读别人工作区回收站里的笔记。
+  assert.equal(
+    canReadNote({ actor: other, note: trashedNote, notebook: openNb, wsRole: null, nbMemberRole: null, canSeeTrash: true }),
+    false,
+  );
+});
+
+test("canSeeTrash 也不能绕过私密笔记本", () => {
+  const priv = { ...openNb, visibility: "private" as const, createdBy: "u1" };
+  assert.equal(
+    canReadNote({ actor: other, note: trashedNote, notebook: priv, wsRole: "admin", nbMemberRole: null, canSeeTrash: true }),
+    false,
+  );
+  assert.equal(
+    canReadNote({ actor, note: trashedNote, notebook: priv, wsRole: "admin", nbMemberRole: null, canSeeTrash: true }),
+    true,
+  );
+});
+
+test("是成员 + 开了 canSeeTrash 才读得到已删除的笔记", () => {
+  assert.equal(
+    canReadNote({ actor, note: trashedNote, notebook: openNb, wsRole: "editor", nbMemberRole: null, canSeeTrash: false }),
+    false,
+  );
+  assert.equal(
+    canReadNote({ actor, note: trashedNote, notebook: openNb, wsRole: "editor", nbMemberRole: null, canSeeTrash: true }),
+    true,
+  );
+});
+
+test("已删除的笔记任何情况下都不可编辑", () => {
+  assert.equal(
+    canEditNote({ actor, note: trashedNote, notebook: openNb, wsRole: "owner", nbMemberRole: null, canSeeTrash: true }),
+    false,
+  );
+});

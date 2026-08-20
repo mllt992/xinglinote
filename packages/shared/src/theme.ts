@@ -20,6 +20,9 @@ export const REQUIRED_TOKEN_KEYS = [
   "font-title",
 ] as const;
 
+/** 可以不填，但填了就得是合法 hex——它们和必填项一样会被写进 CSS 变量。 */
+export const OPTIONAL_TOKEN_KEYS = ["accent-fg", "accent-soft", "wiki", "wiki-unresolved"] as const;
+
 export type TokenKey = (typeof REQUIRED_TOKEN_KEYS)[number];
 export type ThemeMode = "light" | "dark";
 
@@ -129,6 +132,14 @@ export function validateManifest(raw: unknown): { ok: true; value: ThemeManifest
           issues.push({ level: "error", message: `${mode}.${key} 非法或含外链` });
         }
       } else if (!HEX_RE.test(v)) {
+        issues.push({ level: "error", message: `${mode}.${key} 必须是 #RGB 或 #RRGGBB` });
+      }
+    }
+    // 可选 token 也得是 hex：它们同样会进 resolveTheme 的 vars，
+    // 只校验必填项等于给这四个留了一条不设防的入口。
+    for (const key of OPTIONAL_TOKEN_KEYS) {
+      const v = t[key];
+      if (v !== undefined && (typeof v !== "string" || !HEX_RE.test(v))) {
         issues.push({ level: "error", message: `${mode}.${key} 必须是 #RGB 或 #RRGGBB` });
       }
     }

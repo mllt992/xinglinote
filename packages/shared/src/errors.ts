@@ -12,6 +12,8 @@ export const ErrorCodes = {
   AI_NOT_CONFIGURED: "AI_NOT_CONFIGURED",
   AI_PROVIDER_ERROR: "AI_PROVIDER_ERROR",
   PUSH_FAILED: "PUSH_FAILED",
+  /** 服务端自己炸了。以前这种情况一律回 VALIDATION，客户端分不清是自己传错还是服务器出错。 */
+  INTERNAL: "INTERNAL",
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
@@ -41,6 +43,7 @@ export const httpStatus: Record<ErrorCode, number> = {
   AI_NOT_CONFIGURED: 422,
   AI_PROVIDER_ERROR: 502,
   PUSH_FAILED: 502,
+  INTERNAL: 500,
 };
 
 export function fail(code: ErrorCode, message: string, fields?: Record<string, string>) {

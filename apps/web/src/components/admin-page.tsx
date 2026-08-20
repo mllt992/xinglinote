@@ -17,6 +17,7 @@ import { Switch } from "./ui/switch";
 import { useToast } from "./ui/toast";
 import { ModerationConfig, ModerationQueue } from "./moderation-panel";
 import { PushConfig } from "./push-admin-panel";
+import { SmtpConfig } from "./smtp-panel";
 
 type Tab = "overview" | "registration" | "moderation" | "notifications" | "codes" | "users";
 type AdminUser = { id: string; displayName: string; email: string; handle: string; roleInstance: string; status: string; createdAt?: string };
@@ -31,7 +32,7 @@ const TABS: { id: Tab; label: string; hint: string; icon: typeof LayoutGrid }[] 
   { id: "overview", label: "概览", hint: "规模与关键开关", icon: LayoutGrid },
   { id: "registration", label: "注册策略", hint: "谁能进来、能做什么", icon: Shield },
   { id: "moderation", label: "内容审核", hint: "AI 先审，拦下来的转人工", icon: ShieldCheck },
-  { id: "notifications", label: "通知与推送", hint: "VAPID 密钥与推送总开关", icon: BellRing },
+  { id: "notifications", label: "通知与推送", hint: "SMTP、VAPID 密钥与推送总开关", icon: BellRing },
   { id: "codes", label: "注册码", hint: "批量发放一次性准入", icon: Ticket },
   { id: "users", label: "用户", hint: "封禁、角色与状态", icon: Users },
 ];
@@ -357,6 +358,7 @@ export function AdminPage() {
         </div>}
 
         {!error && !loading && tab === "notifications" && <div className="space-y-6">
+          <SmtpConfig key={String(overview?.settings?.smtpHost ?? "")} settings={overview?.settings ?? {}} onSaved={loadOverview} />
           <PushConfig settings={overview?.settings ?? {}} onSaved={loadOverview} />
         </div>}
 

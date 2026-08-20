@@ -14,6 +14,7 @@ import { eq } from "drizzle-orm";
 import { attachConnection, flushAllRooms, joinRoom, type Conn } from "../lib/collab.ts";
 import { noteAccess } from "../lib/note-access.ts";
 import { userFromCookieHeader } from "../lib/session.ts";
+import { env } from "../env.ts";
 
 const PATH = /^\/api\/v1\/notes\/([0-9a-f-]{36})\/collab$/;
 
@@ -24,6 +25,10 @@ function deny(socket: Duplex, code: number, text: string) {
 
 /** 决定这条连接能不能进、以什么身份进。返回 null = 拒。 */
 async function authorize(req: IncomingMessage, noteId: string) {
+  // Origin 校验：SameSite=Lax 已经让浏览器不给跨站 WS 握手带 cookie，
+  // 但那是单点依赖。同源判断成本几乎为零，多一层不亏（CSWSH）。
+  const origin = req.headers.origin;
+  if (origin && origin !== new URL(env.publicUrl).origin) return null;
   const user = await userFromCookieHeader(req.headers.cookie);
   if (!user) return null;
   // 能编辑就 write；不能编辑（viewer / 只读笔记本 / 工作区冻结）不等于不能看，往下退一档
