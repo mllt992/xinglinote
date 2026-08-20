@@ -12,9 +12,7 @@
 
 当前状态：应用可正常连库，数据完好（users=22 / notes=77 / workspaces=70 / notebooks=98，46 张表）。
 
-> 🔴 **另有一件待你决定的事**：排查中留下的孤儿卷 `knowledge_pgdata` 里有 **223 篇笔记**，
-> 比现用库（77 篇）多。我一开始误判它是过期副本，实际是分叉数据。已备份，卷未删。
-> 详见下方「遗留问题」第 1 点。
+排查中留下的孤儿卷 `knowledge_pgdata`（223 篇笔记）已确认为测试数据并删除，详见「遗留问题」第 1 点。
 
 ---
 
@@ -105,9 +103,9 @@ ALTER SCHEMA public OWNER TO xinglinote;
 
 ---
 
-## ⚠️ 遗留问题（需要你拍板）
+## 遗留问题（均已处理）
 
-1. 🔴 **孤儿卷 `knowledge_pgdata` —— 不要删，里面有现用库没有的数据**
+1. ~~孤儿卷 `knowledge_pgdata`~~ → **已删除**（确认是测试数据）
 
    排查早期我照 `CLAUDE.md` §3 跑了 `pnpm db:up`，创建了 `knowledge-db-1`（`pgvector/pgvector:pg16`）并占用 5432 —— 该容器**已被你删除**，但卷还在。
 
@@ -123,16 +121,12 @@ ALTER SCHEMA public OWNER TO xinglinote;
    | users | 13 | **22** |
    | 最新笔记 | 2026-08-18 05:58 | 2026-08-20 10:36 |
 
-   直接 `docker volume rm` 会丢掉 146 篇笔记、1500 条版本、28 个附件。
-   已经导出一份备份到桌面：`knowledge_pgdata-备份-20260820.dump`（pg_dump 自定义格式，0.33 MB）。
+   **处理结果：已确认那 223 篇是测试数据，卷已删除**（`docker volume rm knowledge_pgdata`）。
+   删除前导出的备份留在桌面：`knowledge_pgdata-备份-20260820.dump`（pg_dump 自定义格式，0.33 MB），
+   确认无用后可自行删掉。`postgres18_data`（现用库）未触碰。
 
-   卷和备份都**原样保留**，等你确认这两份数据谁是想要的、要不要合并。
-   读取卷内容的方法（它是 pg16 数据目录，必须用 pg16 镜像挂载）：
-
-   ```bash
-   docker run -d --name kb-tmp -v knowledge_pgdata:/var/lib/postgresql/data pgvector/pgvector:pg16
-   docker exec kb-tmp psql -U kb -d knowledge -c "select title from notes order by updated_at desc limit 20"
-   ```
+   教训记一笔：我最初凭「表少 4 张」就断定它是过期副本并建议删除，实际表结构新旧
+   和数据多少是两回事。删数据前按行数、时间戳逐项比对过再下结论。
 
 2. ~~`pnpm db:up` 仍会与 postgres18 抢 5432~~ → **已解决，见下节**。
 
@@ -204,16 +198,15 @@ required variable POSTGRES_USER is missing a value
 
 ## 下一步
 
-1. 🔴 **决定 `knowledge_pgdata` 里那 223 篇笔记怎么办**（见「遗留问题」第 1 点）——
-   是现用库丢过数据，还是那份本来就是另一条线的？在这之前别删卷、别删桌面上的备份。
-2. 重启 `pnpm dev` —— 之前那次启动时库不通，日志里 `seed skipped`，种子没跑。
+1. 重启 `pnpm dev` —— 之前那次启动时库不通，日志里 `seed skipped`，种子没跑。
+2. 桌面上的 `knowledge_pgdata-备份-20260820.dump` 确认无用后删掉。
 
 ## 改动清单
 
 - 代码 / 文档：`docker-compose.yml`、新增 `compose.db.yml`、`apps/api/src/env.ts`、
   `package.json`、`.env.example`、`CLAUDE.md`、`README.md`、`docs/部署.md`、本文件。
 - 本地未提交：`.env`。
-- 桌面：`knowledge_pgdata-备份-20260820.dump`（孤儿卷的 pg_dump，**别删**）。
-- Docker：`docker network connect bridge postgres18`；临时容器 `kb-tmp-inspect` 用完已删。
-  孤儿卷 `knowledge_pgdata` **保留未删**。
+- 桌面：`knowledge_pgdata-备份-20260820.dump`（删卷前留的 pg_dump，可自行删除）。
+- Docker：`docker network connect bridge postgres18`；临时容器 `kb-tmp-inspect` 用完已删；
+  孤儿卷 `knowledge_pgdata` 已删除。`postgres18_data`（现用库）未触碰。
 - 数据库（`postgres18`，与 BoyaERP 共用实例）：建 `xinglinote` 角色、`knowledge` 改名为 `xinglinote`、移交属主、删除我先前误建的 `kb` 角色。BoyaERP 的 `boya_erp_local` / `boya_erp_drill` 未触碰。
