@@ -15,6 +15,11 @@ export type LayoutPrefs = {
   /** 正文字号档位。1 是基准，正文与预览一起缩放。 */
   fontScale: number;
   /**
+   * 宽栏：放开 46rem 的正文行宽，让正文铺满整个编辑区（设计 17 §3.2）。
+   * 默认关——易读行宽是默认值该有的样子；宽屏上嫌右边空得慌的人自己开。
+   */
+  wide: boolean;
+  /**
    * 就地渲染哪些东西。默认全开；关掉的那项在编辑器里退回源码（预览栏不受影响）。
    * 「只想看源码但保留表格」这类需求靠它，而不是把整个即时渲染关掉。
    */
@@ -42,6 +47,7 @@ export const DEFAULT_LAYOUT: LayoutPrefs = {
   vim: false,
   spellcheck: true,
   fontScale: 1,
+  wide: false,
   render: { image: true, math: true, table: true, diagram: true },
 };
 
@@ -65,6 +71,7 @@ export function loadLayout(): LayoutPrefs {
       spellcheck: raw.spellcheck !== false,
       // 存进去的值可能是老版本或者被人手改过，不在档位里就退回基准
       fontScale: (FONT_SCALES as readonly number[]).includes(Number(raw.fontScale)) ? Number(raw.fontScale) : 1,
+      wide: raw.wide === true,
       // 缺项一律当开：新增一项渲染时，老用户不该莫名其妙少一样东西
       render: Object.fromEntries(RENDER_KEYS.map(k => [k, (raw.render as Partial<RenderToggles> | undefined)?.[k] !== false])) as RenderToggles,
     };

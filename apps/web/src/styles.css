@@ -340,6 +340,18 @@ html[data-mode="dark"] {
    左边那点缩进是给折叠把手的槽让位，不让的话标题会比正文往左突出一截。 */
 .editor-measure > input { max-width: calc(var(--measure) + var(--fold-gutter)); padding-left: var(--fold-gutter); }
 
+/* 宽栏（设计 17 §3.2）。46rem 是按易读行宽定的，可宽屏上一篇没表格、没代码块的笔记，
+   右边那一大片本来留给宽块的宽度就纯空着，看着像布局坏了。这个开关把上限整个撤掉，
+   正文跟着编辑区走，愿意要长行的人自己开。
+   `--measure` 不能只在 .editor-measure 上改：.markdown 与 [data-editor="markdown"]
+   各自也写了一份 46rem（它们要能脱离编辑器单独用，比如文档站），元素自己写的那份
+   会盖掉从祖先继承来的值，所以这两处得一起点名。 */
+.editor-measure[data-wide="1"] { max-width: none; }
+.editor-measure[data-wide="1"],
+.editor-measure[data-wide="1"] .markdown,
+.editor-measure[data-wide="1"] [data-editor="markdown"] { --measure: none; }
+.editor-measure[data-wide="1"] > input { max-width: none; }
+
 /* 表格的可视化编辑（设计 17 §3.5）。把手平时不占位，hover 才出现，只读态整套不挂。 */
 .cm-md-table.cm-table-editable { position: relative; }
 .cm-table-tools {
