@@ -149,3 +149,67 @@ test("diagramBlockAt 不把普通代码块里的围栏当成图", () => {
   assert.equal(diagramBlockAt(src, 10), null);
   assert.equal(diagramBlockAt(src, src.indexOf("graph TD"))?.source, "graph TD;A-->B;");
 });
+
+test("Callout：类型落到 class，标题可省，正文照常解析", () => {
+  const html = renderMarkdown("> [!WARNING] 小心\n> 正文 **粗体**\n");
+  assert.match(html, /<blockquote class="callout callout-warning" data-callout="warning">/);
+  assert.match(html, /<div class="callout-title">小心<\/div>/);
+  assert.match(html, /<strong>粗体<\/strong>/);
+  // 省标题时用类型的中文名兜底
+  assert.match(renderMarkdown("> [!TIP]\n> 只有正文\n"), /<div class="callout-title">提示<\/div>/);
+  // 只有标题没有正文时不留空段落
+  assert.doesNotMatch(renderMarkdown("> [!NOTE] 单行\n"), /<p><\/p>/);
+  // GitHub 的别名认，认不出的类型不抢普通引用
+  assert.match(renderMarkdown("> [!CAUTION] 危\n"), /callout-caution/);
+  assert.doesNotMatch(renderMarkdown("> [!随便] 写\n"), /callout/);
+  // 折叠写法的 +/- 只识别不折叠，标题不该把符号带出来
+  assert.match(renderMarkdown("> [!NOTE]- 收起来\n> 正文\n"), /<div class="callout-title">收起来<\/div>/);
+});
+
+test("Callout 导出仍是合法引用块：源码不动", () => {
+  const src = "> [!NOTE] 标题\n> 正文\n";
+  // 渲染是显示层的事，正文字节一个不改（设计 17 §4.1）
+  assert.equal(plainTextOf(src).includes("[!NOTE]"), false);
+  assert.match(renderMarkdown(src), /<blockquote/);
+});
+
+test("脚注：按首次引用编号，未定义的保持字面量", () => {
+  const html = renderMarkdown("正文[^b] 再来[^a] 又是[^b]\n\n[^a]: 甲的注\n[^b]: 乙的 **注**\n");
+  // b 先出现，所以 b 是 1
+  assert.match(html, /<a id="fnref-1-1" href="#fn-1">\[1\]<\/a>/);
+  assert.match(html, /<a id="fnref-2-1" href="#fn-2">\[2\]<\/a>/);
+  assert.match(html, /<a id="fnref-1-2" href="#fn-1">\[1\]<\/a>/);
+  assert.match(html, /<section class="footnotes">/);
+  assert.match(html, /<li id="fn-1" class="footnote-item"><p>乙的 <strong>注<\/strong>/);
+  // 被引用两次就给两个回跳
+  assert.match(html, /href="#fnref-1-1"[^>]*>↩<\/a><a href="#fnref-1-2"/);
+  // 定义行本身不该出现在正文里
+  assert.doesNotMatch(html, /\[\^a\]:/);
+  // 没定义的引用原样留着
+  const orphan = renderMarkdown("孤儿[^zzz]\n");
+  assert.match(orphan, /\[\^zzz\]/);
+  assert.doesNotMatch(orphan, /<section class="footnotes">/);
+});
+
+test("脚注：定义可以缩进续行；没被引用的定义不输出", () => {
+  const html = renderMarkdown("正文[^a]\n\n[^a]: 第一行\n    第二行\n\n[^unused]: 没人引用\n");
+  assert.match(html, /第一行[\s\S]*第二行/);
+  assert.doesNotMatch(html, /没人引用/);
+});
+
+test("==高亮== 支持嵌套，落单的等号不吃字", () => {
+  assert.match(renderMarkdown("这是 ==重点== 那句"), /<mark>重点<\/mark>/);
+  assert.match(renderMarkdown("==**加粗的重点**=="), /<mark><strong>加粗的重点<\/strong><\/mark>/);
+  // 单个等号是普通字符，别把 `a = b` 变成高亮
+  assert.doesNotMatch(renderMarkdown("a = b = c"), /<mark>/);
+  assert.doesNotMatch(renderMarkdown("`==代码里的==`"), /<mark>/);
+});
+
+test("闭集新增的三样都不进字数与摘要", () => {
+  const src = "> [!NOTE] 提示\n> 正文\n\n段落[^1] 与 ==重点==\n\n[^1]: 注释\n";
+  const plain = plainTextOf(src);
+  assert.doesNotMatch(plain, /\[!NOTE\]/);
+  assert.doesNotMatch(plain, /\[\^1\]/);
+  assert.doesNotMatch(plain, /==/);
+  assert.match(plain, /重点/);
+});

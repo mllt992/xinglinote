@@ -376,6 +376,45 @@ await press('z', 'KeyZ', 90, true);
 await press('z', 'KeyZ', 90, true);
 await settle();
 
+// —— 十点十一、闭集新增：Callout / 脚注 / ==高亮==（规格 §9.2、设计 17 §3.14）——
+await click(`[...document.querySelectorAll('[role=tab]')].find(x=>x.textContent.trim()==='编辑')`);
+await wait(600);
+await toEnd();
+await ex(`(()=>{const v=document.querySelector('.cm-content');if(!v)return;const d=new DataTransfer();
+d.setData('text/plain','\\n\\n> [!WARNING] 小心台阶\\n> 警告正文\\n\\n> 普通引用\\n\\n[草稿] 不是链接，这句有 ==重点== 与脚注[^甲]。\\n\\n[^甲]: 注释\\n');
+v.dispatchEvent(new ClipboardEvent('paste',{clipboardData:d,bubbles:true,cancelable:true}))})()`);
+await wait(900);
+const closedSet = await ex(`(()=>{
+  const host=document.querySelector('[data-editor="markdown"]');
+  if(!host) return null;
+  const text=document.querySelector('.cm-content').innerText;
+  return {
+    callout: host.querySelectorAll('.cm-md-callout-warning').length,
+    plainQuote: [...host.querySelectorAll('.cm-md-quote-line')].filter(e=>!e.classList.contains('cm-md-callout')).length,
+    mark: host.querySelectorAll('.cm-md-mark').length,
+    footnote: host.querySelectorAll('.cm-md-footnote').length,
+    markerVisible: text.includes('[!WARNING]'),
+    bracketsKept: text.includes('[草稿]'),
+    equalsHidden: !text.includes('==重点=='),
+  };
+})()`);
+result.calloutColored = !!closedSet && closedSet.callout >= 2 && closedSet.plainQuote >= 1;
+result.highlightRendered = !!closedSet && closedSet.mark >= 1 && closedSet.equalsHidden;
+result.footnoteRefStyled = !!closedSet && closedSet.footnote >= 1;
+// Callout 的标记是源码，编辑器里不许藏；而「[方括号]文字」也不许被当成链接吃掉括号
+result.calloutMarkerStaysVisible = !!closedSet && closedSet.markerVisible;
+result.plainBracketsNotEatenByLink = !!closedSet && closedSet.bracketsKept;
+await settle();
+
+// 预览侧：同一段东西两边要一致
+await click(`[...document.querySelectorAll('[role=tab]')].find(x=>x.textContent.trim()==='预览')`);
+await wait(800);
+result.previewRendersCallout = await ex(`!!document.querySelector('.markdown blockquote.callout[data-callout="warning"] .callout-title')`);
+result.previewRendersMark = await ex(`!!document.querySelector('.markdown mark')`);
+result.previewRendersFootnote = await ex(`!!document.querySelector('.markdown section.footnotes li#fn-1') && !!document.querySelector('.markdown .footnote-ref a[href="#fn-1"]')`);
+// 渲染是显示层的事：正文里那几行原样还在
+result.closedSetKeepsSource = (await call(`/api/v1/notes/${noteId}`)).bodyMd.includes("> [!WARNING] 小心台阶");
+
 // —— 十一、预览侧的闭集渲染 ——
 await click(`[...document.querySelectorAll('[role=tab]')].find(x=>x.textContent.trim()==='预览')`);
 await wait(700);

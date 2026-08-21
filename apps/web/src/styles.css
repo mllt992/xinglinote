@@ -122,6 +122,33 @@ button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
 .markdown .wiki.embed { display: inline-block; border: 0; border-radius: 6px; background: var(--accent-ui); padding: .15em .45em; }
 
 
+/* Callout（规格 §9.2、设计 17 §3.14）。底色一律由 --callout 派生，加新类型只要给一条色。
+   不认这套语法的工具会把它渲染成普通引用，所以这里的样式必须是「引用块的加强版」而不是另一种东西。 */
+.markdown .callout {
+  --callout: var(--muted-foreground);
+  margin: 1em 0; border-left: 3px solid var(--callout); border-radius: 0 10px 10px 0;
+  background: color-mix(in srgb, var(--callout) 8%, transparent);
+  padding: .75em 1em; color: var(--foreground); font-style: normal;
+}
+.markdown .callout > :first-child { margin-top: 0; }
+.markdown .callout > :last-child { margin-bottom: 0; }
+.markdown .callout-title { margin-bottom: .35em; color: var(--callout); font-weight: 600; }
+.markdown .callout-note, .markdown .callout-info, .markdown .callout-quote { --callout: var(--primary); }
+.markdown .callout-tip, .markdown .callout-success, .markdown .callout-example { --callout: var(--good); }
+.markdown .callout-warning, .markdown .callout-question, .markdown .callout-important, .markdown .callout-caution, .markdown .callout-abstract { --callout: var(--warning); }
+.markdown .callout-danger, .markdown .callout-failure, .markdown .callout-bug { --callout: var(--destructive); }
+
+/* 脚注。正文里是一个上标序号，全文末尾一段列表，两头互相跳。 */
+.markdown mark { border-radius: 3px; background: color-mix(in srgb, var(--warning) 34%, transparent); padding: 0 .12em; color: inherit; }
+.markdown .footnote-ref a { text-decoration: none; }
+.markdown .footnotes { margin-top: 2.5em; color: var(--muted-foreground); font-size: .92em; }
+.markdown .footnotes-sep { margin: 0 0 1em; }
+.markdown .footnotes-list { padding-left: 1.4em; }
+.markdown .footnote-item { margin-bottom: .4em; }
+.markdown .footnote-item :is(h1,h2,h3,h4,h5,h6,p) { max-width: none; }
+.markdown .footnote-backref { margin-left: .4em; text-decoration: none; }
+.markdown :is(.footnote-item, .footnotes-list) { max-width: var(--measure); }
+
 /* 预览区：闭集里剩下的那几样（规格 §9.2）——任务列表、公式、四级以下标题、图片。 */
 .markdown h4,.markdown h5,.markdown h6 { margin: 1.3em 0 .5em; font-family: var(--font-title); font-weight: 700; line-height: 1.3; }
 .markdown h4 { font-size: 1.05em; } .markdown h5 { font-size: .98em; } .markdown h6 { font-size: .92em; color: var(--muted-foreground); }
@@ -271,6 +298,18 @@ html[data-mode="dark"] {
 [data-wysiwyg="1"] .cm-line { padding-block: 1px; }
 .cm-md-code-line { background: color-mix(in srgb, var(--muted) 70%, transparent); font-family: var(--font-mono); font-size: 13.5px; }
 .cm-md-quote-line { border-left: 3px solid color-mix(in srgb, var(--primary) 45%, transparent); padding-left: .8em; color: var(--muted-foreground); }
+
+/* Callout 在编辑器里就是「上了色的引用块」，配色和预览侧同一套派生规则，
+   免得同一段东西左右两边看着像两回事。标记 `[!NOTE]` 不藏——它是源码，人得看得见也改得动。 */
+.cm-md-callout { --callout: var(--muted-foreground); border-left-color: var(--callout); background: color-mix(in srgb, var(--callout) 7%, transparent); color: var(--foreground); }
+.cm-md-callout-note, .cm-md-callout-info, .cm-md-callout-quote { --callout: var(--primary); }
+.cm-md-callout-tip, .cm-md-callout-success, .cm-md-callout-example { --callout: var(--good); }
+.cm-md-callout-warning, .cm-md-callout-question, .cm-md-callout-important, .cm-md-callout-caution, .cm-md-callout-abstract { --callout: var(--warning); }
+.cm-md-callout-danger, .cm-md-callout-failure, .cm-md-callout-bug { --callout: var(--destructive); }
+
+/* `==高亮==` 与脚注引用。底色只能走 CSS：HighlightStyle 改得了字色改不了底色。 */
+.cm-md-mark { border-radius: 3px; background: color-mix(in srgb, var(--warning) 34%, transparent); }
+.cm-md-footnote { color: var(--primary); font-size: .9em; vertical-align: super; }
 
 /* 代码块与引用的底色以前是逐行画的，一整块看着像一摞独立的条。首尾行单独收个圆角，
    中间行照旧连成一片，这样它才像「一个块」。 */

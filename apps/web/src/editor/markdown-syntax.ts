@@ -107,4 +107,62 @@ export const BlockMath: MarkdownConfig = {
   }],
 };
 
-export const markdownSyntaxExtensions = [WikiLink, InlineMath, BlockMath];
+const EQUALS = 61, CARET = 94;
+
+const PUNCTUATION = /[!-/:-@[-`{-~¡«»¿‐-‧、-〃《-】！-／：-＠]/;
+const HighlightDelim = { resolve: "Highlight", mark: "HighlightMark" };
+
+/**
+ * `==高亮==`。
+ *
+ * 走**定界符**（`addDelimiter`）而不是自己扫一段 `addElement`：后者的内容不会再被解析，
+ * `==**粗的高亮**==` 里的星号就成了字面量，和预览侧对不上。配对与前后空白的判定
+ * 照抄 @lezer/markdown 自带的删除线，两种标记的手感因此完全一致。
+ */
+export const Highlight: MarkdownConfig = {
+  defineNodes: [
+    { name: "Highlight", style: { "Highlight/...": tags.special(tags.emphasis) } },
+    { name: "HighlightMark", style: tags.processingInstruction },
+  ],
+  parseInline: [{
+    name: "Highlight",
+    after: "Emphasis",
+    parse(cx: InlineContext, next: number, pos: number) {
+      if (next !== EQUALS || cx.char(pos + 1) !== EQUALS || cx.char(pos + 2) === EQUALS) return -1;
+      const before = cx.slice(pos - 1, pos), after = cx.slice(pos + 2, pos + 3);
+      const spaceBefore = /\s|^$/.test(before), spaceAfter = /\s|^$/.test(after);
+      const punctBefore = PUNCTUATION.test(before), punctAfter = PUNCTUATION.test(after);
+      return cx.addDelimiter(
+        HighlightDelim, pos, pos + 2,
+        !spaceAfter && (!punctAfter || spaceBefore || punctBefore),
+        !spaceBefore && (!punctBefore || spaceAfter || punctAfter),
+      );
+    },
+  }],
+};
+
+/**
+ * 脚注引用 `[^标签]`。只认引用，不认定义行——定义行 `[^标签]: …` 在编辑器里就是普通文字，
+ * 那样反而清楚：它本来就该被人看见和编辑。
+ */
+export const FootnoteRef: MarkdownConfig = {
+  defineNodes: [{ name: "FootnoteRef", style: tags.special(tags.link) }],
+  parseInline: [{
+    name: "FootnoteRef",
+    before: "Link",
+    parse(cx: InlineContext, next: number, pos: number) {
+      if (next !== BRACKET || cx.char(pos + 1) !== CARET) return -1;
+      const rest = cx.slice(pos + 2, Math.min(cx.end, pos + 2 + 128));
+      const close = rest.indexOf("]");
+      if (close <= 0) return -1;
+      const label = rest.slice(0, close);
+      if (!label.trim() || /[\s\]]/.test(label)) return -1;
+      const end = pos + 2 + close + 1;
+      // `[^1]:` 是定义不是引用
+      if (cx.char(end) === 58 /* : */) return -1;
+      return cx.addElement(cx.elt("FootnoteRef", pos, end));
+    },
+  }],
+};
+
+export const markdownSyntaxExtensions = [WikiLink, InlineMath, BlockMath, Highlight, FootnoteRef];

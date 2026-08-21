@@ -1,6 +1,6 @@
 import { syntaxTree } from "@codemirror/language";
 import { type EditorState, type Extension, type Range, RangeSet, StateField } from "@codemirror/state";
-import type { SyntaxNodeRef } from "@lezer/common";
+import type { SyntaxNode, SyntaxNodeRef } from "@lezer/common";
 import {
   Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType,
 } from "@codemirror/view";
@@ -187,6 +187,49 @@ const blockFirst = Decoration.line({ class: "cm-md-block-first" });
 const blockLast = Decoration.line({ class: "cm-md-block-last" });
 /** 标题行。着色由 HighlightStyle 管，这个类只用来给标题上方留白。 */
 const headingLine = Decoration.line({ class: "cm-md-heading" });
+/** Callout 的整行装饰按类型分色，每种类型缓存一个，别每次构建都造新对象。 */
+const calloutLines = new Map<string, Decoration>();
+function calloutLine(type: string): Decoration {
+  let deco = calloutLines.get(type);
+  if (!deco) {
+    deco = Decoration.line({ class: `cm-md-quote-line cm-md-callout cm-md-callout-${type}` });
+    calloutLines.set(type, deco);
+  }
+  return deco;
+}
+
+/** 认得的 Callout 类型。和 `packages/shared/markdown/callout.ts` 那份必须一致。 */
+const CALLOUTS = new Set([
+  "note", "tip", "info", "success", "question", "warning", "failure", "danger",
+  "bug", "example", "quote", "abstract", "important", "caution",
+]);
+const CALLOUT_ALIAS: Record<string, string> = {
+  hint: "tip", attention: "warning", error: "danger", fail: "failure",
+  summary: "abstract", tldr: "abstract", cite: "quote", help: "question", faq: "question",
+};
+
+/**
+ * 这个 Link 节点有没有真的地址。
+ *
+ * lezer 会给任何一段方括号文字发一个 `Link` 节点——`[草稿] 会议纪要`、`> [!NOTE] 小心`
+ * 都算。照单藏掉方括号的话，正文里所有「[方括号]开头」的写法都会莫名其妙少一对括号，
+ * 而它们既不是链接也点不开。**没地址就当普通文字，一个字节都不动。**
+ */
+function hasUrl(link: SyntaxNode | null): boolean {
+  for (let child = link?.firstChild; child; child = child.nextSibling) {
+    if (child.name === "URL") return true;
+  }
+  return false;
+}
+
+/** `> [!NOTE] 标题` 里的类型；不是 callout 回 null。 */
+function calloutTypeOf(text: string): string | null {
+  const hit = /^\s*>\s*\[!([A-Za-z]+)\][+-]?/.exec(text);
+  if (!hit) return null;
+  const lower = hit[1].toLowerCase();
+  const type = CALLOUT_ALIAS[lower] ?? lower;
+  return CALLOUTS.has(type) ? type : null;
+}
 
 /** `scopes` 是这一次构建里所有「要不要露出」的判定范围，光标移动时靠它短路重建。 */
 type Built = { decorations: DecorationSet; atomic: DecorationSet; scopes: Array<{ from: number; to: number }> };
@@ -363,6 +406,7 @@ function build(view: EditorView, wysiwyg: boolean, render: RenderToggles): Built
             return;
           }
           case "EmphasisMark":
+          case "HighlightMark":
           case "StrikethroughMark": {
             const scope = wysiwyg ? owner(node) : { from: line.from, to: line.to };
             if (!revealed(scope.from, scope.to)) replace(hide, node.from, node.to);
@@ -379,9 +423,19 @@ function build(view: EditorView, wysiwyg: boolean, render: RenderToggles): Built
             // 引用标记一律按行判定：一段长引用不该因为光标在末行就整段露出。
             if (!revealed(line.from, line.to)) replace(hide, node.from, node.to);
             return;
-          case "Blockquote":
-            lineDecos(node.from, node.to, quoteLine, visible);
+          case "Highlight":
+            // 着色交给 CSS：HighlightStyle 只改得了字色，而高亮要的是底色
+            marks.push(Decoration.mark({ class: "cm-md-mark" }).range(node.from, node.to));
             return;
+          case "FootnoteRef":
+            marks.push(Decoration.mark({ class: "cm-md-footnote" }).range(node.from, node.to));
+            return false;
+          case "Blockquote": {
+            // Callout 就是打了标记的引用块（设计 17 §3.14），整块跟着类型上色
+            const type = calloutTypeOf(state.doc.lineAt(node.from).text);
+            lineDecos(node.from, node.to, type ? calloutLine(type) : quoteLine, visible);
+            return;
+          }
           case "FencedCode":
           case "CodeBlock":
             lineDecos(node.from, node.to, codeLine, visible);
@@ -389,12 +443,14 @@ function build(view: EditorView, wysiwyg: boolean, render: RenderToggles): Built
           case "LinkMark":
           case "URL":
           case "LinkTitle": {
-            if (node.node.parent?.name !== "Link") return;
+            const parent = node.node.parent;
+            if (parent?.name !== "Link" || !hasUrl(parent)) return;
             const scope = wysiwyg ? owner(node) : { from: line.from, to: line.to };
             if (!revealed(scope.from, scope.to)) replace(hide, node.from, node.to);
             return;
           }
           case "Link": {
+            if (!hasUrl(node.node)) return;
             const scope = wysiwyg ? { from: node.from, to: node.to } : { from: line.from, to: line.to };
             if (!revealed(scope.from, scope.to)) {
               marks.push(Decoration.mark({ class: "cm-md-link", attributes: { title: "Ctrl/⌘ + 单击打开" } }).range(node.from, node.to));

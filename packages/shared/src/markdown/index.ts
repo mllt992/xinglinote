@@ -1,7 +1,10 @@
 import MarkdownIt from "markdown-it";
+import { calloutPlugin } from "./callout.js";
 import { diagramPlugin } from "./diagram.js";
+import { footnotePlugin } from "./footnote.js";
 import { headingAnchorPlugin, outlineFromTokens, type OutlineItem } from "./headings.js";
 import { mathPlugin } from "./math.js";
+import { markPlugin } from "./mark.js";
 import { sourceLinePlugin } from "./source-lines.js";
 import { taskListPlugin } from "./tasklist.js";
 import { wikilinkPlugin, type WikiResolver } from "./wikilink.js";
@@ -34,7 +37,7 @@ export type MarkdownEnv = {
  * 必须都走这里，禁止任何地方再 new 一个 markdown-it，否则 wikilink 行为会漂。
  *
  * 语法闭集见规格 §9.2：CommonMark + GFM（表格 / 删除线 / 任务列表）+ `$公式$` + `[[双链]]`
- * + ```` ```mermaid ```` 图块。
+ * + ```` ```mermaid ```` 图块 + Callout（`> [!NOTE]`）+ 脚注（`[^1]`）+ `==高亮==`。
  * `html: false` —— 用户 HTML 一律不解析。
  */
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographer: false })
@@ -42,6 +45,9 @@ const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographe
   .use(mathPlugin)
   .use(taskListPlugin)
   .use(diagramPlugin)
+  .use(calloutPlugin)
+  .use(footnotePlugin)
+  .use(markPlugin)
   .use(headingAnchorPlugin)
   .use(sourceLinePlugin);
 
@@ -96,8 +102,14 @@ export function plainTextOf(source: string): string {
     .replace(/!?\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g, (_a, title: string, alias?: string) => alias || title)
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    // 脚注定义整行拿掉，引用标记只拿掉标记本身
+    .replace(/^\s{0,3}\[\^[^\]\s]+\]:.*(?:\n {4,}.*)*$/gm, "")
+    .replace(/\[\^[^\]\s]+\]/g, "")
     .replace(/^\s{0,3}>\s?/gm, "")
+    // Callout 的 `[!NOTE]` 是标记不是正文；后面跟的标题要留着
+    .replace(/^\s*\[!\w+\][+-]?[ \t]*/gm, "")
     .replace(/^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/gm, "")
+    .replace(/==/g, "")
     .replace(/[*_~]{1,3}/g, "")
     .replace(/\s+/g, " ")
     .trim();
