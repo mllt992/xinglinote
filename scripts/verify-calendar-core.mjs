@@ -44,8 +44,10 @@ try {
 
   // —— CRUD ——
   const start = wallToUtc(2027, 3, 19, 15, 0, tz), end = wallToUtc(2027, 3, 19, 16, 0, tz);
-  const event = (await q(`/workspaces/${ws.id}/calendar/items`, { method: 'POST', body: JSON.stringify({ kind: 'event', title: '季度对齐', startsAt: start.toISOString(), endsAt: end.toISOString() }) }, c)).data;
+  const event = (await q(`/workspaces/${ws.id}/calendar/items`, { method: 'POST', body: JSON.stringify({ kind: 'event', title: '季度对齐', bodyMd: '带上纪要', startsAt: start.toISOString(), endsAt: end.toISOString() }) }, c)).data;
   result.createEvent = event.kind === 'event' && new Date(event.startsAt).getTime() === start.getTime();
+  const fetched = (await q(`/calendar/items/${event.id}`, {}, c)).data;
+  result.getItem = fetched.id === event.id && fetched.bodyMd === '带上纪要' && fetched.canEdit === true;
   result.eventNeedsStart = await rejects(() => q(`/workspaces/${ws.id}/calendar/items`, { method: 'POST', body: JSON.stringify({ kind: 'event', title: '没有时间的日程' }) }, c), 'VALIDATION');
   result.windowCapped = await rejects(() => q(`/workspaces/${ws.id}/calendar?from=2020-01-01T00:00:00.000Z&to=2027-01-01T00:00:00.000Z`, {}, c), 'VALIDATION');
 

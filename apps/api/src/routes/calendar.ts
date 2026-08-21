@@ -279,6 +279,15 @@ calendarRoutes.post("/workspaces/:id/calendar/quick-add", async c => {
   return ok(c, { item: itemDto(row), preview: parsed }, 201);
 });
 
+calendarRoutes.get("/calendar/items/:id", async c => {
+  const { item, role } = await loadItem(c, c.req.param("id"), "read");
+  const [ws] = await db.select({ frozen: workspaces.frozen }).from(workspaces).where(eq(workspaces.id, item.workspaceId));
+  const noteTitle = item.sourceNoteId
+    ? (await db.select({ title: notes.title }).from(notes).where(eq(notes.id, item.sourceNoteId)))[0]?.title ?? null
+    : null;
+  return ok(c, { ...itemDto(item, noteTitle), canEdit: role !== "viewer" && !ws?.frozen });
+});
+
 calendarRoutes.patch("/calendar/items/:id", async c => {
   const { user, item } = await loadItem(c, c.req.param("id"), "edit");
   const body = itemBody.partial().extend({ ifUnmodifiedSince: z.string().datetime().optional() }).parse(await c.req.json());

@@ -13,12 +13,14 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuLabel, Con
 import { Tooltip, TooltipProvider } from "./ui/tooltip";
 import { useToast } from "./ui/toast";
 import { BatchBar, SaveTemplateDialog, TemplatePanel, type BatchPayload } from "./calendar-batch";
+import { CalendarItemEditor, type EditorTarget } from "./calendar-item-editor";
 
 export type CalendarItem = {
   id: string;
   occurrenceStart: string | null;
   kind: "task" | "event";
   title: string;
+  bodyMd?: string;
   allDay: boolean;
   startsAt: string | null;
   endsAt: string | null;
@@ -33,6 +35,8 @@ export type CalendarItem = {
   linkState: "linked" | "detached";
   assigneeUserId: string | null;
   createdBy: string;
+  updatedAt?: string;
+  canEdit?: boolean;
 };
 type Footprint = { id: string; title: string; notebookId: string; updatedAt: string };
 type InboxData = { inbox: CalendarItem[]; groups: Array<{ noteId: string; noteTitle: string; items: CalendarItem[] }>; overdue: number; me: string; workspaceKind: string; canEdit: boolean };
@@ -128,6 +132,7 @@ export function CalendarPage() {
   const [loadError, setLoadError] = useState("");
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const [quick, setQuick] = useState<{ open: boolean; text: string; preview: QuickPreview | null }>({ open: false, text: "", preview: null });
+  const [editor, setEditor] = useState<EditorTarget | null>(null);
 
   const [members, setMembers] = useState<Member[]>([]);
   useEffect(() => {
@@ -370,8 +375,62 @@ export function CalendarPage() {
       .filter(i => (seen.has(i.id) ? false : (seen.add(i.id), true)));
   }, [items]);
 
+  const openCreate = useCallback((day: Date, opts?: { startMin?: number; endMin?: number; kind?: "task" | "event" }) => {
+    setEditor({ mode: "create", date: dayKey(day), ...opts });
+    // 清掉 ?item=，否则详情深链的 effect 会把新建弹窗盖回去
+    setParams(p => {
+      if (!p.has("item")) return p;
+      const next = new URLSearchParams(p);
+      next.delete("item");
+      return next;
+    }, { replace: true });
+  }, [setParams]);
+  const openItem = useCallback((item: CalendarItem) => {
+    setEditor({ mode: "edit", item });
+    setFocusKey(`${item.id}:${item.occurrenceStart}`);
+    setParams(p => {
+      if (p.get("item") === item.id) return p;
+      const next = new URLSearchParams(p);
+      next.set("item", item.id);
+      return next;
+    }, { replace: true });
+  }, [setParams]);
+  const closeEditor = useCallback(() => {
+    setEditor(null);
+    setParams(p => {
+      if (!p.has("item")) return p;
+      const next = new URLSearchParams(p);
+      next.delete("item");
+      return next;
+    }, { replace: true });
+  }, [setParams]);
+
+  // 提醒和分享会带 ?item=：进来就打开详情，不在当前窗口里就单独拉一条
+  useEffect(() => {
+    const id = params.get("item");
+    if (!id) return;
+    const found = items.find(i => i.id === id)
+      ?? panel.inbox.find(i => i.id === id)
+      ?? panel.groups.flatMap(g => g.items).find(i => i.id === id);
+    if (found) {
+      setEditor(cur => (cur?.mode === "edit" && cur.item.id === found.id && cur.item.updatedAt === found.updatedAt ? cur : { mode: "edit", item: found }));
+      return;
+    }
+    if (loading) return;
+    let cancelled = false;
+    api<CalendarItem>(`/api/v1/calendar/items/${id}`).then(item => {
+      if (!cancelled) setEditor({ mode: "edit", item });
+    }).catch(() => {
+      if (cancelled) return;
+      toast.error("找不到这条");
+      setParams(p => { const next = new URLSearchParams(p); next.delete("item"); return next; }, { replace: true });
+    });
+    return () => { cancelled = true; };
+  }, [params.get("item"), items, panel, loading]);
+
   const selection = useMemo<SelectionApi>(() => ({
     ids: selected,
+    open: openItem,
     click: (item, e) => {
       if (!(e.ctrlKey || e.metaKey || e.shiftKey)) return false;
       setSelected(prev => {
@@ -386,7 +445,7 @@ export function CalendarPage() {
       lastPicked.current = item.id;
       return true;
     },
-  }), [selected, ordered]);
+  }), [selected, ordered, openItem]);
 
   const clearSelection = useCallback(() => { setSelected(new Set()); lastPicked.current = null; }, []);
   const selectedRecurring = useMemo(() => ordered.filter(i => i.recurring && selected.has(i.id)).length, [ordered, selected]);
@@ -447,11 +506,10 @@ export function CalendarPage() {
         const next = at < 0 ? (key === "arrowdown" ? 0 : items.length - 1) : Math.min(items.length - 1, Math.max(0, at + (key === "arrowdown" ? 1 : -1)));
         setFocusKey(`${items[next].id}:${items[next].occurrenceStart}`);
       }
-      else if (key === "enter" && focused) {
+      else if (key === "enter") {
         e.preventDefault();
-        // 「打开条目」= 回到它的出处；凭空存在的条目没有出处，那就去建下一条
-        if (focused.sourceNoteId) nav(`/w/${wsId}/n/${focused.sourceNoteId}`);
-        else { setQuick(q => ({ ...q, open: true })); setTimeout(() => quickRef.current?.focus(), 0); }
+        if (focused) openItem(focused);
+        else openCreate(cursor);
       }
       else if (focused) {
         if (key === " ") { e.preventDefault(); if (focused.kind === "task") void toggleDone(focused, focused.status !== "done"); }
@@ -465,7 +523,7 @@ export function CalendarPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cursor, view, focused, tz, items, clearSelection]);
+  }, [cursor, view, focused, tz, items, clearSelection, openItem, openCreate]);
 
   const byDay = useMemo(() => {
     const map = new Map<string, CalendarItem[]>();
@@ -550,8 +608,8 @@ export function CalendarPage() {
     <div className="flex min-h-0 flex-1">
       <div className="min-w-0 flex-1 overflow-auto">
         {loading ? <GridSkeleton view={view} />
-          : view === "month" && narrow ? <MonthCompact cursor={cursor} today={today} byDay={byDay} notesByDay={notesByDay} onToggle={toggleDone} onPick={setCursor} onDiary={openDiary} tz={tz} />
-          : view === "month" ? <MonthGrid start={start} cursor={cursor} today={today} byDay={byDay} notesByDay={notesByDay} showFootprint={layers.has("note")} onDrop={reschedule} onToggle={toggleDone} onDiary={openDiary} onCreate={createEvent} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />
+          : view === "month" && narrow ? <MonthCompact cursor={cursor} today={today} byDay={byDay} notesByDay={notesByDay} onToggle={toggleDone} onPick={setCursor} onDiary={openDiary} onCreate={() => openCreate(cursor)} tz={tz} />
+          : view === "month" ? <MonthGrid start={start} cursor={cursor} today={today} byDay={byDay} notesByDay={notesByDay} showFootprint={layers.has("note")} onDrop={reschedule} onToggle={toggleDone} onDiary={openDiary} onCreate={openCreate} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />
           : view === "agenda" ? <AgendaList start={start} days={14} today={today} byDay={byDay} notesByDay={notesByDay} onToggle={toggleDone} onDiary={() => void openDiary()} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />
           : <TimeGrid start={start} days={view === "week" ? 7 : 1} today={today} byDay={byDay} notesByDay={notesByDay} onDrop={reschedule} onToggle={toggleDone} onResize={resizeItem} onCreate={createEvent} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />}
       </div>
@@ -586,6 +644,17 @@ export function CalendarPage() {
           onClose={() => setSaveTemplate(false)} />
       </DialogContent>
     </Dialog>
+
+    <CalendarItemEditor
+      target={editor}
+      wsId={wsId}
+      tz={tz}
+      canEdit={panel.canEdit}
+      onClose={closeEditor}
+      onSaved={() => { closeEditor(); void load(); }}
+      onDelete={item => { closeEditor(); void removeItem(item); }}
+      onOpenNote={id => nav(`/w/${wsId}/n/${id}`)}
+    />
   </div></SelectionCtx.Provider></TooltipProvider>;
 }
 
@@ -646,6 +715,7 @@ function MiniMonthJump({ title, cursor, today, onPick }: { title: string; cursor
  */
 type SelectionApi = {
   ids: ReadonlySet<string>;
+  open: (item: CalendarItem) => void;
   /** 返回 true 表示这一次点击被多选吃掉了，调用方不要再当成「聚焦 / 打开」。 */
   click: (item: CalendarItem, e: React.MouseEvent) => boolean;
 };
@@ -655,15 +725,21 @@ function priorityDot(p: number) {
   return p >= 3 ? "bg-destructive" : p === 2 ? "bg-[var(--good)]" : p === 1 ? "bg-muted-foreground" : "";
 }
 
-function ItemChip({ item, tz, onToggle, compact, focused, onFocus }: { item: CalendarItem; tz: string; onToggle: (i: CalendarItem, done: boolean) => void; compact?: boolean; focused?: boolean; onFocus?: () => void }) {
+function ItemChip({ item, tz, onToggle, compact, focused, onFocus, onOpen }: { item: CalendarItem; tz: string; onToggle: (i: CalendarItem, done: boolean) => void; compact?: boolean; focused?: boolean; onFocus?: () => void; onOpen?: (i: CalendarItem) => void }) {
   const at = item.startsAt ?? item.dueAt;
   const overdue = item.status === "open" && at && new Date(at).getTime() < Date.now();
   const selection = useContext(SelectionCtx);
   const selected = !!selection?.ids.has(item.id);
   return <div
+    data-kb-item
     draggable
     onDragStart={e => e.dataTransfer.setData("text/kb-item", JSON.stringify({ id: item.id, occurrenceStart: item.occurrenceStart }))}
-    onClick={e => { if (selection?.click(item, e)) { e.preventDefault(); e.stopPropagation(); return; } onFocus?.(); }}
+    onClick={e => {
+      if (selection?.click(item, e)) { e.preventDefault(); e.stopPropagation(); return; }
+      e.stopPropagation();
+      onFocus?.();
+      (onOpen ?? selection?.open)?.(item);
+    }}
     tabIndex={0}
     onFocus={onFocus}
     aria-selected={selection && selection.ids.size > 0 ? selected : undefined}
@@ -725,9 +801,8 @@ function useDropTarget(onDrop: (payload: DropPayload) => void) {
  * 月视图。格子是「日程的地方」：点空白就地建日程，写日记退到右键菜单（设计 16 §3.2）。
  * 每格能放几条按实测格高算，不写死 3 条——1080p 上一格放得下 5 条，写死 3 条等于凭空多出两行「还有 N 项」。
  */
-function MonthGrid(props: { start: Date; cursor: Date; today: string; byDay: Map<string, CalendarItem[]>; notesByDay: Map<string, Footprint[]>; showFootprint: boolean; onDrop: (i: CalendarItem, d: Date, copy: boolean) => void; onToggle: (i: CalendarItem, done: boolean) => void; onDiary: (d: Date) => void; onCreate: (start: Date, end: Date, title: string) => void; focusKey: string | null; setFocusKey: (k: string | null) => void; tz: string }) {
+function MonthGrid(props: { start: Date; cursor: Date; today: string; byDay: Map<string, CalendarItem[]>; notesByDay: Map<string, Footprint[]>; showFootprint: boolean; onDrop: (i: CalendarItem, d: Date, copy: boolean) => void; onToggle: (i: CalendarItem, done: boolean) => void; onDiary: (d: Date) => void; onCreate: (day: Date) => void; focusKey: string | null; setFocusKey: (k: string | null) => void; tz: string }) {
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [draftKey, setDraftKey] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [perCell, setPerCell] = useState(3);
   // 格高一变（窗口缩放、右栏开合）就重算能放几条
@@ -762,13 +837,9 @@ function MonthGrid(props: { start: Date; cursor: Date; today: string; byDay: Map
         const shown = open ? list : list.slice(0, perCell);
         return <MonthCell key={key} dayKeyStr={key} day={day} outside={outside} isToday={isToday} notes={notes}
           onDiary={() => props.onDiary(day)}
-          onCreate={() => { setDraftKey(key); setExpanded(null); }}
+          onCreate={() => { setExpanded(null); props.onCreate(day); }}
           onDrop={p => { const item = all.find(i => i.id === p.id && i.occurrenceStart === p.occurrenceStart); if (item) props.onDrop(item, day, p.copy); }}>
           {shown.map(it => <ItemChip key={`${it.id}:${it.occurrenceStart}`} item={it} tz={props.tz} onToggle={props.onToggle} compact focused={props.focusKey === `${it.id}:${it.occurrenceStart}`} onFocus={() => props.setFocusKey(`${it.id}:${it.occurrenceStart}`)} />)}
-          {draftKey === key && <MonthDraft
-            onCancel={() => setDraftKey(null)}
-            onSave={title => { setDraftKey(null); props.onCreate(new Date(day.getTime() + 9 * 3600_000), new Date(day.getTime() + 10 * 3600_000), title); }}
-          />}
           {list.length > shown.length && <div className="group/more relative">
             <button onClick={e => { e.stopPropagation(); setExpanded(open ? null : key); }} className="w-full rounded px-1.5 py-0.5 text-left text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground">
               还有 {list.length - shown.length} 项
@@ -788,27 +859,6 @@ function MonthGrid(props: { start: Date; cursor: Date; today: string; byDay: Map
   </div>;
 }
 
-/** 月视图里的建日程小卡片：默认 09:00–10:00，回车即存，Esc 丢弃。和日/周划时段用的是同一套手感。 */
-function MonthDraft({ onSave, onCancel }: { onSave: (title: string) => void; onCancel: () => void }) {
-  return <div className="rounded-md border-2 border-dashed border-ring bg-accent/50 px-1 py-0.5">
-    <div className="text-[10px] tabular-nums text-muted-foreground">09:00–10:00</div>
-    <input
-      autoFocus
-      placeholder="日程标题，回车即存"
-      className="w-full bg-transparent text-[11px] outline-none placeholder:text-muted-foreground/70"
-      onPointerDown={e => e.stopPropagation()}
-      onClick={e => e.stopPropagation()}
-      onBlur={onCancel}
-      onKeyDown={e => {
-        if (e.key === "Escape") { onCancel(); return; }
-        if (e.key !== "Enter") return;
-        const title = e.currentTarget.value.trim();
-        if (title) onSave(title); else onCancel();
-      }}
-    />
-  </div>;
-}
-
 function MonthCell({ day, dayKeyStr, outside, isToday, notes, onDrop, onDiary, onCreate, children }: { day: Date; dayKeyStr: string; outside: boolean; isToday: boolean; notes: Footprint[]; onDrop: (p: DropPayload) => void; onDiary: () => void; onCreate: () => void; children: React.ReactNode }) {
   const [showNotes, setShowNotes] = useState(false);
   const drop = useDropTarget(onDrop);
@@ -824,7 +874,14 @@ function MonthCell({ day, dayKeyStr, outside, isToday, notes, onDrop, onDiary, o
         className={cn("group/cell flex min-h-24 cursor-pointer flex-col gap-0.5 border-b border-r border-border p-1 transition", outside && "bg-muted/20", drop.over && "bg-accent/40 ring-1 ring-inset ring-ring", drop.over === "copy" && "ring-2")}
       >
         <div className="flex items-center gap-1 px-1">
-          <Plus className="size-3 text-muted-foreground opacity-0 transition group-hover/cell:opacity-60" aria-hidden />
+          <button
+            type="button"
+            aria-label={`${label}，新建`}
+            onClick={e => { e.stopPropagation(); onCreate(); }}
+            className="grid size-5 place-items-center rounded text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground group-hover/cell:opacity-100"
+          >
+            <Plus className="size-3" />
+          </button>
           <span className={cn("ml-auto grid size-5 place-items-center rounded-full text-[11px] tabular-nums", isToday ? "bg-destructive font-semibold text-destructive-foreground" : outside ? "text-muted-foreground/50" : "text-muted-foreground")}>{day.getUTCDate()}</span>
         </div>
         {children}
@@ -843,7 +900,7 @@ function MonthCell({ day, dayKeyStr, outside, isToday, notes, onDrop, onDiary, o
   </ContextMenu>;
 }
 
-function MonthCompact(props: { cursor: Date; today: string; byDay: Map<string, CalendarItem[]>; notesByDay: Map<string, Footprint[]>; onToggle: (i: CalendarItem, done: boolean) => void; onPick: (d: Date) => void; onDiary: (d: Date) => void; tz: string }) {
+function MonthCompact(props: { cursor: Date; today: string; byDay: Map<string, CalendarItem[]>; notesByDay: Map<string, Footprint[]>; onToggle: (i: CalendarItem, done: boolean) => void; onPick: (d: Date) => void; onDiary: (d: Date) => void; onCreate: () => void; tz: string }) {
   const first = new Date(Date.UTC(props.cursor.getUTCFullYear(), props.cursor.getUTCMonth(), 1));
   const cells = Array.from({ length: 42 }, (_, i) => addDays(mondayOf(first), i));
   const key = dayKey(props.cursor);
@@ -875,7 +932,8 @@ function MonthCompact(props: { cursor: Date; today: string; byDay: Map<string, C
     <div className="flex-1 space-y-1 p-3">
       <div className="flex items-center gap-2">
         <h2 className="text-sm font-semibold">{props.cursor.getUTCMonth() + 1}月{props.cursor.getUTCDate()}日</h2>
-        <Button size="sm" variant="ghost" className="ml-auto" onClick={() => props.onDiary(props.cursor)}><PenLine />写日记</Button>
+        <Button size="sm" variant="ghost" className="ml-auto" onClick={props.onCreate}><Plus />新建</Button>
+        <Button size="sm" variant="ghost" onClick={() => props.onDiary(props.cursor)}><PenLine />写日记</Button>
       </div>
       {list.map(it => <ItemChip key={`${it.id}:${it.occurrenceStart}`} item={it} tz={props.tz} onToggle={props.onToggle} />)}
       {notes.map(n => <div key={n.id} className="flex items-center gap-1.5 px-1.5 text-xs text-muted-foreground"><FileText className="size-3" />{n.title}</div>)}
@@ -1448,6 +1506,7 @@ export function TodayPage() {
   const [review, setReview] = useState<ReviewData | null>(null);
   const [onThisDay, setOnThisDay] = useState<OnThisDayData | null>(null);
   const [error, setError] = useState("");
+  const [editor, setEditor] = useState<EditorTarget | null>(null);
 
   const load = useCallback(async () => {
     try { setData(await api<TodayData>(`/api/v1/workspaces/${wsId}/today`)); setError(""); }
@@ -1502,18 +1561,18 @@ export function TodayPage() {
         {/* 逾期停在最前面，但不自动搬到今天：让人看见自己欠了什么 */}
         {!!data?.overdue.length && <section className="md:col-span-2 rounded-xl border border-destructive/40 bg-destructive/5 p-3">
           <h2 className="mb-2 text-sm font-semibold text-destructive">逾期 {data.overdue.length}</h2>
-          <div className="space-y-0.5">{data.overdue.map(i => <ItemChip key={i.id} item={i} tz={tz} onToggle={toggle} />)}</div>
+          <div className="space-y-0.5">{data.overdue.map(i => <ItemChip key={i.id} item={i} tz={tz} onToggle={toggle} onOpen={item => setEditor({ mode: "edit", item })} />)}</div>
         </section>}
 
         <section className="rounded-xl border border-border p-3">
           <h2 className="mb-2 flex items-center gap-1.5 text-sm font-semibold"><Inbox className="size-4" />今天要做</h2>
-          {tasks.length ? <div className="space-y-0.5">{tasks.map(i => <ItemChip key={`${i.id}:${i.occurrenceStart}`} item={i} tz={tz} onToggle={toggle} />)}</div>
+          {tasks.length ? <div className="space-y-0.5">{tasks.map(i => <ItemChip key={`${i.id}:${i.occurrenceStart}`} item={i} tz={tz} onToggle={toggle} onOpen={item => setEditor({ mode: "edit", item })} />)}</div>
             : <p className="text-xs text-muted-foreground">今天没有待办。</p>}
         </section>
 
         <section className="rounded-xl border border-border p-3">
           <h2 className="mb-2 flex items-center gap-1.5 text-sm font-semibold"><CalendarDays className="size-4" />今天的日程</h2>
-          {events.length ? <div className="space-y-0.5">{events.map(i => <ItemChip key={`${i.id}:${i.occurrenceStart}`} item={i} tz={tz} onToggle={toggle} />)}</div>
+          {events.length ? <div className="space-y-0.5">{events.map(i => <ItemChip key={`${i.id}:${i.occurrenceStart}`} item={i} tz={tz} onToggle={toggle} onOpen={item => setEditor({ mode: "edit", item })} />)}</div>
             : <p className="text-xs text-muted-foreground">今天没有日程。</p>}
         </section>
 
@@ -1529,9 +1588,27 @@ export function TodayPage() {
         </section>
 
         {review && <WeekReview review={review} />}
-        {onThisDay?.years.length ? <OnThisDay years={onThisDay.years} tz={tz} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} /> : null}
+        {onThisDay?.years.length ? <OnThisDay years={onThisDay.years} tz={tz} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} onOpenItem={item => setEditor({ mode: "edit", item })} /> : null}
       </div>
     </ScrollArea>
+
+    <CalendarItemEditor
+      target={editor}
+      wsId={wsId}
+      tz={tz}
+      canEdit
+      onClose={() => setEditor(null)}
+      onSaved={() => { setEditor(null); void load(); }}
+      onDelete={async item => {
+        setEditor(null);
+        try {
+          await api(`/api/v1/calendar/items/${item.id}`, { method: "DELETE" });
+          toast.success(`已删除「${item.title}」`);
+          await load();
+        } catch (e) { toast.error("删除失败", (e as Error).message); }
+      }}
+      onOpenNote={id => nav(`/w/${wsId}/n/${id}`)}
+    />
   </div>;
 }
 
@@ -1577,7 +1654,7 @@ function WeekReview({ review }: { review: ReviewData }) {
   </section>;
 }
 
-function OnThisDay({ years, tz, onOpenNote }: { years: OnThisDayData["years"]; tz: string; onOpenNote: (id: string) => void }) {
+function OnThisDay({ years, tz, onOpenNote, onOpenItem }: { years: OnThisDayData["years"]; tz: string; onOpenNote: (id: string) => void; onOpenItem?: (item: CalendarItem) => void }) {
   return <section className="rounded-xl border border-border p-3 md:col-span-2">
     <h2 className="mb-2 flex items-center gap-1.5 text-sm font-semibold"><History className="size-4" />去年今日</h2>
     <div className="space-y-3">
@@ -1589,7 +1666,7 @@ function OnThisDay({ years, tz, onOpenNote }: { years: OnThisDayData["years"]; t
             <span className="truncate">{n.title}</span>
             {n.notebook && <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{n.notebook}</span>}
           </button>)}
-          {y.items.map(i => <ItemChip key={`${i.id}:${i.occurrenceStart}`} item={i} tz={tz} onToggle={() => {}} />)}
+          {y.items.map(i => <ItemChip key={`${i.id}:${i.occurrenceStart}`} item={i} tz={tz} onToggle={() => {}} onOpen={onOpenItem} />)}
         </div>
       </div>)}
     </div>
