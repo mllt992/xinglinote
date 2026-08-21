@@ -110,6 +110,9 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | POST | `/api/v1/corrections/:id/review` | accept/reject |
 | GET/POST | `/api/v1/posts` | scope, workspaceId |
 | POST | `/api/v1/posts/:id/like` | |
+| PUT/DELETE | `/api/v1/posts/:id/favorite` | 收藏 / 取消 |
+| GET/POST | `/api/v1/posts/:id/comments` | 一层回复；登录直发，广场访客先审 |
+| POST | `/api/v1/posts/:id/report` | `{ reason, note? }` |
 | POST | `/api/v1/posts/:id/promote` | 转正为笔记 |
 | POST | `/api/v1/notes/:id/excerpt-to-post` | |
 | GET | `/api/v1/moderation/queue` | status=pending \| handled，workspaceId= 限本圈子，scope= 限场景 |
@@ -140,6 +143,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | GET | `/api/v1/workspaces/:id/calendar` | `from`、`to`（ISO）、`layers=task,event,note`；返回已展开重复实例 |
 | GET | `/api/v1/workspaces/:id/calendar/inbox` | 无 `due_at` 的任务 + 按来源笔记分组 |
 | POST | `/api/v1/workspaces/:id/calendar/items` | 建 task / event |
+| GET | `/api/v1/calendar/items/:id` | 单条详情（含 `bodyMd` / `updatedAt` / `canEdit`），给弹窗与 `?item=` 深链 |
 | PATCH | `/api/v1/calendar/items/:id` | 改；带 `ifUnmodifiedSince` 做弱冲突校验，冲突回 409 + 最新对象 |
 | DELETE | `/api/v1/calendar/items/:id` | 软删（`trashed_at`），可撤销 |
 | POST | `/api/v1/calendar/items/:id/complete` | `{ done, occurrenceStart? }`；`source=note` 时回写笔记 `- [x]` |

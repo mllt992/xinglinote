@@ -38,3 +38,17 @@ export function parseVerdict(raw: string): ParsedVerdict | null {
 export function isRisky(parsed: ParsedVerdict, threshold: number) {
   return parsed.verdict === "reject" || (parsed.score !== null && parsed.score >= threshold);
 }
+
+/** 后台审可以等久一点；发布请求不再堵在这次调用上。 */
+export const MODERATION_TIMEOUT_MS = 90_000;
+
+/** 超时、限流、网关挂了值得再试；4xx / 解析失败再试也还是同一句话。 */
+export function isRetryableModerationFailure(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /timeout|aborted|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|network|429|502|503|504/i.test(msg);
+}
+
+/** 文档站 / 泄漏检查认的「对外公开」：作者点了发布，且没在审核中、没被驳回。 */
+export function noteIsPublic(note: { published: boolean; moderationStatus?: string | null; trashedAt?: Date | null }) {
+  return !!note.published && (note.moderationStatus ?? "none") === "none" && !note.trashedAt;
+}

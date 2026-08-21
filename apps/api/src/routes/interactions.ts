@@ -5,7 +5,7 @@ import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { z } from "zod";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { comments, corrections, notebooks, notes, noteVersions, notifications, shareLinks, users, workspaceMembers } from "../db/schema.ts";
+import { comments, corrections, notebooks, notes, noteVersions, notifications, posts, shareLinks, users, workspaceMembers } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { limit } from "../lib/rate-limit.ts";
@@ -17,12 +17,13 @@ import { writeNoteFile } from "../lib/files.ts";
 import { rebuildLinks } from "../lib/links.ts";
 import { assertUserStorage, textBytes } from "../lib/quota.ts";
 import { noteAccess } from "../lib/note-access.ts";
+import { assertCanModeratePost } from "../lib/post-access.ts";
 
 export const interactionRoutes = new Hono();
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 async function publicChannel(c:Parameters<typeof getCookie>[0],noteId:string,shareToken?: string, siteNotebookId?: string) {
   if (shareToken) { const [s] = await db.select().from(shareLinks).where(eq(shareLinks.token, shareToken)); if (!s || s.status !== "active" || (s.targetType!=="note"&&s.targetType!=="heading")||s.targetId!==noteId||(s.expiresAt && s.expiresAt.getTime() <= Date.now())) throw fail("NOT_FOUND", "分享不存在");if(s.passwordHash&&!shareCookieValid(getCookie(c,shareCookieName(s.token)),s.id,s.passwordHash))throw fail("FORBIDDEN","请先解锁分享"); return { shareId: s.id, siteNotebookId: null, comments: s.commentsEnabled, corrections: s.correctionsEnabled }; }
-  if (siteNotebookId) {const [nb]=await db.select().from(notebooks).where(eq(notebooks.id,siteNotebookId));const[note]=await db.select().from(notes).where(eq(notes.id,noteId));if(!nb?.sitePublished||nb.trashedAt||!note||note.notebookId!==nb.id||!note.published||note.trashedAt)throw fail("NOT_FOUND","文档站内容不存在");return { shareId: null, siteNotebookId, comments: true, corrections: true };}
+  if (siteNotebookId) {const [nb]=await db.select().from(notebooks).where(eq(notebooks.id,siteNotebookId));const[note]=await db.select().from(notes).where(eq(notes.id,noteId));if(!nb?.sitePublished||nb.trashedAt||!note||note.notebookId!==nb.id||!note.published||note.moderationStatus!=="none"||note.trashedAt)throw fail("NOT_FOUND","文档站内容不存在");return { shareId: null, siteNotebookId, comments: true, corrections: true };}
   throw fail("VALIDATION", "缺少公开来源");
 }
 /**
@@ -70,7 +71,23 @@ interactionRoutes.get("/notes/:id/interactions", async c => {
   const fixes=await db.select().from(corrections).where(and(eq(corrections.noteId,noteId),handled?ne(corrections.status,"pending"):eq(corrections.status,"pending"))).orderBy(desc(corrections.createdAt)).limit(handled?50:200);
   return ok(c,{comments:cs,corrections:fixes});
 });
-interactionRoutes.patch("/comments/:id/review", async c => { const [comment]=await db.select().from(comments).where(eq(comments.id,c.req.param("id"))); if(!comment)throw fail("NOT_FOUND","评论不存在"); await editor(c,comment.targetId); const body=z.object({status:z.enum(["visible","rejected","hidden"])}).parse(await c.req.json()); await db.update(comments).set({status:body.status}).where(eq(comments.id,comment.id)); return ok(c,{}); });
+interactionRoutes.patch("/comments/:id/review", async c => {
+  const [comment]=await db.select().from(comments).where(eq(comments.id,c.req.param("id")));
+  if(!comment)throw fail("NOT_FOUND","评论不存在");
+  const u=await currentUser(c);if(!u)throw fail("UNAUTHENTICATED","未登录");
+  const body=z.object({status:z.enum(["visible","rejected","hidden"])}).parse(await c.req.json());
+  const ownHide=body.status==="hidden"&&comment.authorUserId===u.id;
+  if(!ownHide){
+    if(comment.targetType==="note")await editor(c,comment.targetId);
+    else{
+      const [p]=await db.select().from(posts).where(eq(posts.id,comment.targetId));
+      if(!p)throw fail("NOT_FOUND","动态不存在");
+      await assertCanModeratePost(p,u);
+    }
+  }
+  await db.update(comments).set({status:body.status}).where(eq(comments.id,comment.id));
+  return ok(c,{});
+});
 interactionRoutes.patch("/corrections/:id/review", async c => { const [fix]=await db.select().from(corrections).where(eq(corrections.id,c.req.param("id"))); if(!fix)throw fail("NOT_FOUND","纠错不存在"); const {u,n}=await editor(c,fix.noteId); const body=z.object({action:z.enum(["accept","reject"]),suggested:z.string().max(20000).optional()}).parse(await c.req.json());const applied=body.suggested??fix.suggested; if(body.action==="reject"){await db.update(corrections).set({status:"rejected",reviewedAt:new Date(),reviewedBy:u.id}).where(eq(corrections.id,fix.id));return ok(c,{status:"rejected"});} const idx=n.bodyMd.indexOf(fix.originalExcerpt); if(idx<0||hash(n.bodyMd.slice(idx,idx+fix.originalExcerpt.length))!==fix.originalHash){await db.update(corrections).set({status:"stale",reviewedAt:new Date(),reviewedBy:u.id}).where(eq(corrections.id,fix.id));return ok(c,{status:"stale"});} const bodyMd=n.bodyMd.slice(0,idx)+applied+n.bodyMd.slice(idx+fix.originalExcerpt.length); await assertUserStorage(n.createdBy,textBytes(n.title,bodyMd)-textBytes(n.title,n.bodyMd)); const [saved]=await db.update(notes).set({bodyMd,version:n.version+1,updatedBy:u.id,updatedAt:new Date()}).where(and(eq(notes.id,n.id),eq(notes.version,n.version))).returning();if(!saved)throw fail("CONFLICT_VERSION","笔记刚刚被其他人修改，请重新审核"); await db.insert(noteVersions).values({noteId:n.id,version:saved.version,title:saved.title,bodyMd:saved.bodyMd,editorId:u.id,source:"correction"}); await db.update(corrections).set({status:"accepted",reviewedAt:new Date(),reviewedBy:u.id}).where(eq(corrections.id,fix.id)); await writeNoteFile({...saved,noteId:saved.id}); await rebuildLinks(saved.id,saved.workspaceId,saved.bodyMd); return ok(c,{status:"accepted",version:saved.version}); });
 interactionRoutes.get("/public/captcha", async c => { limit(`captcha:${clientIp(c)}`, 30, 60_000); return ok(c, issueChallenge()); });
 interactionRoutes.patch("/public/comments/:id", async c => {

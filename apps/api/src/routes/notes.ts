@@ -13,7 +13,7 @@ import { backlinksFor, rebuildLinks, snippetAround } from "../lib/links.ts";
 import { assertUserStorage, textBytes } from "../lib/quota.ts";
 import { noteAccess } from "../lib/note-access.ts";
 import { notebookAccess } from "../lib/notebook-access.ts";
-import { instanceConfig, lastReviewedAt, moderate, moderationOn, pendingMessage, recordReview } from "../lib/moderation.ts";
+import { attachNoteModeration, instanceConfig, lastReviewedAt, moderationOn, queueReview, withdrawOpenReviews } from "../lib/moderation.ts";
 import { notebookVisibleTo } from "../lib/notebook-access.ts";
 import { moveNotebook } from "../lib/notebook-move.ts";
 import { purgeFolder,purgeNotebook,purgeNotes,restoreFolder,restoreFolderId,restoreNotebook,restoreTitle,trashFolder,trashNotebook } from "../lib/trash.ts";
@@ -196,7 +196,7 @@ knowledge.get("/notes/:id", async (c) => {
   const user = await requireUser(c);
   const {note}=await noteAccess(c.req.param("id"),user.id,"read");
   let canEdit=true;try{await noteAccess(note.id,user.id,"edit");}catch{canEdit=false;}
-  return ok(c, { ...note, canEdit });
+  return ok(c, { ...await attachNoteModeration(note), canEdit });
 });
 
 /**
@@ -267,20 +267,27 @@ knowledge.patch("/notes/:id", async (c) => {
   await assertUserStorage(note.createdBy, textBytes(nextTitle, nextBody) - textBytes(note.title, note.bodyMd));
   // 公开文章的审核：翻成 published 时必审；已公开的文章改了正文也要重审，
   // 否则先发一篇干净的、再改成违规就绕过去了。但自动保存很密，同一篇 60 秒内只审一次。
+  // 审是后台跑的：这里只把状态落成审核中，HTTP 马上成功返回。
   const settings = await instanceConfig();
-  const wantsPublish = body.published === true && !note.published;
-  const stillPublic = note.published && (body.published ?? true);
+  const nextPublished = body.published ?? note.published;
+  const unpublish = body.published === false && note.published;
+  const wantsPublish = body.published === true && (!note.published || note.moderationStatus === "rejected");
+  const stillPublic = note.published && note.moderationStatus === "none" && nextPublished;
+  const alreadyHeld = note.published && note.moderationStatus === "pending_review" && nextPublished;
   const contentChanged = nextTitle !== note.title || nextBody !== note.bodyMd;
-  let verdict = null;
-  if (moderationOn(settings, "article") && (wantsPublish || (stillPublic && contentChanged))) {
-    const last = wantsPublish ? null : await lastReviewedAt("note", note.id);
-    if (!last || Date.now() - new Date(last).getTime() > 60000) verdict = await moderate(`${nextTitle}\n\n${nextBody}`, "article", settings);
+  let shouldReview = false;
+  if (moderationOn(settings, "article") && nextPublished && !unpublish) {
+    if (wantsPublish) shouldReview = true;
+    else if (stillPublic && contentChanged) {
+      const last = await lastReviewedAt("note", note.id);
+      if (!last || Date.now() - new Date(last).getTime() > 60000) shouldReview = true;
+    } else if (alreadyHeld && contentChanged) shouldReview = true;
   }
-  const held = verdict?.decision === "review";
   const next = {
     title: nextTitle,
     bodyMd: nextBody,
-    published: held ? false : (body.published ?? note.published),
+    published: nextPublished,
+    moderationStatus: unpublish ? "none" : shouldReview ? "pending_review" : (note.moderationStatus ?? "none"),
     aiIndex: body.aiIndex ?? note.aiIndex,
     tags: body.tags ? [...new Set(body.tags.map(t => t.trim()).filter(Boolean))] : (note.tags as string[]),
     version: note.version + 1,
@@ -298,11 +305,13 @@ knowledge.patch("/notes/:id", async (c) => {
   });
   await writeNoteFile({ ...saved, noteId: saved.id });
   await rebuildLinks(saved.id, saved.workspaceId, saved.bodyMd);
-  if (verdict) await recordReview({ targetType: "note", targetId: saved.id, scope: "article", workspaceId: saved.workspaceId, authorUserId: user.id, snapshot: `${saved.title}\n\n${saved.bodyMd}`, verdict });
+  if (unpublish) await withdrawOpenReviews("note", saved.id);
+  else if (shouldReview) await queueReview({ targetType: "note", targetId: saved.id, scope: "article", workspaceId: saved.workspaceId, authorUserId: user.id, snapshot: `${saved.title}\n\n${saved.bodyMd}` });
   // canEdit 必须跟着回：前端拿这份响应整个换掉手上的笔记对象，少一个字段就等于「这篇变只读了」
   // ——编辑器会锁上、协同房间会被拆掉，而且它的 save() 见 canEdit 假就直接 return，之后连保存都停了，
   // 只能刷新页面才好。走到这里 noteAccess(…, "edit") 已经过了，此刻就是能编的。
-  return ok(c, { ...saved, canEdit: true, moderation: { held: !!held, message: held ? pendingMessage(verdict!) : null } });
+  const dto = await attachNoteModeration(saved);
+  return ok(c, { ...dto, canEdit: true, moderation: { ...dto.moderation, submitted: wantsPublish || (stillPublic && shouldReview) } });
 });
 
 knowledge.post("/workspaces", async (c) => {

@@ -130,6 +130,7 @@ const statements = [
     sort_key integer NOT NULL DEFAULT 0,
     body_md text NOT NULL DEFAULT '',
     published boolean NOT NULL DEFAULT false,
+    moderation_status text NOT NULL DEFAULT 'none',
     ai_index boolean NOT NULL DEFAULT true,
     version integer NOT NULL DEFAULT 1,
     created_by uuid NOT NULL REFERENCES users(id),
@@ -186,6 +187,21 @@ const statements = [
   `CREATE TABLE IF NOT EXISTS post_reactions (
     post_id uuid NOT NULL REFERENCES posts(id) ON DELETE CASCADE, user_id uuid NOT NULL REFERENCES users(id), kind text NOT NULL DEFAULT 'like', created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(post_id,user_id,kind)
   )`,
+  `CREATE TABLE IF NOT EXISTS post_favorites (
+    user_id uuid NOT NULL REFERENCES users(id), post_id uuid NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(user_id, post_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS content_reports (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    target_type text NOT NULL, target_id uuid NOT NULL,
+    reporter_id uuid NOT NULL REFERENCES users(id),
+    reason text NOT NULL, note text,
+    status text NOT NULL DEFAULT 'pending',
+    reviewer_id uuid REFERENCES users(id), review_note text,
+    created_at timestamptz NOT NULL DEFAULT now(), reviewed_at timestamptz
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS content_reports_one_idx ON content_reports (reporter_id, target_type, target_id)`,
+  `CREATE INDEX IF NOT EXISTS content_reports_pending_idx ON content_reports (status, created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS comments (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), target_type text NOT NULL, target_id uuid NOT NULL, share_id uuid, site_notebook_id uuid, parent_id uuid,
     author_user_id uuid, guest_name text, guest_email text, body text NOT NULL, status text NOT NULL DEFAULT 'pending', created_at timestamptz NOT NULL DEFAULT now(), edited_at timestamptz
@@ -358,6 +374,7 @@ const statements = [
   )`,
   `CREATE INDEX IF NOT EXISTS moderation_reviews_pending_idx ON moderation_reviews (status, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS moderation_reviews_target_idx ON moderation_reviews (target_type, target_id)`,
+  `ALTER TABLE notes ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'none'`,
 
   // —— 日历 P2：Web Push 与模板 ——
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS push_enabled boolean NOT NULL DEFAULT false`,

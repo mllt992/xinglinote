@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
@@ -7,7 +7,7 @@ import { auditLogs, moderationReviews, notes, notifications, posts, users, works
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
-import { SCOPE_LABEL, type ModerationScope } from "../lib/moderation.ts";
+import { SCOPE_LABEL, settleReports, type ModerationScope } from "../lib/moderation.ts";
 import { writeNoteFile } from "../lib/files.ts";
 
 export const moderationRoutes = new Hono();
@@ -35,7 +35,7 @@ moderationRoutes.get("/moderation/queue", async c => {
   const rows = await db.select().from(moderationReviews).where(and(
     wsId ? eq(moderationReviews.workspaceId, wsId) : undefined,
     scope ? eq(moderationReviews.scope, scope) : undefined,
-    handled ? ne(moderationReviews.status, "pending") : eq(moderationReviews.status, "pending"),
+    handled ? inArray(moderationReviews.status, ["approved", "rejected"]) : eq(moderationReviews.status, "pending"),
   )).orderBy(desc(moderationReviews.createdAt)).limit(handled ? 100 : 200);
   const people = rows.length ? await db.select().from(users).where(inArray(users.id, [...new Set(rows.flatMap(r => [r.authorUserId, r.reviewerId].filter(Boolean) as string[]))])) : [];
   const spaces = rows.some(r => r.workspaceId) ? await db.select().from(workspaces) : [];
@@ -69,7 +69,10 @@ moderationRoutes.patch("/moderation/:id", async c => {
     const [n] = await db.select().from(notes).where(eq(notes.id, item.targetId));
     if (!n || n.trashedAt) throw fail("NOT_FOUND", "笔记已经不在了");
     if (pass) {
-      const [saved] = await db.update(notes).set({ published: true, updatedAt: new Date() }).where(eq(notes.id, n.id)).returning();
+      const [saved] = await db.update(notes).set({ published: true, moderationStatus: "none", updatedAt: new Date() }).where(eq(notes.id, n.id)).returning();
+      await writeNoteFile({ ...saved, noteId: saved.id });
+    } else {
+      const [saved] = await db.update(notes).set({ published: false, moderationStatus: "rejected", updatedAt: new Date() }).where(eq(notes.id, n.id)).returning();
       await writeNoteFile({ ...saved, noteId: saved.id });
     }
   }
@@ -77,6 +80,7 @@ moderationRoutes.patch("/moderation/:id", async c => {
   await db.update(moderationReviews).set({
     status: pass ? "approved" : "rejected", reviewerId: u.id, reviewNote: body.note?.trim() || null, reviewedAt: new Date(),
   }).where(eq(moderationReviews.id, item.id));
+  await settleReports(item.targetType, item.targetId, pass ? "dismissed" : "accepted", u.id);
 
   const label = SCOPE_LABEL[item.scope as ModerationScope] ?? item.scope;
   await db.insert(notifications).values({

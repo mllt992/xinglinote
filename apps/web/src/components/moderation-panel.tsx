@@ -19,7 +19,7 @@ const CATEGORIES: Array<[string, string]> = [
 const SCENES: Array<[string, string, string]> = [
   ["moderationSquare", "广场动态", "发到首页时间线的公开帖。"],
   ["moderationCircle", "圈子动态", "工作区内部的帖子，只有成员看得到，通常可以不审。"],
-  ["moderationArticle", "公开文章", "笔记发布到文档站。已公开的文章改了正文也会重审，同一篇 60 秒内只审一次。"],
+  ["moderationArticle", "公开文章", "笔记发布到文档站。发布当场成功，审核中对外不可见；已公开的文章改了正文也会重审，同一篇 60 秒内只审一次。"],
 ];
 
 function Row({ title, description, children }: { title: string; description: string; children: ReactNode }) {
@@ -83,7 +83,7 @@ export function ModerationConfig({ settings, onSaved }: { settings: Record<strin
         }),
       });
       await onSaved();
-      toast.success("审核配置已保存", f.moderationEnabled ? "新发的内容会先过一遍 AI。" : "审核已关闭，之后发布的内容直接公开。");
+      toast.success("审核配置已保存", f.moderationEnabled ? "新发的内容会先提交成功，再后台过一遍 AI。" : "审核已关闭，之后发布的内容直接公开。");
     } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   }
 
@@ -146,7 +146,7 @@ type Item = {
   status: string; reviewer: string | null; reviewNote: string | null; reviewedAt: string | null; createdAt: string;
 };
 
-const VERDICT_LABEL: Record<string, string> = { pass: "AI 放行", reject: "AI 判定不通过", error: "AI 没审成", skipped: "未审" };
+const VERDICT_LABEL: Record<string, string> = { pass: "AI 放行", reject: "AI 判定不通过", error: "AI 没审成", skipped: "未审", queued: "审核中", running: "审核中", report: "用户举报" };
 const STATUS_LABEL: Record<string, string> = { pending: "待人工审核", approved: "已通过", rejected: "已驳回" };
 const catLabel = (key: string) => CATEGORIES.find(([k]) => k === key)?.[1] ?? key;
 

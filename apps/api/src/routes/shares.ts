@@ -308,6 +308,6 @@ shareRoutes.get("/public/sites/:wsSlug/:nbSlug", async (c) => {
   if (!ws) throw fail("NOT_FOUND", "站点不存在");
   const [nb] = await db.select().from(notebooks).where(and(eq(notebooks.workspaceId, ws.id), eq(notebooks.slug, c.req.param("nbSlug"))));
   if (!nb?.sitePublished || nb.trashedAt) throw fail("NOT_FOUND", "站点不存在");
-  const list = await db.select().from(notes).where(and(eq(notes.notebookId, nb.id), eq(notes.published, true), isNull(notes.trashedAt)));
+  const list = await db.select().from(notes).where(and(eq(notes.notebookId, nb.id), eq(notes.published, true), eq(notes.moderationStatus, "none"), isNull(notes.trashedAt)));
   return ok(c, { workspace: ws.name, notebook: nb.title, notebookId: nb.id, accent: nb.siteAccent, notes: list.map(n => ({ id: n.id, title: n.title, bodyMd: n.bodyMd, updatedAt: n.updatedAt })) });
 });

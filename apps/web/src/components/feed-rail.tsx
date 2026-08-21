@@ -52,7 +52,7 @@ export function SquareRail({ posts, me, homeWsId, onOpenNote, onNav }: { posts: 
   const { authors, cited } = useFeedDigest(posts);
   return <div className={rail}>
     {me === null && <RailCard title="加入这个实例">
-      <p className="text-xs leading-5 text-muted-foreground">登录后可以发动态、点赞，也能把值得留下的想法转正成笔记。</p>
+      <p className="text-xs leading-5 text-muted-foreground">登录后可以发动态、评论、收藏，也能把值得留下的想法转正成笔记。</p>
       <div className="mt-3 flex gap-2"><Button size="sm" onClick={() => onNav("/login")}>登录</Button><Button size="sm" variant="ghost" onClick={() => onNav("/register")}>注册</Button></div>
     </RailCard>}
     {authors.length > 0 && <RailCard title="最近活跃">

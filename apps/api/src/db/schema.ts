@@ -190,6 +190,8 @@ export const notes = pgTable("notes", {
   sortKey: integer("sort_key").notNull().default(0),
   bodyMd: text("body_md").notNull().default(""),
   published: boolean("published").notNull().default(false),
+  /** none = 对外可公开；pending_review / rejected 时文档站不列这篇。 */
+  moderationStatus: text("moderation_status").notNull().default("none"),
   aiIndex: boolean("ai_index").notNull().default(true),
   version: integer("version").notNull().default(1),
   tags: jsonb("tags").notNull().default([]),
@@ -279,6 +281,25 @@ export const moderationReviews = pgTable("moderation_reviews", {
 });
 
 export const postReactions = pgTable("post_reactions", { postId: uuid("post_id").notNull().references(() => posts.id), userId: uuid("user_id").notNull().references(() => users.id), kind: text("kind").notNull().default("like"), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull() }, t => [primaryKey({columns:[t.postId,t.userId,t.kind]})]);
+export const postFavorites = pgTable("post_favorites", {
+  userId: uuid("user_id").notNull().references(() => users.id),
+  postId: uuid("post_id").notNull().references(() => posts.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, t => [primaryKey({ columns: [t.userId, t.postId] })]);
+/** 用户举报。一期只挂动态；进人工队列见设计 18。同一人同一对象只记一条。 */
+export const contentReports = pgTable("content_reports", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  targetType: text("target_type").notNull(),
+  targetId: uuid("target_id").notNull(),
+  reporterId: uuid("reporter_id").notNull().references(() => users.id),
+  reason: text("reason").notNull(),
+  note: text("note"),
+  status: text("status").notNull().default("pending"),
+  reviewerId: uuid("reviewer_id").references(() => users.id),
+  reviewNote: text("review_note"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+});
 
 export const comments = pgTable("comments", {
   id: uuid("id").defaultRandom().primaryKey(), targetType: text("target_type").notNull(), targetId: uuid("target_id").notNull(),

@@ -5,7 +5,7 @@ import { AppError, fail } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { env } from "../env.ts";
 import { auditLogs,calendarItems,calendarOverrides,folders,links,mcpDailyUsage,mcpTokens,notebooks,notes,noteVersions,posts,users,workspaces } from "../db/schema.ts";
-import { ok } from "../http.ts";import { currentUser } from "../lib/session.ts";import { hashSecret,secretHashes,secureToken } from "../lib/tokens.ts";import { memberRole } from "../lib/workspace.ts";import { writeNoteFile } from "../lib/files.ts";import { rebuildLinks } from "../lib/links.ts";import { assertUserStorage,textBytes } from "../lib/quota.ts";import { limit } from "../lib/rate-limit.ts";import { noteAccess } from "../lib/note-access.ts";import { askKnowledge } from "../lib/knowledge-ai.ts";import { notebookAccess } from "../lib/notebook-access.ts";import { moderate,pendingMessage,recordReview } from "../lib/moderation.ts";import { completeCalendarItem,DEFAULT_TZ,occurrencesOf,startOfLocalDay } from "../lib/calendar.ts";
+import { ok } from "../http.ts";import { currentUser } from "../lib/session.ts";import { hashSecret,secretHashes,secureToken } from "../lib/tokens.ts";import { memberRole } from "../lib/workspace.ts";import { writeNoteFile } from "../lib/files.ts";import { rebuildLinks } from "../lib/links.ts";import { assertUserStorage,textBytes } from "../lib/quota.ts";import { limit } from "../lib/rate-limit.ts";import { noteAccess } from "../lib/note-access.ts";import { askKnowledge } from "../lib/knowledge-ai.ts";import { notebookAccess } from "../lib/notebook-access.ts";import { instanceConfig,moderationOn,queueReview } from "../lib/moderation.ts";import { completeCalendarItem,DEFAULT_TZ,occurrencesOf,startOfLocalDay } from "../lib/calendar.ts";
 export const mcpRoutes=new Hono();
 type Ctx=Parameters<typeof currentUser>[0];
 async function user(c:Ctx){const u=await currentUser(c);if(!u)throw fail("UNAUTHENTICATED","未登录");return u;}
@@ -87,10 +87,10 @@ else if(name==="trash_note"){requireWrite(a,true);if(!a.t.allowDelete)throw fail
  if(b.scope==="workspace"&&ws2?.frozen)throw fail("FORBIDDEN","工作区已冻结，暂时只读");
  // MCP 也是发帖入口，跟 HTTP 那条走同一遍审核（设计 18 §1）。这里不审，等于给自动化留了个绕过口子。
  const mscope=b.scope==="public"?"square":"circle";
- const verdict=await moderate(b.body,mscope);const held=verdict.decision==="review";
+ const msettings=await instanceConfig();const held=moderationOn(msettings,mscope);
  const[post]=await db.insert(posts).values({authorUserId:a.u.id,workspaceId:b.scope==="workspace"?a.t.workspaceId:null,visibility:b.scope==="public"?"public":"workspace",body:b.body,noteId:b.note_id??null,status:held?"pending_review":"visible"}).returning();
- await recordReview({targetType:"post",targetId:post.id,scope:mscope,workspaceId:post.workspaceId,authorUserId:a.u.id,snapshot:b.body,verdict});
- result={id:post.id,scope:b.scope,status:post.status,moderation_message:held?pendingMessage(verdict):null};}
+ const mod=held?await queueReview({targetType:"post",targetId:post.id,scope:mscope,workspaceId:post.workspaceId,authorUserId:a.u.id,snapshot:b.body}):{held:false,queued:false,message:null};
+ result={id:post.id,scope:b.scope,status:post.status,moderation_message:mod.message};}
 else if(name==="list_tasks"||name==="list_events"){const kind=name==="list_tasks"?"task":"event";
  const b=z.object({from:z.string().datetime().optional(),to:z.string().datetime().optional(),status:z.enum(["open","done","all"]).default(name==="list_tasks"?"open":"all"),assignee:z.string().max(40).optional(),include_inbox:zbool().default(true),limit:zint().min(1).max(200).default(200)}).parse(x);
  // 默认窗口「今天起 14 天」（架构 03 §5）：从当地日历日 00:00 起，否则今天早些时候到期的会被切掉
