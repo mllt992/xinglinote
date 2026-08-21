@@ -4,7 +4,7 @@ import * as Avatar from "@radix-ui/react-avatar";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
   AlertCircle, Archive, Bot, CalendarDays, Check, ChevronDown, ChevronRight, Circle, FilePlus2, Folder,
-  FolderPlus, Globe2, List, MessageSquare, Link2, Lock, LogOut, MoreHorizontal, Notebook, Paintbrush, PanelRight,
+  FolderInput, FolderPlus, Globe2, List, MessageSquare, Link2, Lock, LogOut, MoreHorizontal, Notebook, Paintbrush, PanelRight,
   Pencil, Plus, RotateCcw, Search, Star, Settings, Share2, Sparkles, Sun, Trash2, Users, X, Copy, ExternalLink, Upload, Paperclip, Download,
   Keyboard, Maximize2, Minimize2, PanelLeft, PenLine, Terminal, Type, Workflow,
 } from "lucide-react";
@@ -263,6 +263,68 @@ function NotebookAccessDialog({notebook,workspaceId,open,onOpenChange,onSaved}:{
   </DialogContent></Dialog>;
 }
 
+/**
+ * 把整本笔记本搬到另一个工作区。
+ *
+ * 只列「我是 owner / admin 且没冻结」的工作区——目标区收不下的话，
+ * 与其让人选完再吃一个 403，不如一开始就不给选。
+ *
+ * 后果写在按钮上方而不是塞进 toast：文档站地址会变、白名单里不在目标区的人会被摘掉，
+ * 这两条都是点下去之后才发现就晚了的事。
+ */
+function MoveNotebookDialog({ notebook, spaces, currentWorkspaceId, onOpenChange, onMoved }: {
+  notebook: Nb | null;
+  spaces: Ws[];
+  currentWorkspaceId?: string;
+  onOpenChange: (v: boolean) => void;
+  onMoved: (nb: Nb, target: Ws, moved: { notes: number; droppedMembers: number; slugChanged: boolean }) => void;
+}) {
+  const [target, setTarget] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const options = spaces.filter(w => w.id !== currentWorkspaceId && (w.role === "owner" || w.role === "admin") && !w.frozen);
+  useEffect(() => { setTarget(""); setErr(""); }, [notebook?.id]);
+  if (!notebook) return null;
+
+  async function submit() {
+    if (!notebook || !target) return;
+    setBusy(true); setErr("");
+    try {
+      const saved = await api<Nb & { moved: { notes: number; droppedMembers: number; slugChanged: boolean } }>(
+        `/api/v1/notebooks/${notebook.id}/move`, { method: "POST", body: JSON.stringify({ workspaceId: target }) });
+      onOpenChange(false);
+      onMoved(saved, options.find(w => w.id === target)!, saved.moved);
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  return <Dialog open={!!notebook} onOpenChange={onOpenChange}><DialogContent>
+    <DialogHeader><DialogTitle>移动《{notebook.title}》</DialogTitle>
+      <DialogDescription>整本连同目录、笔记、附件、分享链接和日历上的任务一起搬走，回收站里的内容也跟着走。</DialogDescription></DialogHeader>
+    {options.length === 0
+      ? <p className="rounded-xl border p-4 text-sm text-muted-foreground">没有可以搬过去的工作区。你得是目标工作区的所有者或管理员，而且它没有被冻结。</p>
+      : <div className="grid gap-1.5">
+        {options.map(w => (
+          <label key={w.id} className={cn("flex cursor-pointer items-center gap-3 rounded-xl border p-3", target === w.id ? "border-primary bg-primary/5" : "border-border")}>
+            <input type="radio" name="move-notebook-target" checked={target === w.id} onChange={() => setTarget(w.id)} />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">{w.name}</span>
+            <span className="text-xs text-muted-foreground">{w.kind === "personal" ? "个人" : w.role === "owner" ? "所有者" : "管理员"}</span>
+          </label>
+        ))}
+      </div>}
+    {options.length > 0 && <ul className="space-y-1 text-xs text-muted-foreground">
+      <li>· 已发布的文档站地址会变，旧链接会失效；分享链接不受影响。</li>
+      <li>· 白名单里没加入目标工作区的人会被摘掉，本区成员就此看不到这本了。</li>
+      <li>· AI 索引会在目标工作区按它自己的模型重建。</li>
+    </ul>}
+    <FormError>{err}</FormError>
+    <div className="flex justify-end gap-2">
+      <Button variant="ghost" onClick={() => onOpenChange(false)}>取消</Button>
+      <Button disabled={busy || !target} onClick={() => void submit()}>{busy ? "移动中…" : "移动"}</Button>
+    </div>
+  </DialogContent></Dialog>;
+}
+
 /** 顶栏账号菜单。笔记、圈子、广场三处挂的是同一个，换个页面不会突然少掉半套入口。
     广场没有 wsId，就退回最近待过的工作区；连那个都没有时，跟工作区绑定的几项直接不出现，而不是给一个点了报错的链接。 */
 function AccountMenu({ me, wsId }: { me: Me | null | undefined; wsId?: string }) {
@@ -286,7 +348,7 @@ function Workspace() {
   const [note, setNote] = useState<NoteDto | null>(null); const noteRef = useRef<NoteDto | null>(null); const saveTimer = useRef<number | null>(null); const [status, setStatus] = useState("就绪"); const [statusErr, setStatusErr] = useState(false);
   /** 编辑器状态条：dirty / saving / saved / conflict（规范 §11.4）。冲突与保存失败必须和「已保存」看得出区别。 */
   const say = (text: string, error = false) => { setStatus(text); setStatusErr(error); };
-  const [search, setSearch] = useState(""); const [hits, setHits] = useState<Hit[]>([]); const [allSpaces, setAllSpaces] = useState(false); const [titleOnly, setTitleOnly] = useState(false); const [backlinks, setBacklinks] = useState<Array<{ id: string; title: string; snippet: string }>>([]); const [atts, setAtts] = useState<Att[]>([]); const [rail, setRailState] = useState<RailTab | null>(loadRailTab); const [create, setCreate] = useState<CreateKind>(null);  const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null); const [showImport, setShowImport] = useState(false); const [favorited, setFavorited] = useState(false); const [viewers, setViewers] = useState<string[]>([]); const [quickOpen, setQuickOpen] = useState(false);  const[showAsk,setShowAsk]=useState(false); const [showNotebookAccess,setShowNotebookAccess]=useState(false); const [site, setSite] = useState<{ published: boolean; slug: string } | null>(null);
+  const [search, setSearch] = useState(""); const [hits, setHits] = useState<Hit[]>([]); const [allSpaces, setAllSpaces] = useState(false); const [titleOnly, setTitleOnly] = useState(false); const [backlinks, setBacklinks] = useState<Array<{ id: string; title: string; snippet: string }>>([]); const [atts, setAtts] = useState<Att[]>([]); const [rail, setRailState] = useState<RailTab | null>(loadRailTab); const [create, setCreate] = useState<CreateKind>(null);  const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null); const [showImport, setShowImport] = useState(false); const [favorited, setFavorited] = useState(false); const [viewers, setViewers] = useState<string[]>([]); const [quickOpen, setQuickOpen] = useState(false);  const[showAsk,setShowAsk]=useState(false); const [showNotebookAccess,setShowNotebookAccess]=useState(false); const [moveNb,setMoveNb]=useState<Nb|null>(null); const [site, setSite] = useState<{ published: boolean; slug: string } | null>(null);
   const activeWs = spaces.find(x => x.id === wsId); const activeNb = nbs.find(x => x.id === nbId);
 
   useQuickOpenHotkey(setQuickOpen);
@@ -441,6 +503,18 @@ function Workspace() {
       }
       toast.success(`已将《${nb.title}》移到回收站`);
     } catch (e) { toast.error("删除笔记本失败", (e as Error).message); }
+  }
+  /** 搬得动的前提：本区管理员 + 至少还有一个我管得了的、没冻结的工作区可以落脚。 */
+  const canMoveNotebook = canDeleteNotebook && spaces.some(w => w.id !== wsId && (w.role === "owner" || w.role === "admin") && !w.frozen);
+  /** 搬走之后这本就不在当前工作区了：从侧栏摘掉，编辑区停在它的笔记上也要退回去。 */
+  function notebookMoved(nb: Nb, target: Ws, moved: { notes: number; droppedMembers: number; slugChanged: boolean }) {
+    const remaining = nbs.filter(x => x.id !== nb.id);
+    setNbs(remaining);
+    if (nbId === nb.id) { setNbId(remaining[0]?.id); if (noteId) nav(`/w/${wsId}`); }
+    const notes = [`${moved.notes} 篇笔记已经在《${target.name}》里`];
+    if (moved.droppedMembers) notes.push(`${moved.droppedMembers} 位白名单成员因为不在目标工作区被摘掉`);
+    if (moved.slugChanged) notes.push("目标工作区已有同名地址，文档站换了新地址");
+    toast.success(`已把《${nb.title}》移到《${target.name}》`, `${notes.join("；")}。`);
   }
   /** 笔记本可改名的人：工作区 owner/admin，或这本的创建者。冻结的工作区一律只读。 */
   const canManageNotebook = (nb: Nb) => !activeWs?.frozen && (activeWs?.role === "owner" || activeWs?.role === "admin" || nb.createdBy === me?.id);
@@ -718,10 +792,10 @@ function Workspace() {
       {/* 抽屉打开时的遮罩：点一下收起。窄屏没有「点空白处」可言，必须给个明确的退出。 */}
       {narrow && drawer && <button type="button" aria-label="收起侧栏" className="fixed inset-x-0 bottom-0 top-14 z-40 bg-foreground/40" onClick={() => setDrawer(false)} />}
       {showNotebooks && <aside className="notebook-panel relative flex min-h-0 flex-col border-r border-border bg-muted/35 p-2.5">
-        <div role="separator" aria-label="调整笔记本栏宽度" onPointerDown={e => startResize("notebooks", e)} className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize hover:bg-primary/20" /><div className="flex h-10 items-center justify-between px-2"><span className="sidebar-copy text-[11px] font-semibold uppercase tracking-[.12em] text-muted-foreground">笔记本</span><div className="flex items-center"><NoteSortMenu mode={nbSort} onChange={changeNotebookSort} title="笔记本排序" size="size-7" /><Tooltip content="新建笔记本"><Button variant="ghost" size="icon" className="size-7" onClick={() => setCreate("notebook")}><Plus /></Button></Tooltip></div></div><ScrollArea className="flex-1"><div className="p-0.5"><NotebookList notebooks={nbs} activeId={nbId} mode={nbSort} canReorder={canDeleteNotebook} canDelete={canDeleteNotebook} canManage={canManageNotebook} onPick={pickNotebook} onReorder={persistNotebookOrder} onRename={nb => void renameNotebook(nb)} onAccess={nb => { pickNotebook(nb.id); setShowNotebookAccess(true); }} onImport={nb => { pickNotebook(nb.id); setShowImport(true); }} onExport={nb => void downloadZip(`/api/v1/notebooks/${nb.id}/export.zip`)} onDelete={nb => void deleteNotebook(nb)} /></div></ScrollArea><div className="border-t border-border pt-2"><button onClick={() => nav(`/w/${wsId}/calendar`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><CalendarDays className="size-4" /><span className="sidebar-copy">日历</span></button><button onClick={() => nav(`/w/${wsId}/today`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Sun className="size-4" /><span className="sidebar-copy">今天</span></button><button onClick={() => nav(`/w/${wsId}/feed`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Users className="size-4" /><span className="sidebar-copy">圈子</span></button><button onClick={() => nav(`/w/${wsId}/trash`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Archive className="size-4" /><span className="sidebar-copy">回收站</span></button></div></aside>}
+        <div role="separator" aria-label="调整笔记本栏宽度" onPointerDown={e => startResize("notebooks", e)} className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize hover:bg-primary/20" /><div className="flex h-10 items-center justify-between px-2"><span className="sidebar-copy text-[11px] font-semibold uppercase tracking-[.12em] text-muted-foreground">笔记本</span><div className="flex items-center"><NoteSortMenu mode={nbSort} onChange={changeNotebookSort} title="笔记本排序" size="size-7" /><Tooltip content="新建笔记本"><Button variant="ghost" size="icon" className="size-7" onClick={() => setCreate("notebook")}><Plus /></Button></Tooltip></div></div><ScrollArea className="flex-1"><div className="p-0.5"><NotebookList notebooks={nbs} activeId={nbId} mode={nbSort} canReorder={canDeleteNotebook} canDelete={canDeleteNotebook} canMove={canMoveNotebook} canManage={canManageNotebook} onPick={pickNotebook} onReorder={persistNotebookOrder} onRename={nb => void renameNotebook(nb)} onAccess={nb => { pickNotebook(nb.id); setShowNotebookAccess(true); }} onMove={nb => setMoveNb(nb)} onImport={nb => { pickNotebook(nb.id); setShowImport(true); }} onExport={nb => void downloadZip(`/api/v1/notebooks/${nb.id}/export.zip`)} onDelete={nb => void deleteNotebook(nb)} /></div></ScrollArea><div className="border-t border-border pt-2"><button onClick={() => nav(`/w/${wsId}/calendar`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><CalendarDays className="size-4" /><span className="sidebar-copy">日历</span></button><button onClick={() => nav(`/w/${wsId}/today`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Sun className="size-4" /><span className="sidebar-copy">今天</span></button><button onClick={() => nav(`/w/${wsId}/feed`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Users className="size-4" /><span className="sidebar-copy">圈子</span></button><button onClick={() => nav(`/w/${wsId}/trash`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Archive className="size-4" /><span className="sidebar-copy">回收站</span></button></div></aside>}
 
       {showTree && <aside className="tree-panel relative flex min-h-0 flex-col border-r border-border bg-background">
-        <div role="separator" aria-label="调整目录栏宽度" onPointerDown={e => startResize("tree", e)} className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize hover:bg-primary/20" /><div className="flex h-14 items-center gap-1 border-b border-border px-3"><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{activeNb?.title ?? "笔记"}</p><p className="truncate text-[11px] text-muted-foreground">{tree.length} 篇笔记 · {activeNb?.visibility==="private"?"私密":activeNb?.visibility==="restricted"?"指定成员":"全体成员"}</p></div><NoteSortMenu mode={noteSort} onChange={changeNoteSort} /><DropdownMenu><Tooltip content="笔记本操作"><span className="inline-flex"><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label="笔记本操作" className="size-8"><MoreHorizontal /></Button></DropdownMenuTrigger></span></Tooltip><DropdownMenuContent align="end">{activeNb && <DropdownMenuItem disabled={!canManageNotebook(activeNb)} onSelect={() => void renameNotebook(activeNb)}><Pencil />重命名笔记本</DropdownMenuItem>}<DropdownMenuItem onSelect={()=>setShowNotebookAccess(true)}><Lock />访问权限</DropdownMenuItem><DropdownMenuItem onSelect={() => setShowImport(true)}><Upload />导入 Markdown 或 zip</DropdownMenuItem><DropdownMenuItem onSelect={() => { if (nbId) void downloadZip(`/api/v1/notebooks/${nbId}/export.zip`); }}><Download />导出这个笔记本</DropdownMenuItem>{canDeleteNotebook && activeNb && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onSelect={() => void deleteNotebook(activeNb)}><Trash2 />删除笔记本</DropdownMenuItem></>}</DropdownMenuContent></DropdownMenu><Tooltip content="新建文件夹"><Button variant="ghost" size="icon" className="size-8" onClick={() => setCreate("folder")}><FolderPlus /></Button></Tooltip><Tooltip content="新建笔记"><Button size="icon" className="size-8" onClick={() => void createNote()}><FilePlus2 /></Button></Tooltip></div><ScrollArea className="flex-1"><div className="p-2.5"><ContextMenu><ContextMenuTrigger asChild><button onClick={() => setActiveFolder(null)} className={cn("mb-1 flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-sm", activeFolder === null ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/70")}><Folder className="size-4" />全部笔记</button></ContextMenuTrigger><ContextMenuContent><ContextMenuItem disabled={!treeCanEdit} onSelect={() => void createNote(null)}><FilePlus2 />新建笔记</ContextMenuItem><ContextMenuItem disabled={!treeCanEdit} onSelect={() => { setActiveFolder(null); setCreate("folder"); }}><FolderPlus />新建目录</ContextMenuItem></ContextMenuContent></ContextMenu>{folders.map(f => <ContextMenu key={f.id}><ContextMenuTrigger asChild><div className={cn("group mb-1 flex h-9 items-center gap-2 rounded-lg pr-1 text-sm", activeFolder === f.id ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/70")}><button onClick={() => setActiveFolder(f.id)} className="flex h-9 min-w-0 flex-1 items-center gap-2 pl-2.5 text-left"><ChevronRight className="size-3.5 shrink-0" /><Folder className="size-4 shrink-0" /><span className="truncate">{f.title}</span></button><Tooltip content="分享此目录"><Button variant="ghost" size="icon" className="size-7 opacity-0 group-hover:opacity-100" onClick={() => setShareTarget({ kind: "folder", id: f.id, title: f.title })}><Share2 className="size-3.5" /></Button></Tooltip></div></ContextMenuTrigger><ContextMenuContent><ContextMenuLabel>{f.title}</ContextMenuLabel><ContextMenuItem disabled={!treeCanEdit} onSelect={() => void renameFolder(f)}><Pencil />重命名</ContextMenuItem><ContextMenuItem disabled={!treeCanEdit} onSelect={() => void createNote(f.id)}><FilePlus2 />在此新建笔记</ContextMenuItem><ContextMenuItem onSelect={() => setShareTarget({ kind: "folder", id: f.id, title: f.title })}><Share2 />分享此目录</ContextMenuItem><ContextMenuSeparator /><ContextMenuItem className="text-destructive" disabled={!treeCanEdit} onSelect={() => void deleteFolder(f)}><Trash2 />移到回收站</ContextMenuItem></ContextMenuContent></ContextMenu>)}<Separator className="my-3" /><NoteList notes={tree} folderId={activeFolder} noteId={noteId} wsId={wsId} mode={noteSort} canReorder={treeCanEdit} onReorder={persistNoteOrder} onRename={treeCanEdit ? renameNote : undefined} onDelete={treeCanEdit ? deleteNoteFromTree : undefined} /></div></ScrollArea></aside>}
+        <div role="separator" aria-label="调整目录栏宽度" onPointerDown={e => startResize("tree", e)} className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize hover:bg-primary/20" /><div className="flex h-14 items-center gap-1 border-b border-border px-3"><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{activeNb?.title ?? "笔记"}</p><p className="truncate text-[11px] text-muted-foreground">{tree.length} 篇笔记 · {activeNb?.visibility==="private"?"私密":activeNb?.visibility==="restricted"?"指定成员":"全体成员"}</p></div><NoteSortMenu mode={noteSort} onChange={changeNoteSort} /><DropdownMenu><Tooltip content="笔记本操作"><span className="inline-flex"><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label="笔记本操作" className="size-8"><MoreHorizontal /></Button></DropdownMenuTrigger></span></Tooltip><DropdownMenuContent align="end">{activeNb && <DropdownMenuItem disabled={!canManageNotebook(activeNb)} onSelect={() => void renameNotebook(activeNb)}><Pencil />重命名笔记本</DropdownMenuItem>}<DropdownMenuItem onSelect={()=>setShowNotebookAccess(true)}><Lock />访问权限</DropdownMenuItem>{canMoveNotebook && activeNb && <DropdownMenuItem onSelect={() => setMoveNb(activeNb)}><FolderInput />移动到其他工作区…</DropdownMenuItem>}<DropdownMenuItem onSelect={() => setShowImport(true)}><Upload />导入 Markdown 或 zip</DropdownMenuItem><DropdownMenuItem onSelect={() => { if (nbId) void downloadZip(`/api/v1/notebooks/${nbId}/export.zip`); }}><Download />导出这个笔记本</DropdownMenuItem>{canDeleteNotebook && activeNb && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onSelect={() => void deleteNotebook(activeNb)}><Trash2 />删除笔记本</DropdownMenuItem></>}</DropdownMenuContent></DropdownMenu><Tooltip content="新建文件夹"><Button variant="ghost" size="icon" className="size-8" onClick={() => setCreate("folder")}><FolderPlus /></Button></Tooltip><Tooltip content="新建笔记"><Button size="icon" className="size-8" onClick={() => void createNote()}><FilePlus2 /></Button></Tooltip></div><ScrollArea className="flex-1"><div className="p-2.5"><ContextMenu><ContextMenuTrigger asChild><button onClick={() => setActiveFolder(null)} className={cn("mb-1 flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-sm", activeFolder === null ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/70")}><Folder className="size-4" />全部笔记</button></ContextMenuTrigger><ContextMenuContent><ContextMenuItem disabled={!treeCanEdit} onSelect={() => void createNote(null)}><FilePlus2 />新建笔记</ContextMenuItem><ContextMenuItem disabled={!treeCanEdit} onSelect={() => { setActiveFolder(null); setCreate("folder"); }}><FolderPlus />新建目录</ContextMenuItem></ContextMenuContent></ContextMenu>{folders.map(f => <ContextMenu key={f.id}><ContextMenuTrigger asChild><div className={cn("group mb-1 flex h-9 items-center gap-2 rounded-lg pr-1 text-sm", activeFolder === f.id ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/70")}><button onClick={() => setActiveFolder(f.id)} className="flex h-9 min-w-0 flex-1 items-center gap-2 pl-2.5 text-left"><ChevronRight className="size-3.5 shrink-0" /><Folder className="size-4 shrink-0" /><span className="truncate">{f.title}</span></button><Tooltip content="分享此目录"><Button variant="ghost" size="icon" className="size-7 opacity-0 group-hover:opacity-100" onClick={() => setShareTarget({ kind: "folder", id: f.id, title: f.title })}><Share2 className="size-3.5" /></Button></Tooltip></div></ContextMenuTrigger><ContextMenuContent><ContextMenuLabel>{f.title}</ContextMenuLabel><ContextMenuItem disabled={!treeCanEdit} onSelect={() => void renameFolder(f)}><Pencil />重命名</ContextMenuItem><ContextMenuItem disabled={!treeCanEdit} onSelect={() => void createNote(f.id)}><FilePlus2 />在此新建笔记</ContextMenuItem><ContextMenuItem onSelect={() => setShareTarget({ kind: "folder", id: f.id, title: f.title })}><Share2 />分享此目录</ContextMenuItem><ContextMenuSeparator /><ContextMenuItem className="text-destructive" disabled={!treeCanEdit} onSelect={() => void deleteFolder(f)}><Trash2 />移到回收站</ContextMenuItem></ContextMenuContent></ContextMenu>)}<Separator className="my-3" /><NoteList notes={tree} folderId={activeFolder} noteId={noteId} wsId={wsId} mode={noteSort} canReorder={treeCanEdit} onReorder={persistNoteOrder} onRename={treeCanEdit ? renameNote : undefined} onDelete={treeCanEdit ? deleteNoteFromTree : undefined} /></div></ScrollArea></aside>}
 
       <section ref={sectionRef} data-zen={zen ? "1" : undefined} className="relative flex min-h-0 min-w-0 flex-col bg-background">{note ? <>
         <input id="note-attachment-input" className="hidden" type="file" onChange={async e=>{const f=e.target.files?.[0];if(!f)return;const md=await uploadAttachment(f);const current=noteRef.current;if(md&&current)changeNote({bodyMd:`${current.bodyMd}\n\n${md}`});e.target.value=''}} />
@@ -776,6 +850,7 @@ ${a.mime.startsWith("image/") ? "!" : ""}[${a.filename}](${a.url})` }, true)}
     <ImportDialog notebookId={nbId} notebookTitle={activeNb?.title} open={showImport} onOpenChange={setShowImport} onDone={() => void refreshTree()} />
     <CommandPalette open={palette} onOpenChange={setPalette} commands={paletteCommands()} />
     <QuickOpen open={quickOpen} onOpenChange={setQuickOpen} onPick={(ws, note) => nav(`/w/${ws}/n/${note}`)} workspaceNames={Object.fromEntries(spaces.map(w => [w.id, w.name]))} />
+    <MoveNotebookDialog notebook={moveNb} spaces={spaces} currentWorkspaceId={wsId} onOpenChange={v => !v && setMoveNb(null)} onMoved={notebookMoved} />
     <NotebookAccessDialog notebook={activeNb} workspaceId={wsId} open={showNotebookAccess} onOpenChange={setShowNotebookAccess} onSaved={()=>wsId&&api<{notebooks:Nb[]}>(`/api/v1/workspaces/${wsId}/notebooks`).then(d=>{setNbs(d.notebooks);const fresh=d.notebooks.find(n=>n.id===nbId);if(!fresh)setNbId(d.notebooks[0]?.id)})} />
     <AskDialog open={showAsk} onOpenChange={setShowAsk} workspaceId={wsId} onOpenNote={id=>nav(`/w/${wsId}/n/${id}`)}/>
   </div></TooltipProvider>;

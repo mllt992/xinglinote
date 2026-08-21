@@ -69,6 +69,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 |---|---|---|
 | GET | `/api/v1/workspaces/:id/notebooks` | |
 | POST/PATCH/DELETE | `.../notebooks` | DELETE=trash |
+| POST | `/api/v1/notebooks/:nb/move` | workspaceId；整本跨工作区搬迁，两端都要 owner/admin |
 | GET | `.../notebooks/:nb/tree` | 目录树 |
 | POST | `.../folders` | |
 | PATCH | `.../folders/:fid` | 改名/移动 |

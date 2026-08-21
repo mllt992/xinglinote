@@ -72,6 +72,7 @@ $env:KB_EMAIL="你的邮箱"; $env:KB_PASSWORD="你的密码"   # PowerShell
 node scripts/verify-manage.mjs      # 备份 / 导出 / 审计 / 冻结 / 通知 / 导入
 node scripts/verify-mcp-keys.mjs    # MCP 钥匙的额度、范围、档位、轮换、吊销
 node scripts/verify-gaps.mjs        # 分享类型、分享总览、回收站销毁、搜索、标签
+node scripts/verify-notebook-move.mjs    # 笔记本跨工作区搬迁：内容、附件、搜索归属、双链、权限
 node scripts/verify-feed.mjs        # 圈子动态、泄漏检查、转正、公开主页、评论
 node scripts/verify-calendar-core.mjs   # 日历 CRUD、时区边界、ACL、409、今天页、日记
 node scripts/verify-calendar-sync.mjs   # 笔记 ↔ 日历双向同步、块锚、版本合并、脱链

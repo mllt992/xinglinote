@@ -25,10 +25,15 @@ export function parseWikiLinks(body: string): Parsed[] {
   return out;
 }
 
-export async function rebuildLinks(noteId: string, workspaceId: string, body: string) {
-  const parsed = parseWikiLinks(body);
-  const candidates = await db.select({ id: notes.id, title: notes.title, notebookId: notes.notebookId }).from(notes)
+/** 一个工作区里所有能被 `[[标题]]` 命中的笔记。批量重建时查一次共用，别每篇各扫一遍。 */
+export async function noteCandidates(workspaceId: string) {
+  return db.select({ id: notes.id, title: notes.title, notebookId: notes.notebookId }).from(notes)
     .where(and(eq(notes.workspaceId, workspaceId), isNull(notes.trashedAt)));
+}
+
+export async function rebuildLinks(noteId: string, workspaceId: string, body: string, pool?: Awaited<ReturnType<typeof noteCandidates>>) {
+  const parsed = parseWikiLinks(body);
+  const candidates = pool ?? await noteCandidates(workspaceId);
   await db.transaction(async (tx) => {
     await tx.delete(links).where(eq(links.fromNoteId, noteId));
     if (!parsed.length) return;

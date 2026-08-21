@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Download, GripVertical, Lock, Notebook, Pencil, Trash2, Upload } from "lucide-react";
+import { Download, FolderInput, GripVertical, Lock, Notebook, Pencil, Trash2, Upload } from "lucide-react";
 import { moveNoteId, sortNotes, type NoteSortMode } from "@kb/shared";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
@@ -29,11 +29,13 @@ export function NotebookList({
   mode,
   canReorder,
   canDelete,
+  canMove,
   canManage,
   onPick,
   onReorder,
   onRename,
   onAccess,
+  onMove,
   onImport,
   onExport,
   onDelete,
@@ -43,11 +45,14 @@ export function NotebookList({
   mode: NoteSortMode;
   canReorder: boolean;
   canDelete: boolean;
+  /** 能不能搬到别的工作区。除了本区是管理员，还得真有第二个能落脚的工作区。 */
+  canMove: boolean;
   canManage: (nb: NotebookItem) => boolean;
   onPick: (id: string) => void;
   onReorder: (ids: string[]) => void;
   onRename: (nb: NotebookItem) => void;
   onAccess: (nb: NotebookItem) => void;
+  onMove: (nb: NotebookItem) => void;
   onImport: (nb: NotebookItem) => void;
   onExport: (nb: NotebookItem) => void;
   onDelete: (nb: NotebookItem) => void;
@@ -121,6 +126,7 @@ export function NotebookList({
             <ContextMenuLabel>{n.title}</ContextMenuLabel>
             <ContextMenuItem disabled={!canManage(n)} onSelect={() => onRename(n)}><Pencil />重命名</ContextMenuItem>
             <ContextMenuItem disabled={!canManage(n)} onSelect={() => onAccess(n)}><Lock />访问权限</ContextMenuItem>
+            {canMove && <ContextMenuItem onSelect={() => onMove(n)}><FolderInput />移动到其他工作区…</ContextMenuItem>}
             <ContextMenuSeparator />
             <ContextMenuItem onSelect={() => onImport(n)}><Upload />导入 Markdown 或 zip</ContextMenuItem>
             <ContextMenuItem onSelect={() => onExport(n)}><Download />导出这个笔记本</ContextMenuItem>

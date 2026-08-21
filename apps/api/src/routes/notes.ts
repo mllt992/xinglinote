@@ -15,6 +15,7 @@ import { noteAccess } from "../lib/note-access.ts";
 import { notebookAccess } from "../lib/notebook-access.ts";
 import { instanceConfig, lastReviewedAt, moderate, moderationOn, pendingMessage, recordReview } from "../lib/moderation.ts";
 import { notebookVisibleTo } from "../lib/notebook-access.ts";
+import { moveNotebook } from "../lib/notebook-move.ts";
 import { purgeFolder,purgeNotebook,purgeNotes,restoreFolder,restoreFolderId,restoreNotebook,restoreTitle,trashFolder,trashNotebook } from "../lib/trash.ts";
 
 export const knowledge = new Hono();
@@ -299,6 +300,29 @@ knowledge.patch("/notebooks/:id", async (c) => {
   const body = z.object({ title: z.string().min(1).max(80).optional(), defaultAiIndex: z.boolean().optional(), visibility:z.enum(["open","private","restricted"]).optional() }).parse(await c.req.json());
   const [saved] = await db.update(notebooks).set({ title: body.title ?? nb.title, defaultAiIndex: body.defaultAiIndex ?? nb.defaultAiIndex,visibility:body.visibility??nb.visibility }).where(eq(notebooks.id, nb.id)).returning();
   return ok(c, saved);
+});
+
+/**
+ * 把整本笔记本搬到另一个工作区。
+ *
+ * 权限两头都要，而且都按「能不能建 / 能不能删这本」那条线走（owner / admin），
+ * 不用笔记本创建者那条：搬走等于从原区拿掉一整块内容、又往目标区塞进一块，
+ * 这是两个工作区的事，不是一本笔记本内部的事。
+ */
+knowledge.post("/notebooks/:id/move", async (c) => {
+  const user = await requireUser(c);
+  const { nb, ws } = await loadNotebook(c.req.param("id"));
+  const body = z.object({ workspaceId: z.string().uuid() }).parse(await c.req.json());
+  const from = await memberRole(ws.id, user.id);
+  if (from !== "owner" && from !== "admin") throw fail("FORBIDDEN", "只有工作区管理员能移动笔记本");
+  if (ws.frozen) throw fail("FORBIDDEN", "工作区已冻结，暂时只读");
+  const to = await memberRole(body.workspaceId, user.id);
+  if (to !== "owner" && to !== "admin") throw fail("FORBIDDEN", "只能移动到你管理的工作区");
+  const [target] = await db.select().from(workspaces).where(eq(workspaces.id, body.workspaceId));
+  if (!target) throw fail("NOT_FOUND", "目标工作区不存在");
+  if (target.frozen) throw fail("FORBIDDEN", "目标工作区已冻结，暂时只读");
+  const moved = await moveNotebook(nb.id, target.id, user.id);
+  return ok(c, { ...moved.notebook, moved: { notes: moved.notes, droppedMembers: moved.droppedMembers, slugChanged: moved.slugChanged } });
 });
 
 knowledge.get("/notebooks/:id/members",async c=>{const user=await requireUser(c);const{nb,ws}=await loadNotebook(c.req.param("id"));const role=await memberRole(ws.id,user.id);if(role!=="owner"&&role!=="admin"&&nb.createdBy!==user.id)throw fail("FORBIDDEN","无权管理笔记本权限");const rows=await db.select().from(notebookMembers).where(eq(notebookMembers.notebookId,nb.id));return ok(c,{members:rows});});
