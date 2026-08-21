@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, ne, or } from "drizzle-orm";
 import { z } from "zod";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
@@ -31,15 +31,40 @@ moderationRoutes.get("/moderation/queue", async c => {
   const u = await requireUser(c);
   const wsId = c.req.query("workspaceId") || null;
   await assertCanReview(u.id, u.roleInstance, wsId);
-  const handled = c.req.query("status") === "handled";
+  const legacy = c.req.query("status");
+  const state = z.enum(["all", "review", "recheck", "approved", "rejected"]).optional().catch(undefined).parse(c.req.query("state") || undefined)
+    ?? (legacy === "handled" ? "all" : legacy === "pending" ? "review" : "review");
   const scope = z.enum(["square", "circle", "article"]).optional().catch(undefined).parse(c.req.query("scope") || undefined);
   const kind = z.enum(["publish", "report", "appeal"]).optional().catch(undefined).parse(c.req.query("kind") || undefined);
-  const rows = await db.select().from(moderationReviews).where(and(
+  const q = (c.req.query("q") ?? "").replace(/[%_]/g, "").trim().slice(0, 80);
+  const author = (c.req.query("author") ?? "").replace(/[%_]/g, "").trim().slice(0, 40);
+  const page = Math.max(1, Number(c.req.query("page") ?? 1) || 1);
+  const pageSize = Math.min(50, Math.max(10, Number(c.req.query("pageSize") ?? 30) || 30));
+  let authorIds: string[] | null = null;
+  if (author) {
+    const hits = await db.select({ id: users.id }).from(users).where(or(ilike(users.displayName, `%${author}%`), ilike(users.handle, `%${author}%`)));
+    authorIds = hits.map(h => h.id);
+    if (!authorIds.length) {
+      const catalogEmpty = normalizeCategories((await instanceConfig())?.moderationCategories);
+      return ok(c, { categories: catalogEmpty, items: [], total: 0, page, pageSize });
+    }
+  }
+  const stateWhere = state === "approved" ? eq(moderationReviews.status, "approved")
+    : state === "rejected" ? eq(moderationReviews.status, "rejected")
+    : state === "recheck" ? and(eq(moderationReviews.status, "pending"), eq(moderationReviews.kind, "appeal"))
+    : state === "all" ? inArray(moderationReviews.status, ["pending", "approved", "rejected"])
+    : and(eq(moderationReviews.status, "pending"), ne(moderationReviews.kind, "appeal"));
+  const where = and(
     wsId ? eq(moderationReviews.workspaceId, wsId) : undefined,
     scope ? eq(moderationReviews.scope, scope) : undefined,
     kind ? eq(moderationReviews.kind, kind) : undefined,
-    handled ? inArray(moderationReviews.status, ["approved", "rejected"]) : eq(moderationReviews.status, "pending"),
-  )).orderBy(desc(moderationReviews.createdAt)).limit(handled ? 100 : 200);
+    stateWhere,
+    q ? ilike(moderationReviews.snapshot, `%${q}%`) : undefined,
+    authorIds ? inArray(moderationReviews.authorUserId, authorIds) : undefined,
+  );
+  const [{ value: total }] = await db.select({ value: count() }).from(moderationReviews).where(where);
+  const rows = await db.select().from(moderationReviews).where(where)
+    .orderBy(desc(moderationReviews.createdAt)).limit(pageSize).offset((page - 1) * pageSize);
   const people = rows.length ? await db.select().from(users).where(inArray(users.id, [...new Set(rows.flatMap(r => [r.authorUserId, r.reviewerId].filter(Boolean) as string[]))])) : [];
   const spaces = rows.some(r => r.workspaceId) ? await db.select().from(workspaces) : [];
   const reportRows = rows.length ? await db.select().from(contentReports).where(and(
@@ -50,9 +75,11 @@ moderationRoutes.get("/moderation/queue", async c => {
   const catalog = normalizeCategories((await instanceConfig())?.moderationCategories);
   return ok(c, {
     categories: catalog,
+    total, page, pageSize,
     items: rows.map(r => ({
       id: r.id, targetType: r.targetType, targetId: r.targetId, scope: r.scope, scopeLabel: SCOPE_LABEL[r.scope as ModerationScope] ?? r.scope,
       kind: r.kind ?? "publish",
+      phase: r.status === "approved" ? "approved" : r.status === "rejected" ? "rejected" : r.kind === "appeal" ? "recheck" : "review",
       workspaceId: r.workspaceId, workspaceName: r.workspaceId ? spaces.find(w => w.id === r.workspaceId)?.name ?? null : null,
       author: name(r.authorUserId), snapshot: r.snapshot,
       aiVerdict: r.aiVerdict, aiScore: r.aiScore, aiCategories: r.aiCategories as string[], aiReason: r.aiReason, aiModel: r.aiModel,

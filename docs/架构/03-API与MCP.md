@@ -116,7 +116,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | POST | `/api/v1/posts/:id/appeal` | `{ note? }`；仅 AI 下架后的作者 |
 | POST | `/api/v1/posts/:id/promote` | 转正为笔记 |
 | POST | `/api/v1/notes/:id/excerpt-to-post` | |
-| GET | `/api/v1/moderation/queue` | status=pending \| handled，workspaceId= 限本圈子，scope= 限场景 |
+| GET | `/api/v1/moderation/queue` | state=review\|recheck\|approved\|rejected，q=正文，author=作者，kind，page |
 | PATCH | `/api/v1/moderation/:id` | action=approve \| reject；待审和已处理都能改，note 为说明 |
 | POST | `/api/v1/ai/write` | 写作，回 diff |
 | POST | `/api/v1/ai/ask` | SSE 流 |

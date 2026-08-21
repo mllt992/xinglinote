@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { AlertTriangle, Check, ChevronDown, ChevronLeft, Flag, Pencil, Plus, Scale, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronLeft, ChevronRight, Flag, Pencil, Plus, Scale, Search, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
 import { api } from "../api";
 import { cn } from "../lib/utils";
 import { Badge } from "./ui/badge";
@@ -211,14 +211,28 @@ type Item = {
   aiVerdict: string; aiScore: number | null; aiCategories: string[]; aiReason: string | null; aiModel: string | null;
   status: string; reviewer: string | null; reviewNote: string | null; reviewedAt: string | null; createdAt: string;
   reports?: Array<{ reason: string; note: string | null; status: string; createdAt: string }>;
+  phase?: Phase;
 };
 
 const VERDICT_LABEL: Record<string, string> = { pass: "AI 放行", reject: "AI 判定不通过", unsure: "AI 拿不准", error: "AI 没审成", skipped: "未审", queued: "审核中", running: "审核中", report: "用户举报", appeal: "作者申诉" };
-const STATUS_LABEL: Record<string, string> = { pending: "待人工审核", approved: "已通过", rejected: "已驳回" };
 const KIND_LABEL: Record<string, string> = { publish: "发布预审", report: "用户举报", appeal: "作者申诉" };
 const REPORT_LABEL: Record<string, string> = { spam: "垃圾广告", abuse: "辱骂", illegal: "违法", porn: "色情", other: "其他" };
 const catLabel = (key: string, catalog: Cat[]) => catalog.find(c => c.key === key)?.label ?? DEFAULT_CATS.find(c => c.key === key)?.label ?? key;
 type KindFilter = "all" | "publish" | "report" | "appeal";
+type Phase = "review" | "recheck" | "approved" | "rejected";
+const PHASE_LABEL: Record<Phase | "all", string> = { all: "全部", review: "待审核", recheck: "待复查", approved: "已通过", rejected: "已驳回" };
+function phaseOf(item: Item): Phase {
+  if (item.phase === "review" || item.phase === "recheck" || item.phase === "approved" || item.phase === "rejected") return item.phase;
+  if (item.status === "approved") return "approved";
+  if (item.status === "rejected") return "rejected";
+  return item.kind === "appeal" ? "recheck" : "review";
+}
+function phaseTone(phase: Phase) {
+  if (phase === "approved") return "border-transparent bg-[color-mix(in_srgb,var(--good)_14%,transparent)] text-[var(--good)]";
+  if (phase === "rejected") return "border-transparent bg-destructive/10 text-destructive";
+  if (phase === "recheck") return "border-transparent bg-primary/10 text-primary";
+  return "border-transparent bg-[color-mix(in_srgb,var(--warning)_14%,transparent)] text-[var(--warning)]";
+}
 
 function actionsFor(kind: string) {
   if (kind === "report") return { approve: "维持公开", reject: "下架" };
@@ -241,8 +255,15 @@ function kindTone(kind: string) {
 export function ModerationQueue({ workspaceId }: { workspaceId?: string }) {
   const toast = useToast();
   const askPrompt = usePrompt();
-  const [view, setView] = useState<"pending" | "handled">("pending");
+  const [state, setState] = useState<Phase | "all">("review");
   const [kind, setKind] = useState<KindFilter>("all");
+  const [author, setAuthor] = useState("");
+  const [query, setQuery] = useState("");
+  const [authorDraft, setAuthorDraft] = useState("");
+  const [queryDraft, setQueryDraft] = useState("");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const pageSize = 30;
   const [items, setItems] = useState<Item[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pane, setPane] = useState<"list" | "detail">("list");
@@ -253,19 +274,24 @@ export function ModerationQueue({ workspaceId }: { workspaceId?: string }) {
 
   const selected = items.find(i => i.id === selectedId) ?? items[0] ?? null;
 
-  const load = async (next: "pending" | "handled" = view, nextKind: KindFilter = kind) => {
+  const load = async () => {
     setLoading(true);
     try {
-      const q = new URLSearchParams();
+      const q = new URLSearchParams({ state, page: String(page), pageSize: String(pageSize) });
       if (workspaceId) q.set("workspaceId", workspaceId);
-      if (next === "handled") q.set("status", "handled");
-      if (nextKind !== "all") q.set("kind", nextKind);
-      const d = await api<{ items: Item[]; categories?: Cat[] }>(`/api/v1/moderation/queue?${q}`);
-      setItems(d.items); if (d.categories) setCatalog(d.categories); setErr("");
+      if (kind !== "all") q.set("kind", kind);
+      if (query.trim()) q.set("q", query.trim());
+      if (author.trim()) q.set("author", author.trim());
+      const d = await api<{ items: Item[]; categories?: Cat[]; total?: number }>(`/api/v1/moderation/queue?${q}`);
+      setItems(d.items); setTotal(d.total ?? d.items.length); if (d.categories) setCatalog(d.categories); setErr("");
       setSelectedId(cur => d.items.some(i => i.id === cur) ? cur : d.items[0]?.id ?? null);
     } catch (e) { setErr((e as Error).message); } finally { setLoading(false); }
   };
-  useEffect(() => { void load(view, kind); setPane("list"); }, [view, kind, workspaceId]);
+  useEffect(() => { void load(); setPane("list"); }, [state, kind, workspaceId, page, query, author]);
+  useEffect(() => {
+    const t = window.setTimeout(() => { setAuthor(authorDraft.trim()); setQuery(queryDraft.trim()); setPage(1); }, 320);
+    return () => window.clearTimeout(t);
+  }, [authorDraft, queryDraft]);
 
   function pick(id: string) {
     setSelectedId(id);
@@ -289,14 +315,16 @@ export function ModerationQueue({ workspaceId }: { workspaceId?: string }) {
     try {
       await api(`/api/v1/moderation/${item.id}`, { method: "PATCH", body: JSON.stringify({ action, note: note || undefined }) });
       toast.success(action === "approve" ? `${labels.approve}了，内容按这个结果走` : `${labels.reject}了，作者会收到通知`);
-      if (view === "pending") {
+      const open = phaseOf(item) === "review" || phaseOf(item) === "recheck";
+      if (open) {
         const idx = items.findIndex(i => i.id === item.id);
         const nxt = items[idx + 1] ?? items[idx - 1] ?? null;
         setItems(list => list.filter(i => i.id !== item.id));
+        setTotal(n => Math.max(0, n - 1));
         setSelectedId(nxt?.id ?? null);
         if (!nxt) setPane("list");
       } else {
-        setItems(list => list.map(i => i.id === item.id ? { ...i, status: action === "approve" ? "approved" : "rejected", reviewer: i.reviewer ?? "管理员", reviewNote: note || i.reviewNote, reviewedAt: new Date().toISOString() } : i));
+        setItems(list => list.map(i => i.id === item.id ? { ...i, status: action === "approve" ? "approved" : "rejected", phase: action === "approve" ? "approved" : "rejected", reviewer: i.reviewer ?? "管理员", reviewNote: note || i.reviewNote, reviewedAt: new Date().toISOString() } : i));
       }
     } catch (e) { toast.error("操作失败", (e as Error).message); } finally { setBusy(null); }
   }
@@ -315,44 +343,65 @@ export function ModerationQueue({ workspaceId }: { workspaceId?: string }) {
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  const tabCls = (on: boolean) => cn("rounded-md px-3 py-1.5 text-sm transition-colors", on ? "bg-background shadow-sm ring-1 ring-border" : "text-muted-foreground hover:text-foreground");
-  const emptyHint = view === "pending"
-    ? (kind === "report" ? "没有待复核的举报。AI 拿不准的才会出现在这里。" : kind === "appeal" ? "没有待处理的申诉。" : "AI 拿不准或拦下来的内容会出现在这里。")
-    : "处理过的记录可以在这里改判，立刻作用到内容上。";
+  const emptyHint = state === "recheck" ? "没有待复查的申诉。"
+    : state === "approved" ? "还没有通过的记录。"
+    : state === "rejected" ? "还没有驳回的记录。"
+    : state === "all" ? "没有匹配的记录。"
+    : "没有待审核内容。AI 拿不准的才会出现在这里。";
   const labels = selected ? actionsFor(selected.kind) : actionsFor("publish");
+  const pages = Math.max(1, Math.ceil(total / pageSize));
 
   return <section className="overflow-hidden rounded-xl border bg-background">
     <div className="flex flex-wrap items-center gap-3 border-b px-5 py-3">
       <h2 className="text-sm font-semibold">人工审核</h2>
-      {view === "pending" && items.length > 0 && <Badge className="border-transparent bg-[color-mix(in_srgb,var(--warning)_14%,transparent)] text-[var(--warning)]">{items.length} 条待审</Badge>}
-      <div className="ml-auto inline-flex rounded-lg bg-muted p-1">
-        <button type="button" className={tabCls(view === "pending")} onClick={() => setView("pending")}>待审</button>
-        <button type="button" className={tabCls(view === "handled")} onClick={() => setView("handled")}>已处理</button>
-      </div>
+      {total > 0 && <Badge>{total} 条</Badge>}
     </div>
-    <div className="flex flex-wrap gap-1.5 border-b px-5 py-2.5">
-      {([["all", "全部"], ["publish", "发布预审"], ["report", "举报"], ["appeal", "申诉"]] as const).map(([k, label]) => (
-        <button key={k} type="button" onClick={() => setKind(k)}
-          className={cn("rounded-full px-2.5 py-1 text-xs transition-colors", kind === k ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted")}>
-          {label}
-        </button>
-      ))}
+    <div className="space-y-2.5 border-b px-4 py-3 sm:px-5">
+      <div className="flex flex-wrap gap-1.5">
+        {(["all", "review", "recheck", "approved", "rejected"] as const).map(k => (
+          <button key={k} type="button" onClick={() => { setState(k); setPage(1); }}
+            className={cn("rounded-full px-2.5 py-1 text-xs transition-colors", state === k ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted")}>
+            {PHASE_LABEL[k]}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <label className="relative min-w-[8rem] flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input className="h-8 pl-8 text-xs" value={authorDraft} onChange={e => setAuthorDraft(e.target.value)} placeholder="筛选作者" />
+        </label>
+        <label className="relative min-w-[10rem] flex-[1.4]">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input className="h-8 pl-8 text-xs" value={queryDraft} onChange={e => setQueryDraft(e.target.value)} placeholder="筛选正文" />
+        </label>
+        <div className="flex flex-wrap gap-1">
+          {([["all", "类型"], ["publish", "预审"], ["report", "举报"], ["appeal", "申诉"]] as const).map(([k, label]) => (
+            <button key={k} type="button" onClick={() => { setKind(k); setPage(1); }}
+              className={cn("rounded-md px-2 py-1 text-[11px] transition-colors", kind === k ? "bg-muted font-medium" : "text-muted-foreground hover:text-foreground")}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
     {err && <p className="px-5 py-4 text-sm text-destructive">{err}</p>}
     {!err && loading && <div className="grid gap-3 p-5 lg:grid-cols-[280px_1fr]">{[0, 1].map(i => <div key={i} className="h-40 animate-pulse rounded-lg bg-muted/60" />)}</div>}
     {!err && !loading && items.length === 0 && <div className="py-16 text-center">
       <span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground"><ShieldCheck className="size-5" /></span>
-      <p className="mt-3 text-sm font-medium">{view === "pending" ? "没有待审内容" : "还没有处理记录"}</p>
+      <p className="mt-3 text-sm font-medium">没有匹配的记录</p>
       <p className="mt-1 text-xs text-muted-foreground">{emptyHint}</p>
     </div>}
-    {!err && !loading && items.length > 0 && selected && <div className="grid min-h-[28rem] lg:grid-cols-[minmax(240px,300px)_minmax(0,1fr)]">
-      <aside className={cn("max-h-[min(70vh,720px)] overflow-y-auto border-b lg:border-b-0 lg:border-r", pane === "detail" && "hidden lg:block")}>
+    {!err && !loading && items.length > 0 && selected && <div className="grid h-[min(70dvh,720px)] lg:grid-cols-[minmax(220px,300px)_minmax(0,1fr)]">
+      <aside className={cn("flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r", pane === "detail" && "hidden lg:flex")}>
+        <div className="min-h-0 flex-1 overflow-y-auto">
         {items.map(item => {
           const on = item.id === selected.id;
+          const phase = phaseOf(item);
           return <button key={item.id} type="button" onClick={() => pick(item.id)}
-            className={cn("block w-full border-l-2 px-4 py-3 text-left transition-colors", on ? "border-primary bg-muted/60" : "border-transparent hover:bg-muted/40")}>
+            className={cn("block w-full border-l-2 px-3 py-2.5 text-left transition-colors sm:px-4", on ? "border-primary bg-muted/60" : "border-transparent hover:bg-muted/40")}>
             <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <Badge className={cn("gap-1 px-1.5 py-0 text-[10px]", kindTone(item.kind))}><KindIcon kind={item.kind} className="size-2.5" />{KIND_LABEL[item.kind] ?? item.kind}</Badge>
+              <Badge className={cn("px-1.5 py-0 text-[10px]", phaseTone(phase))}>{PHASE_LABEL[phase]}</Badge>
+              <Badge className={cn("hidden gap-1 px-1.5 py-0 text-[10px] sm:inline-flex", kindTone(item.kind))}><KindIcon kind={item.kind} className="size-2.5" />{KIND_LABEL[item.kind] ?? item.kind}</Badge>
               {item.aiScore !== null && <span className={item.aiScore >= 60 ? "text-[var(--warning)]" : ""}>{item.aiScore}</span>}
               <span className="ml-auto tabular-nums">{new Date(item.createdAt).toLocaleDateString()}</span>
             </div>
@@ -360,6 +409,14 @@ export function ModerationQueue({ workspaceId }: { workspaceId?: string }) {
             <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.snapshot}</p>
           </button>;
         })}
+        </div>
+        {pages > 1 && <div className="flex items-center justify-between gap-2 border-t px-3 py-2 text-[11px] text-muted-foreground">
+          <span>{(page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)} / {total}</span>
+          <span className="flex gap-1">
+            <Button variant="ghost" size="icon" className="size-7" disabled={page <= 1} aria-label="上一页" onClick={() => setPage(p => Math.max(1, p - 1))}><ChevronLeft /></Button>
+            <Button variant="ghost" size="icon" className="size-7" disabled={page >= pages} aria-label="下一页" onClick={() => setPage(p => p + 1)}><ChevronRight /></Button>
+          </span>
+        </div>}
       </aside>
       <div className={cn("flex min-h-0 flex-col", pane === "list" && "hidden lg:flex")}>
         <div className="flex items-center gap-2 border-b px-4 py-2.5 lg:hidden">
@@ -372,7 +429,7 @@ export function ModerationQueue({ workspaceId }: { workspaceId?: string }) {
             {selected.workspaceName && <Badge>{selected.workspaceName}</Badge>}
             <span>{selected.author ?? "已注销用户"}</span>
             <span className="ml-auto">{new Date(selected.createdAt).toLocaleString()}</span>
-            {selected.status !== "pending" && <Badge>{STATUS_LABEL[selected.status] ?? selected.status}{selected.reviewer ? ` · ${selected.reviewer}` : " · AI 自动"}</Badge>}
+            <Badge className={phaseTone(phaseOf(selected))}>{PHASE_LABEL[phaseOf(selected)]}{selected.status !== "pending" && selected.reviewer ? ` · ${selected.reviewer}` : selected.status !== "pending" ? " · AI 自动" : ""}</Badge>
           </div>
           {!!selected.reports?.length && <ul className="mt-3 flex flex-wrap gap-1.5">
             {selected.reports.map((r, i) => <li key={i}><Badge>{REPORT_LABEL[r.reason] ?? r.reason}{r.note ? ` · ${r.note}` : ""}</Badge></li>)}
