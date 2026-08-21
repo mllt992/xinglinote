@@ -16,13 +16,25 @@ const MIN_COL = 48, MAX_COL = 720;
 
 type WidthMap = Record<string, number>;
 
+/**
+ * 列宽表在内存里留一份：每张表渲染一次就 `JSON.parse` 一次 localStorage，
+ * 一篇满是表格的笔记里光标动一下就要解析十几遍。别处（另一个标签页）改了走 storage 事件失效。
+ */
+let cached: WidthMap | null = null;
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", event => { if (!event.key || event.key === WIDTH_KEY) cached = null; });
+}
+
 function readWidths(): WidthMap {
-  try { return JSON.parse(localStorage.getItem(WIDTH_KEY) ?? "{}") as WidthMap; } catch { return {}; }
+  if (cached) return cached;
+  try { cached = JSON.parse(localStorage.getItem(WIDTH_KEY) ?? "{}") as WidthMap; } catch { cached = {}; }
+  return cached!;
 }
 function writeWidths(map: WidthMap) {
   // 只保留最近 400 条，不然一个用得久的库会把 localStorage 撑满
   const entries = Object.entries(map).slice(-400);
-  try { localStorage.setItem(WIDTH_KEY, JSON.stringify(Object.fromEntries(entries))); } catch { /* 隐私模式写不进就算了 */ }
+  cached = Object.fromEntries(entries);
+  try { localStorage.setItem(WIDTH_KEY, JSON.stringify(cached)); } catch { /* 隐私模式写不进就算了 */ }
 }
 
 /** 表格的身份：笔记 + 表头那一行的文字。用行号会因为上面插了一行就全乱套。 */

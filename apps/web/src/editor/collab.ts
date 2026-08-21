@@ -4,8 +4,9 @@
  * 连不上、被拒、或浏览器不支持 WebSocket 时**静默退回单机自动保存**，
  * 底栏标一行「离线编辑」就够了——不弹窗、不拦人写字。
  */
-import type { Extension } from "@codemirror/state";
-import { yCollab } from "y-codemirror.next";
+import { Prec, type Extension } from "@codemirror/state";
+import { keymap } from "@codemirror/view";
+import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import { WebsocketProvider } from "y-websocket";
 import * as Y from "yjs";
 
@@ -73,8 +74,14 @@ export function createCollab(noteId: string, user: CollabUser, on: {
   const text = doc.getText("body");
   provider.on("sync", (isSynced: boolean) => { if (isSynced) on.synced(text); });
   return {
-    // yCollab 自带远端光标与选区的渲染，样式在 styles.css 里覆盖成我们的口径
-    extension: yCollab(text, provider.awareness),
+    // yCollab 自带远端光标与选区的渲染，样式在 styles.css 里覆盖成我们的口径。
+    //
+    // **撤销必须换成 Y.UndoManager 那一套**：yCollab 把远端改动 dispatch 进来时没标
+    // `addToHistory: false`，CodeMirror 自己的 history 会把别人敲的字也记进本地撤销栈——
+    // 那时按 Ctrl+Z 撤的是同事的句子，而且撤销结果还会经 CRDT 广播出去，等于替所有人回滚。
+    // 所以宿主在挂上这个扩展的同时会把 history() 换成空扩展（markdown-editor.tsx），
+    // 键位由这里的 keymap 接管。Prec.high 是为了盖住下面那套 historyKeymap。
+    extension: [yCollab(text, provider.awareness), Prec.high(keymap.of(yUndoManagerKeymap))],
     text,
     destroy: () => {
       provider.awareness.off("change", pushPeers);

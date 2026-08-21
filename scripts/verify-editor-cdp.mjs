@@ -253,6 +253,129 @@ result.proseKeepsMeasure = !!layout && layout.para <= 760 && layout.para < layou
 result.contentSharesLeftEdge = !!layout && layout.sameLeft;
 result.noHorizontalPageScroll = !!layout && !layout.pageOverflows;
 
+// —— 十点八、P8/P9：编辑侧行宽、悬挂缩进、块感、无障碍、粘贴、斜杠别名、Tab 的归属 ——
+await click(`[...document.querySelectorAll('[role=tab]')].find(x=>x.textContent.trim()==='编辑')`);
+await wait(700);
+const shell = await ex(`(()=>{
+  const content=document.querySelector('.cm-content');
+  const prose=[...document.querySelectorAll('.cm-line')].find(l=>!l.classList.contains('cm-md-code-line'));
+  const code=document.querySelector('.cm-md-code-line');
+  if(!content||!prose||!code) return null;
+  return {
+    proseMax: parseFloat(getComputedStyle(prose).maxWidth) || 0,
+    codeMax: getComputedStyle(code).maxWidth,
+    hang: document.querySelectorAll('.cm-md-hang').length,
+    hangStyle: document.querySelector('.cm-md-hang')?.getAttribute('style') || '',
+    heading: document.querySelectorAll('.cm-md-heading').length,
+    blockFirst: document.querySelectorAll('.cm-md-code-line.cm-md-block-first').length,
+    blockLast: document.querySelectorAll('.cm-md-code-line.cm-md-block-last').length,
+    activeLine: document.querySelectorAll('.cm-activeLine').length,
+    aria: content.getAttribute('aria-label') || '',
+    spell: content.getAttribute('spellcheck'),
+  };
+})()`);
+// 正文行收在易读行宽内，代码行可以吃满整栏（设计 17 §3.2）
+result.editorProseKeepsMeasure = !!shell && shell.proseMax > 0 && shell.proseMax <= 760;
+result.editorCodeUsesFullColumn = !!shell && shell.codeMax === 'none';
+// 列表悬挂缩进（§3.7）：首行原地、折行对齐正文起点
+result.listHangingIndent = !!shell && shell.hang > 0 && /padding-left:\s*\d+ch/.test(shell.hangStyle) && /text-indent:\s*-\d+ch/.test(shell.hangStyle);
+result.headingLineMarked = !!shell && shell.heading > 0;
+// 代码块首尾行各收一个圆角，中间连成一整块
+result.codeBlockHasCorners = !!shell && shell.blockFirst > 0 && shell.blockLast > 0;
+// 即时渲染下不高亮当前行（§3.1）：一条横贯正文的底色会把段落切碎
+result.wysiwygDropsActiveLine = !!shell && shell.activeLine === 0;
+// 无障碍（§3.9）：CodeMirror 只给了 role/aria-multiline，名字要自己补；拼写检查默认开
+result.contentHasAriaLabel = !!shell && shell.aria.length > 0;
+result.spellcheckOn = !!shell && shell.spell === 'true';
+
+// 富文本粘贴转闭集内的 Markdown（§3.6），顺带验一遍脚本与 javascript: 被消毒掉
+const pasted = await ex(`(()=>{
+  const view=document.querySelector('.cm-content');
+  if(!view) return null;
+  const dt=new DataTransfer();
+  dt.setData('text/plain','小标题 甲 乙');
+  dt.setData('text/html','<h3>小标题<\\/h3><ul><li>甲<\\/li><li>乙<\\/li><\\/ul><a href="javascript:alert(1)">恶意<\\/a><script>alert(2)<\\/script>');
+  view.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));
+  return document.querySelector('.cm-content').innerText;
+})()`);
+result.pasteHtmlBecomesMarkdown = typeof pasted === 'string' && pasted.includes('小标题') && pasted.includes('甲');
+result.pasteHtmlDropsScript = typeof pasted === 'string' && !pasted.includes('javascript:') && !pasted.includes('alert(2)');
+await press('z', 'KeyZ', 90, true);     // 撤销刚粘进去的那段，别把后面的断言搞乱
+
+// 斜杠菜单认英文与拼音（§5）：敲下 `/` 那一刻输入法基本都在英文态
+await toEnd();
+await press('Enter', 'Enter', 13);
+await type('/biaoge');
+await wait(500);
+result.slashAcceptsPinyin = await ex(`[...document.querySelectorAll('.cm-tooltip-autocomplete li')].some(li=>li.textContent.includes('表格'))`);
+await press('Escape', 'Escape', 27);
+for (let i = 0; i < 8; i++) await press('Backspace', 'Backspace', 8);
+
+// Tab 不再无条件吞掉（§3.9）：光标在普通段落里按 Tab，正文一个字节都不该变
+const beforeTab = await ex(`document.querySelector('.cm-content').innerText.length`);
+await press('Tab', 'Tab', 9);
+result.tabLeavesProseAlone = (await ex(`document.querySelector('.cm-content').innerText.length`)) === beforeTab;
+await click(`document.querySelector('.cm-content')`);
+await settle();
+
+// —— 十点九、折叠、大纲联动、附件上传不动文档 ——
+// 折叠（§3.10）：把手在，点第一个标题的把手能把这一节收起来，正文字节不变
+result.foldGutterPresent = await ex(`document.querySelectorAll('.cm-md-fold').length > 0`);
+const bodyBeforeFold = (await call(`/api/v1/notes/${noteId}`)).bodyMd;
+await click(`document.querySelector('.cm-md-fold')`);
+await wait(500);
+result.foldCollapsesSection = await ex(`!!document.querySelector('.cm-foldPlaceholder')`);
+result.foldKeepsSource = (await call(`/api/v1/notes/${noteId}`)).bodyMd === bodyBeforeFold;
+await click(`document.querySelector('.cm-foldPlaceholder')`);
+await wait(400);
+result.foldReopens = await ex(`!document.querySelector('.cm-foldPlaceholder')`);
+
+// 大纲跟随光标（§3.2）：光标停在文首，大纲第一条该被标成当前小节
+await ex(`(()=>{const el=[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='大纲'||b.textContent.trim()==='大纲');el&&el.click()})()`);
+await wait(600);
+await click(`document.querySelector('.cm-content')`);
+await press('Home', 'Home', 36, true);
+await wait(700);
+result.outlineFollowsCursor = await ex(`!!document.querySelector('[aria-current="location"]')`);
+
+// 附件上传期间文档一个字节都不动（§3.6）：占位是装饰不是正文
+const upload = await ex(`(()=>{
+  const view=document.querySelector('.cm-content');
+  if(!view) return null;
+  const before=view.innerText.length;
+  const dt=new DataTransfer();
+  dt.items.add(new File([new Uint8Array([1,2,3])],'verify.png',{type:'image/png'}));
+  view.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));
+  return {before, widget:document.querySelectorAll('.cm-md-uploading').length, after:document.querySelector('.cm-content').innerText.length};
+})()`);
+result.uploadShowsWidget = !!upload && upload.widget === 1;
+result.uploadKeepsDocIntact = !!upload && upload.before === upload.after;
+await until(`document.querySelectorAll('.cm-md-uploading').length === 0`);
+await settle();
+
+// —— 十点十、双链悬停卡片、坏图占位、换篇记住位置 ——
+// 悬停卡片（§3.11）：鼠标停在 [[验收标题]] 上，350ms 后出卡片
+const wikiBox = await ex(`(()=>{const el=document.querySelector('.cm-md-wiki');if(!el)return null;const r=el.getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
+if (wikiBox) {
+  await cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: wikiBox.x, y: wikiBox.y });
+  await wait(200);
+  await cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: wikiBox.x + 1, y: wikiBox.y });
+}
+result.wikiHoverCard = await until(`!!document.querySelector('.cm-md-wiki-card .cm-md-wiki-card-title')`);
+await cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 5 });
+
+// 坏图：显示占位，**而且正文一个字节都不许被改回来**（设计 17 §4.1）。
+// 小部件的根节点一旦被换掉，CodeMirror 会把新节点的文字读回文档——`![封面](…)` 会被
+// 原地改成「图片加载失败：封面」。这条踩过一次，所以断言盯的是源码而不是那块占位。
+await toEnd();
+await press('Enter', 'Enter', 13);
+await ex(`(()=>{const v=document.querySelector('.cm-content');if(!v)return;const d=new DataTransfer();d.setData('text/plain','![封面截图](data:image/png;base64,zzzz)');v.dispatchEvent(new ClipboardEvent('paste',{clipboardData:d,bubbles:true,cancelable:true}))})()`);
+result.brokenImageShowsPlaceholder = await until(`!!document.querySelector('.cm-md-image-error')`);
+result.brokenImageKeepsSource = await ex(`document.querySelector('.cm-content').innerText.includes('base64,zzzz')`);
+await press('z', 'KeyZ', 90, true);
+await press('z', 'KeyZ', 90, true);
+await settle();
+
 // —— 十一、预览侧的闭集渲染 ——
 await click(`[...document.querySelectorAll('[role=tab]')].find(x=>x.textContent.trim()==='预览')`);
 await wait(700);

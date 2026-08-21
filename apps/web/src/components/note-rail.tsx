@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { History, List, ListChecks, MessageSquare, Paperclip, PanelRight, Share2, Sparkles, Trash2, Upload, Workflow, X } from "lucide-react";
-import { outlineOf, type DiagramBlock } from "@kb/shared/markdown";
+import { outlineOf, type DiagramBlock, type OutlineItem } from "@kb/shared/markdown";
+import { useDebounced } from "../lib/use-debounced";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
@@ -84,9 +85,12 @@ function Empty({ icon, title, text }: { icon: ReactNode; title: string; text: st
   );
 }
 
-function OutlineTab({ source, onJump }: { source: string; onJump: (slug: string, line: number) => void }) {
+function OutlineTab({ source, activeLine, onJump }: { source: string; activeLine?: number; onJump: (slug: string, line: number) => void }) {
   const [filter, setFilter] = useState("");
-  const items = useMemo(() => outlineOf(source), [source]);
+  // `outlineOf` 是一次完整的 markdown-it parse。不挡着就是每敲一个字全篇重解析一遍
+  // ——大纲一旦打开就记在 localStorage 里粘住，所以这对常用大纲的人是常态。
+  const settled = useDebounced(source, 180);
+  const items = useMemo(() => outlineOf(settled), [settled]);
   const minLevel = useMemo(() => items.reduce((m, i) => Math.min(m, i.level), 6), [items]);
   const shown = useMemo(() => {
     const q = filter.trim().toLocaleLowerCase();
@@ -94,8 +98,23 @@ function OutlineTab({ source, onJump }: { source: string; onJump: (slug: string,
   }, [items, filter]);
 
   // 中文按字数估读速，比按词数靠谱。
-  const chars = source.replace(/\s/g, "").length;
+  const chars = settled.replace(/\s/g, "").length;
   const minutes = Math.max(1, Math.round(chars / 400));
+
+  /**
+   * 光标落在哪一节。大纲以前是死的——能从大纲跳进正文，正文动了大纲却不动，
+   * 写长文时不知道自己在哪一节。`activeLine` 是 1 基（编辑器的老习惯），
+   * `item.line` 是 0 基（和 `data-line` 同一套），比的时候补上这一格。
+   */
+  const active = useMemo(() => {
+    if (!activeLine) return null;
+    let hit: OutlineItem | null = null;
+    for (const item of items) {
+      if (item.line + 1 > activeLine) break;
+      hit = item;
+    }
+    return hit;
+  }, [items, activeLine]);
 
   return (
     <>
@@ -122,9 +141,11 @@ function OutlineTab({ source, onJump }: { source: string; onJump: (slug: string,
                 key={`${item.slug}-${i}`}
                 onClick={() => onJump(item.slug, item.line)}
                 style={{ paddingLeft: 8 + (item.level - minLevel) * 14 }}
+                aria-current={item === active ? "location" : undefined}
                 className={cn(
                   "block w-full truncate rounded-lg py-1.5 pr-2 text-left text-sm hover:bg-muted",
                   item.level === minLevel ? "font-medium" : "text-muted-foreground",
+                  item === active && "bg-accent text-foreground shadow-[inset_2px_0_0_var(--primary)]",
                 )}
                 title={item.text}
               >
@@ -274,6 +295,7 @@ export function NoteRail({
   atts,
   wsId,
   onJump,
+  activeLine,
   onSearchTag,
   onChangeTags,
   onUpload,
@@ -297,6 +319,8 @@ export function NoteRail({
   atts: Attachment[];
   wsId?: string;
   onJump: (slug: string, line: number) => void;
+  /** 光标所在行（1 基）。大纲拿它高亮当前小节。 */
+  activeLine?: number;
   onSearchTag: (tag: string) => void;
   onChangeTags: (tags: string[]) => void;
   onUpload: () => void;
@@ -375,7 +399,7 @@ export function NoteRail({
         <Button variant="ghost" size="icon" aria-label="关闭右栏" onClick={onClose}><X /></Button>
       </div>
 
-      {tab === "outline" && <OutlineTab source={note.bodyMd} onJump={onJump} />}
+      {tab === "outline" && <OutlineTab source={note.bodyMd} activeLine={activeLine} onJump={onJump} />}
       {tab === "links" && <LinksTab note={note} backlinks={backlinks} wsId={wsId} onSearchTag={onSearchTag} onChangeTags={onChangeTags} />}
       {tab === "attachments" && (
         <AttachmentsTab note={note} atts={atts} onUpload={onUpload} onShare={onShareAttachment} onDelete={onDeleteAttachment} onInsert={onInsertAttachment} />

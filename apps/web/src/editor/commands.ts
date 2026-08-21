@@ -1,5 +1,8 @@
+import { indentLess, indentMore } from "@codemirror/commands";
+import { syntaxTree } from "@codemirror/language";
 import { EditorSelection, type ChangeSpec, type EditorState } from "@codemirror/state";
 import type { Command } from "@codemirror/view";
+import type { SyntaxNode } from "@lezer/common";
 
 /** 选区两侧是不是已经被 marker 包着。`*` 要额外躲开 `**`，否则给粗体加斜体会把粗体拆坏。 */
 function wrappedWith(state: EditorState, from: number, to: number, marker: string): boolean {
@@ -145,3 +148,26 @@ export const toggleTask: Command = view => {
   view.dispatch({ changes: { from: markerEnd, to: markerEnd + box[0].length }, userEvent: "input.task" });
   return true;
 };
+
+/**
+ * Tab 的归属。
+ *
+ * 老写法是无条件的 `indentWithTab`，那是键盘无障碍里的经典陷阱：Tab 键被编辑器吃掉，
+ * 只用键盘的人进得来出不去（CodeMirror 官方文档专门提醒过）。
+ *
+ * 所以只在**确实有东西可缩进**时才接管：光标在列表项里、在代码块里、或者选中了多行。
+ * 其余情况一律放行，Tab 照常把焦点移到下一个控件。
+ */
+function structural(state: EditorState): boolean {
+  const { main } = state.selection;
+  if (state.doc.lineAt(main.from).number !== state.doc.lineAt(main.to).number) return true;
+  if (BULLET.test(state.doc.lineAt(main.head).text)) return true;
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(main.head, -1);
+  for (; node; node = node.parent) {
+    if (node.name === "FencedCode" || node.name === "CodeBlock" || node.name === "CodeText") return true;
+  }
+  return false;
+}
+
+export const structuralTab: Command = view => (structural(view.state) ? indentMore(view) : false);
+export const structuralShiftTab: Command = view => (structural(view.state) ? indentLess(view) : false);

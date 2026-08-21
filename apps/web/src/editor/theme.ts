@@ -9,7 +9,9 @@ import { tags as t } from "@lezer/highlight";
 export const editorTheme = EditorView.theme({
   "&": { color: "var(--foreground)", backgroundColor: "transparent", height: "100%" },
   "&.cm-focused": { outline: "none" },
-  ".cm-scroller": { fontFamily: "var(--font-mono)", fontSize: "14px", lineHeight: "1.8", overflow: "auto" },
+  // 字号跟着 `--editor-font-scale` 缩放（外观偏好，档位见 layout-prefs）。写死过一次，
+  // 结果是「字太小」这条反馈只能靠浏览器整页缩放解决，连带把侧栏一起放大。
+  ".cm-scroller": { fontFamily: "var(--font-mono)", fontSize: "calc(14px * var(--editor-font-scale, 1))", lineHeight: "1.8", overflow: "auto" },
   ".cm-content": { padding: "0 0 45vh", caretColor: "var(--primary)" },
   ".cm-line": { padding: "0 2px 0 0" },
   ".cm-cursor, .cm-dropCursor": { borderLeftWidth: "2px", borderLeftColor: "var(--primary)" },

@@ -99,7 +99,7 @@ button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
 
 /* 正文保持易读的行宽，表格 / 代码块 / 图片 / 图表则允许占满整栏——
    宽屏和全屏下不该为了迁就一段文字，把一张五列的表也锁在 46rem 里。 */
-.markdown { --measure: 46rem; color: var(--foreground); font-size: 15px; line-height: 1.8; }
+.markdown { --measure: 46rem; color: var(--foreground); font-size: calc(15px * var(--editor-font-scale, 1)); line-height: 1.8; }
 .markdown > :is(p, ul, ol, blockquote, h1, h2, h3, h4, h5, h6, hr) { max-width: var(--measure); }
 .markdown > *:first-child { margin-top: 0; }
 .markdown h1,.markdown h2,.markdown h3 { margin: 1.5em 0 .6em; font-family: var(--font-title); font-weight: 700; letter-spacing: -.035em; line-height: 1.25; }
@@ -156,8 +156,47 @@ html[data-mode="dark"] {
   --code-punctuation: var(--fg-muted);
 }
 
-[data-editor="markdown"] { min-height: 0; }
+[data-editor="markdown"] { min-height: 0; --measure: 46rem; --fold-gutter: 1.15em; }
 [data-editor="markdown"] .cm-editor { height: 100%; }
+
+/* 折叠把手（设计 17 §3.10）。它是辅助，不该跟正文抢注意力：平时几乎透明，
+   鼠标进了编辑器才浮出来；已经折起来的那条一直可见，否则用户会找不到自己折了什么。 */
+[data-editor="markdown"] .cm-foldGutter { width: var(--fold-gutter); }
+[data-editor="markdown"] .cm-foldGutter .cm-gutterElement { padding: 0; text-align: center; }
+.cm-md-fold { display: block; cursor: pointer; color: var(--muted-foreground); opacity: 0; font-size: 13px; line-height: inherit; transition: opacity 120ms ease-out; }
+[data-editor="markdown"]:hover .cm-md-fold { opacity: .45; }
+.cm-md-fold:hover { opacity: 1 !important; }
+.cm-md-fold-closed { opacity: .8; }
+.cm-foldPlaceholder { cursor: pointer; }
+
+/* 双链悬停卡片（设计 17 §3.11）。外框走 .cm-tooltip 那套，这里只管里面的排版。 */
+.cm-md-wiki-card { max-width: 24rem; padding: .55rem .7rem; font-family: var(--font-ui); }
+.cm-md-wiki-card-title { margin: 0; font-weight: 600; font-size: 13px; line-height: 1.4; }
+.cm-md-wiki-card-meta { margin: .15rem 0 0; color: var(--muted-foreground); font-size: 11px; }
+.cm-md-wiki-card-body { margin: .35rem 0 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
+.cm-md-wiki-card-missing .cm-md-wiki-card-body { font-style: italic; }
+
+/* 图片小部件的外壳。它存在的唯一理由是「根节点不能被换掉」（见 live-preview.ts 的注释）。 */
+.cm-md-image-box { display: inline-block; max-width: 100%; vertical-align: top; }
+
+/* 图挂了别只留一个破图标：至少要能一眼看出是哪张坏了（同坏公式、坏图表）。 */
+.cm-md-image-error {
+  display: inline-block; border: 1px dashed var(--destructive); border-radius: 8px;
+  padding: .2em .5em; color: var(--destructive); font-family: var(--font-ui); font-size: .85em;
+}
+
+/* 附件上传中的提示。它是装饰不是正文——上传期间文档一个字节都不动（设计 17 §3.6）。 */
+.cm-md-uploading {
+  margin: 0 .2em; border-radius: 5px; background: var(--muted); padding: .05em .45em;
+  color: var(--muted-foreground); font-family: var(--font-ui); font-size: .85em;
+}
+
+/* 正文行宽（设计 17 §3.2）。编辑器这一侧以前没限，宽屏下一行能跑到 1400px，
+   而右边预览里同一段限在 46rem——说好的「左边缘对齐同一条线」只对齐了左边。
+   代码块是「资料」不是散文，跟表格 / 图 / 块级公式一样可以占满整栏；
+   块级小部件本来就不是 .cm-line，天然不受这条限制。 */
+[data-editor="markdown"] .cm-line { max-width: var(--measure); }
+[data-editor="markdown"] .cm-line.cm-md-code-line { max-width: none; }
 
 /* Live Preview 的装饰件（设计 17）。全部是显示层，不对应文档里的任何字节。 */
 .cm-md-task { translate: 0 2px; margin-right: .35em; accent-color: var(--primary); cursor: pointer; }
@@ -177,7 +216,7 @@ html[data-mode="dark"] {
    表头照样不会被挤成一列一个字，只有真正装不下的宽表才滚动。 */
 @media (max-width: 640px) {
   .markdown table { min-width: 0; }
-  .markdown { font-size: 15.5px; }
+  .markdown { font-size: calc(15.5px * var(--editor-font-scale, 1)); }
   .markdown th, .markdown td { padding: .45em .55em; }
 }
 
@@ -191,10 +230,24 @@ html[data-mode="dark"] {
 :fullscreen { background: var(--background); }
 
 /* 即时渲染（Typora 模式）：正文用比例字体，只有代码还是等宽。 */
-[data-wysiwyg="1"] .cm-scroller { font-family: var(--font-ui); font-size: 15px; }
+[data-wysiwyg="1"] .cm-scroller { font-family: var(--font-ui); font-size: calc(15px * var(--editor-font-scale, 1)); }
 [data-wysiwyg="1"] .cm-line { padding-block: 1px; }
 .cm-md-code-line { background: color-mix(in srgb, var(--muted) 70%, transparent); font-family: var(--font-mono); font-size: 13.5px; }
 .cm-md-quote-line { border-left: 3px solid color-mix(in srgb, var(--primary) 45%, transparent); padding-left: .8em; color: var(--muted-foreground); }
+
+/* 代码块与引用的底色以前是逐行画的，一整块看着像一摞独立的条。首尾行单独收个圆角，
+   中间行照旧连成一片，这样它才像「一个块」。 */
+.cm-md-code-line.cm-md-block-first { border-radius: 8px 8px 0 0; padding-top: .3em; }
+.cm-md-code-line.cm-md-block-last { border-radius: 0 0 8px 8px; padding-bottom: .3em; }
+.cm-md-code-line.cm-md-block-first.cm-md-block-last { border-radius: 8px; }
+.cm-md-quote-line.cm-md-block-first { padding-top: .15em; }
+.cm-md-quote-line.cm-md-block-last { padding-bottom: .15em; }
+
+/* 标题在即时渲染下要有自己的呼吸，否则 `# 标题` 会贴着上一段，和预览侧的观感对不上。
+   用 padding 不用 margin：CodeMirror 是按行盒的实际高度算滚动位置的，外边距不计入盒高，
+   加 margin 会让它把行的位置算错（官方也提醒过别给 .cm-line 加外边距）。 */
+[data-wysiwyg="1"] .cm-line.cm-md-heading { padding-top: .6em; }
+[data-wysiwyg="1"] .cm-line.cm-md-heading:first-child { padding-top: 0; }
 /* 编辑器里的表格小部件：列宽规则跟预览栏共用 .markdown 那套，这里只收一下外边距。 */
 .cm-md-table { margin: .35em 0; }
 .cm-md-table .table-scroll { margin: 0; }
@@ -205,8 +258,11 @@ html[data-mode="dark"] {
 .cm-md-diagram-error pre { border-color: var(--destructive); color: var(--destructive); }
 
 /* 编辑器与预览的正文栏宽。全屏是为了要地方，就别再锁在 1400px。 */
-.editor-measure { width: 100%; max-width: 1400px; }
+.editor-measure { width: 100%; max-width: 1400px; --measure: 46rem; --fold-gutter: 1.15em; }
 [data-zen="1"] .editor-measure { max-width: min(100%, 1760px); }
+/* 标题输入框跟正文同宽同起点：正文收到 46rem 之后，一个横贯 1400px 的大标题会显得没着没落；
+   左边那点缩进是给折叠把手的槽让位，不让的话标题会比正文往左突出一截。 */
+.editor-measure > input { max-width: calc(var(--measure) + var(--fold-gutter)); padding-left: var(--fold-gutter); }
 
 /* 表格的可视化编辑（设计 17 §3.5）。把手平时不占位，hover 才出现，只读态整套不挂。 */
 .cm-md-table.cm-table-editable { position: relative; }

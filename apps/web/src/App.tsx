@@ -11,11 +11,14 @@ import {
 import { api, type Me } from "./api";
 import { MarkdownView } from "./MarkdownView";
 import { MarkdownEditor, type MarkdownEditorHandle } from "./editor/markdown-editor";
+import { EditorFormatBar } from "./components/editor-format-bar";
+import type { WikiPreview } from "./editor/wiki-hover";
 import { VIM_MODE_LABEL, type VimMode } from "./editor/vim";
 import { type CollabPeer, type CollabStatus } from "./editor/collab";
 import { EditorStatusBar, type CursorInfo } from "./components/editor-status-bar";
 import { CommandPalette, type Command as PaletteCommand } from "./components/command-palette";
-import { NOTEBOOKS_MAX, NOTEBOOKS_MIN, TREE_MAX, TREE_MIN, clamp, loadLayout, saveLayout, type LayoutPrefs } from "./lib/layout-prefs";
+import { FONT_SCALES, NOTEBOOKS_MAX, NOTEBOOKS_MIN, TREE_MAX, TREE_MIN, clamp, loadLayout, saveLayout, type LayoutPrefs } from "./lib/layout-prefs";
+import { useDebounced } from "./lib/use-debounced";
 import { cn } from "./lib/utils";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
@@ -40,7 +43,7 @@ import { NoteList, NoteSortMenu } from "./components/note-list";
 import { NoteRail, loadRailTab, saveRailTab, type Attachment, type RailTab } from "./components/note-rail";
 import { CalendarPage, TodayPage } from "./components/calendar";
 import { sortNotes } from "@kb/shared";
-import { diagramBlockAt } from "@kb/shared/markdown";
+import { diagramBlockAt, plainTextOf } from "@kb/shared/markdown";
 import { loadNotebookNoteSort, saveNotebookNoteSort, type NoteSortMode } from "./lib/note-sort-pref";
 import { WorkspaceSettings } from "./components/workspace-settings";
 import { AdminPage } from "./components/admin-page";
@@ -52,6 +55,13 @@ import { readMarkdownZip } from "./lib/zip";
 import { QuickOpen, useQuickOpenHotkey } from "./components/quick-open";
 import { AppNav, loadLastWorkspace, saveLastWorkspace, useSquareEnabled, type NavPlace } from "./components/app-nav";
 import { CircleRail, SquareRail } from "./components/feed-rail";
+
+/** 字号在档位里挪一格，到头就停住。 */
+function stepScale(current: number, delta: number): number {
+  const at = FONT_SCALES.indexOf(current as (typeof FONT_SCALES)[number]);
+  const next = Math.min(FONT_SCALES.length - 1, Math.max(0, (at < 0 ? 1 : at) + delta));
+  return FONT_SCALES[next];
+}
 
 /** 导出接口回的是二进制，不能走 api() 的 JSON 解析。 */
 async function downloadZip(path: string) {
@@ -427,8 +437,15 @@ function Workspace() {
     } catch (e) { toast.error("上传失败", (e as Error).message); return null; }
   }
 
+  // 分栏里的预览。**不能直接吃 note.bodyMd**：那样每敲一个字都要把整篇重新
+  // markdown-it 一遍、DOMPurify 一遍、再补一遍公式与图，长笔记打字会明显掉帧。
+  // 停手 140ms 再渲染；「预览」独占那一屏的时候不走这条路，那里本来就没人在打字。
+  const previewBody = useDebounced(note?.bodyMd ?? "", 140, note?.id);
+
   // —— 分栏视图的滚动同步。两边靠 `data-line` 对齐；刚被程序滚过的一侧短暂闭嘴，免得来回抖。——
   const editorRef = useRef<MarkdownEditorHandle>(null);
+  /** 双链悬停卡片的短缓存：标题 → { 取的时间, 内容 }。 */
+  const wikiCards = useRef(new Map<string, { at: number; data: WikiPreview }>());
   const [vimMode, setVimMode] = useState<string | null>(null);
   const [collab, setCollab] = useState<{ status: CollabStatus; peers: CollabPeer[] }>({ status: "offline", peers: [] });
   const onCollab = useCallback((info: { status: CollabStatus; peers: CollabPeer[] }) => setCollab(info), []);
@@ -493,10 +510,14 @@ function Workspace() {
     setLayout(v => v.showNotebooks || v.showTree ? { ...v, showNotebooks: false, showTree: false } : { ...v, showNotebooks: true, showTree: true });
   };
 
-  // 编辑器视图。窄屏默认「预览」——「分栏」的触发器本来就是 hidden sm:block，
-  // 以前 defaultValue 写死 split，等于手机上激活了一个看不见的 tab：
-  // 编辑/预览两个按钮都不高亮，内容却按分栏渲染，谁也说不清自己在哪个模式里。
-  const [editorTab, setEditorTab] = useState<"write" | "preview" | "split">(() => narrow ? "preview" : "split");
+  // 编辑器视图一律默认「预览」。打开一篇笔记的第一个动作通常是读而不是写，而分栏把
+  // 正文挤成半幅、还带着一整套 Markdown 标记，恰恰是最难读的那一档。要写就点「编辑」
+  // 或「分栏」，选择在本次会话里保留（这个 state 挂在 Workspace 上，换笔记不重置）。
+  //
+  // 窄屏另外还有一层保险：「分栏」的触发器本来就是 hidden sm:block，让它在手机上生效
+  // 等于激活了一个看不见的 tab——编辑/预览两个按钮都不高亮，内容却按分栏渲染，
+  // 谁也说不清自己在哪个模式里。所以下面那个 effect 要留着。
+  const [editorTab, setEditorTab] = useState<"write" | "preview" | "split">("preview");
   useEffect(() => { if (narrow) setEditorTab(t => t === "split" ? "preview" : t); }, [narrow]);
 
   const [palette, setPalette] = useState(false);
@@ -563,6 +584,9 @@ function Workspace() {
       { id: "wysiwyg", group: "编辑器", label: layout.wysiwyg ? "切回源码模式（显示标记）" : "切到即时渲染（Typora 模式）", icon: <Type />, run: () => setLayout(v => ({ ...v, wysiwyg: !v.wysiwyg })) },
       { id: "typewriter", group: "编辑器", label: layout.typewriter ? "关闭打字机滚动" : "打开打字机滚动", icon: <PenLine />, run: () => setLayout(v => ({ ...v, typewriter: !v.typewriter })) },
       { id: "vim", group: "编辑器", label: layout.vim ? "关闭 Vim keymap" : "打开 Vim keymap", icon: <Keyboard />, run: () => setLayout(v => ({ ...v, vim: !v.vim })) },
+      { id: "spellcheck", group: "编辑器", label: layout.spellcheck ? "关闭拼写检查" : "打开拼写检查", icon: <Check />, run: () => setLayout(v => ({ ...v, spellcheck: !v.spellcheck })) },
+      { id: "font-bigger", group: "编辑器", label: "正文字号调大", icon: <Type />, run: () => setLayout(v => ({ ...v, fontScale: stepScale(v.fontScale, 1) })) },
+      { id: "font-smaller", group: "编辑器", label: "正文字号调小", icon: <Type />, run: () => setLayout(v => ({ ...v, fontScale: stepScale(v.fontScale, -1) })) },
       { id: "quick-open", group: "导航", label: "快速打开笔记", hint: "Ctrl+K", icon: <Search />, run: () => setQuickOpen(true) },
       { id: "calendar", group: "导航", label: "日历", icon: <CalendarDays />, run: () => nav(`/w/${wsId}/calendar`) },
       { id: "today", group: "导航", label: "今天", icon: <Sun />, run: () => nav(`/w/${wsId}/today`) },
@@ -588,6 +612,27 @@ function Workspace() {
   }
 
   function openWiki(title: string) { const target = tree.find(n => n.title.localeCompare(title, undefined, { sensitivity: "accent" }) === 0); if (target) nav(`/w/${wsId}/n/${target.id}`); }
+
+  /**
+   * 双链悬停卡片的数据。解析规则跟 `openWiki` 同一套，否则会出现「卡片里有、点开却跳不过去」。
+   * 缓存 20 秒：同一条链接来回悬停不该每次都打一趟接口，但也别缓存到看不见别人的新改动。
+   */
+  const loadWikiPreview = useCallback(async (title: string) => {
+    const key = title.toLocaleLowerCase();
+    const hit = wikiCards.current.get(key);
+    if (hit && Date.now() - hit.at < 20_000) return hit.data;
+    const target = tree.find(n => n.title.localeCompare(title, undefined, { sensitivity: "accent" }) === 0);
+    let data: WikiPreview = null;
+    if (target) {
+      try {
+        const found = await api<NoteDto>(`/api/v1/notes/${target.id}`);
+        data = { title: found.title || "无标题", excerpt: plainTextOf(found.bodyMd).slice(0, 180), notebook: nbs.find(n => n.id === found.notebookId)?.title };
+      } catch { data = null; }
+    }
+    wikiCards.current.set(key, { at: Date.now(), data });
+    return data;
+  }, [tree, nbs]);
+
   if (me === undefined) return <div className="grid h-full place-items-center"><Circle className="size-5 animate-pulse fill-current" /></div>;
 
   return <TooltipProvider delayDuration={300}><div className="flex h-full flex-col bg-background">
@@ -624,7 +669,7 @@ function Workspace() {
         <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-4"><div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"><span>{activeNb?.title}</span><ChevronRight className="size-3" /><span className="truncate text-foreground">{note.title || "未命名"}</span></div><div className="ml-auto flex items-center gap-1">{viewers.length > 0 && <Tooltip content={`${viewers.join("、")} 也打开着这篇`}><Badge className="mr-1 gap-1"><Users className="size-3" />{viewers.length === 1 ? `${viewers[0]} 在看` : `${viewers.length} 人在看`}</Badge></Tooltip>}
 <Tooltip content={favorited ? "取消收藏" : "收藏这篇"}><Button variant="ghost" size="icon" aria-label={favorited ? "取消收藏" : "收藏"} onClick={async () => { const next = !favorited; setFavorited(next); try { await api(`/api/v1/notes/${note.id}/favorite`, { method: next ? "PUT" : "DELETE" }); } catch (e) { setFavorited(!next); setStatus((e as Error).message); } }}><Star className={favorited ? "fill-current" : ""} /></Button></Tooltip>
 <Button size="sm" onClick={() => setShareTarget({ kind: "note", id: note.id, title: note.title, bodyMd: note.bodyMd })}><Share2 /> <span className="hidden sm:inline">分享</span></Button><Tooltip content={note.aiIndex ? "AI 可读取此笔记" : "AI 无法读取此笔记"}><Button variant={note.aiIndex ? "secondary" : "ghost"} size="sm" onClick={() => changeNote({ aiIndex: !note.aiIndex }, true)}><Bot /> <span className="hidden sm:inline">AI 可读</span></Button></Tooltip><Tooltip content={rail ? "收起右栏" : "展开右栏（大纲 / 反向链接 / 附件 / 版本）"}><Button variant={rail ? "secondary" : "ghost"} size="icon" aria-label="右栏" onClick={() => openRail(rail ? null : "outline")}><PanelRight /></Button></Tooltip><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => openRail("ai")}><Sparkles />AI 写作建议</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("diagram")}><Workflow />AI 画图</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("outline")}><List />大纲</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("versions")}><RotateCcw />版本历史</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("attachments")}><Paperclip />附件 {atts.length > 0 && <Badge className="ml-auto">{atts.length}</Badge>}</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("review")}><MessageSquare />评论与纠错</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("links")}><PanelRight />反向链接 <Badge className="ml-auto">{backlinks.length}</Badge></DropdownMenuItem><DropdownMenuItem onSelect={() => changeNote({ published: !note.published }, true)}><Globe2 />{note.published ? "从文档站隐藏此页" : "在文档站发布此页"}</DropdownMenuItem><DropdownMenuItem onSelect={async () => { if (!nbId) return; const next = !site?.published; const d = await api<{ published: boolean; slug: string }>(`/api/v1/notebooks/${nbId}/site`, { method: "PATCH", body: JSON.stringify({ published: next }) }); setSite(d); }}><Globe2 />{site?.published ? "下线文档站" : "发布笔记本为文档站"}</DropdownMenuItem>{site?.published && <DropdownMenuItem onSelect={() => window.open(site.slug, "_blank")}><ExternalLink />打开文档站</DropdownMenuItem>}<DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onSelect={() => void deleteCurrent()}><Trash2 />移到回收站</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div></div>
-        <div className="relative flex min-h-0 flex-1"><div className="min-h-0 min-w-0 flex-1"><Tabs.Root value={editorTab} onValueChange={v => setEditorTab(v as "write" | "preview" | "split")} className="flex h-full flex-col"><div className="flex items-center justify-between px-4 pt-4 sm:px-6 sm:pt-6"><Tabs.List className="inline-flex rounded-lg bg-muted p-1"><Tabs.Trigger value="write" className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">编辑</Tabs.Trigger><Tabs.Trigger value="preview" className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">预览</Tabs.Trigger><Tabs.Trigger value="split" className="hidden rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm sm:block">分栏</Tabs.Trigger></Tabs.List><div className="flex items-center gap-1"><Tooltip content={layout.wysiwyg ? "即时渲染：开（点击显示 Markdown 标记）" : "即时渲染：关（点击隐藏标记）"}><Button variant={layout.wysiwyg ? "secondary" : "ghost"} size="icon" className="size-8" aria-label="切换即时渲染" onClick={() => setLayout(v => ({ ...v, wysiwyg: !v.wysiwyg }))}><Type /></Button></Tooltip><Tooltip content="命令面板（Ctrl+Shift+P）"><Button variant="ghost" size="icon" className="size-8" aria-label="命令面板" onClick={() => setPalette(true)}><Terminal /></Button></Tooltip><Tooltip content={zen ? "退出全屏（Esc）" : "编辑器全屏"}><Button variant="ghost" size="icon" className="size-8" aria-label={zen ? "退出全屏" : "编辑器全屏"} onClick={() => void toggleZen()}>{zen ? <Minimize2 /> : <Maximize2 />}</Button></Tooltip></div></div><div className="editor-measure mx-auto flex min-h-0 flex-1 flex-col px-4 pb-4 pt-3 sm:px-6 sm:pb-6 sm:pt-4"><input className="mb-3 w-full border-0 bg-transparent font-[var(--font-title)] text-2xl font-semibold tracking-[-.045em] outline-none placeholder:text-muted-foreground/40 sm:mb-4 sm:text-3xl md:text-4xl" value={note.title} onChange={e => changeNote({ title: e.target.value })} placeholder="无标题" /><Tabs.Content value="write" className="min-h-0 flex-1 overflow-hidden"><MarkdownEditor ref={editorRef} className="h-full" resetKey={note.id} value={note.bodyMd} readOnly={!note.canEdit} onChange={bodyMd => changeNote({ bodyMd })} onSave={() => void save()} onWiki={openWiki} onUpload={uploadAttachment} onCursor={setCursor} typewriter={layout.typewriter} wysiwyg={layout.wysiwyg} vim={layout.vim} onVimMode={reportVimMode} collab={me && note.canEdit ? { id: me.id, name: me.displayName } : null} onCollab={onCollab} completion={{ workspaceId: wsId, excludeNoteId: note.id, notebookNames: Object.fromEntries(nbs.map(n => [n.id, n.title])) }} autoFocus placeholder="开始写作，或输入 [[笔记标题]] 建立双链…" /></Tabs.Content><Tabs.Content value="preview" className="min-h-0 flex-1 overflow-auto"><div data-note-preview className="w-full py-2"><MarkdownView source={note.bodyMd} onWiki={openWiki} onToggleTask={note.canEdit ? bodyMd => changeNote({ bodyMd }, true) : undefined} /></div></Tabs.Content><Tabs.Content value="split" className="min-h-0 flex-1"><div className="grid h-full min-h-0 grid-cols-1 divide-x divide-border overflow-hidden rounded-xl border border-border md:grid-cols-2"><MarkdownEditor ref={editorRef} className="h-full min-h-0 overflow-hidden bg-muted/25 p-5" resetKey={note.id} value={note.bodyMd} readOnly={!note.canEdit} onChange={bodyMd => changeNote({ bodyMd })} onSave={() => void save()} onWiki={openWiki} onUpload={uploadAttachment} onScrollLine={syncPreview} onCursor={setCursor} typewriter={layout.typewriter} wysiwyg={layout.wysiwyg} vim={layout.vim} onVimMode={reportVimMode} collab={me && note.canEdit ? { id: me.id, name: me.displayName } : null} onCollab={onCollab} completion={{ workspaceId: wsId, excludeNoteId: note.id, notebookNames: Object.fromEntries(nbs.map(n => [n.id, n.title])) }} placeholder="开始写作，或输入 [[笔记标题]] 建立双链…" /><ScrollArea className="h-full" viewportRef={bindPreview}><div data-note-preview className="p-6"><MarkdownView source={note.bodyMd} sourceLines onWiki={openWiki} onToggleTask={note.canEdit ? bodyMd => changeNote({ bodyMd }, true) : undefined} /></div></ScrollArea></div></Tabs.Content></div></Tabs.Root></div>
+        <div className="relative flex min-h-0 flex-1"><div className="min-h-0 min-w-0 flex-1"><Tabs.Root value={editorTab} onValueChange={v => setEditorTab(v as "write" | "preview" | "split")} className="flex h-full flex-col"><div className="flex items-center justify-between px-4 pt-4 sm:px-6 sm:pt-6"><Tabs.List className="inline-flex rounded-lg bg-muted p-1"><Tabs.Trigger value="write" className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">编辑</Tabs.Trigger><Tabs.Trigger value="preview" className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">预览</Tabs.Trigger><Tabs.Trigger value="split" className="hidden rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm sm:block">分栏</Tabs.Trigger></Tabs.List><div className="flex items-center gap-1"><Tooltip content={layout.wysiwyg ? "即时渲染：开（点击显示 Markdown 标记）" : "即时渲染：关（点击隐藏标记）"}><Button variant={layout.wysiwyg ? "secondary" : "ghost"} size="icon" className="size-8" aria-label="切换即时渲染" onClick={() => setLayout(v => ({ ...v, wysiwyg: !v.wysiwyg }))}><Type /></Button></Tooltip><Tooltip content="命令面板（Ctrl+Shift+P）"><Button variant="ghost" size="icon" className="size-8" aria-label="命令面板" onClick={() => setPalette(true)}><Terminal /></Button></Tooltip><Tooltip content={zen ? "退出全屏（Esc）" : "编辑器全屏"}><Button variant="ghost" size="icon" className="size-8" aria-label={zen ? "退出全屏" : "编辑器全屏"} onClick={() => void toggleZen()}>{zen ? <Minimize2 /> : <Maximize2 />}</Button></Tooltip></div></div><div className="editor-measure mx-auto flex min-h-0 flex-1 flex-col px-4 pb-4 pt-3 sm:px-6 sm:pb-6 sm:pt-4" style={{ "--editor-font-scale": String(layout.fontScale) } as React.CSSProperties}><input className="mb-3 w-full border-0 bg-transparent font-[var(--font-title)] text-2xl font-semibold tracking-[-.045em] outline-none placeholder:text-muted-foreground/40 sm:mb-4 sm:text-3xl md:text-4xl" value={note.title} onChange={e => changeNote({ title: e.target.value })} placeholder="无标题" /><Tabs.Content value="write" className="min-h-0 flex-1 overflow-hidden"><MarkdownEditor ref={editorRef} className="h-full" resetKey={note.id} value={note.bodyMd} readOnly={!note.canEdit} onChange={bodyMd => changeNote({ bodyMd })} onSave={() => void save()} onWiki={openWiki} onUpload={uploadAttachment} onCursor={setCursor} typewriter={layout.typewriter} wysiwyg={layout.wysiwyg} vim={layout.vim} onVimMode={reportVimMode} spellcheck={layout.spellcheck} collab={me && note.canEdit ? { id: me.id, name: me.displayName } : null} onCollab={onCollab} completion={{ workspaceId: wsId, excludeNoteId: note.id, notebookNames: Object.fromEntries(nbs.map(n => [n.id, n.title])) }} wikiPreview={loadWikiPreview} autoFocus placeholder="开始写作，或输入 [[笔记标题]] 建立双链…" />{note.canEdit && <EditorFormatBar onAction={action => editorRef.current?.run(action)} />}</Tabs.Content><Tabs.Content value="preview" className="min-h-0 flex-1 overflow-auto"><div data-note-preview className="w-full py-2"><MarkdownView source={note.bodyMd} onWiki={openWiki} onToggleTask={note.canEdit ? bodyMd => changeNote({ bodyMd }, true) : undefined} /></div></Tabs.Content><Tabs.Content value="split" className="min-h-0 flex-1"><div className="grid h-full min-h-0 grid-cols-1 divide-x divide-border overflow-hidden rounded-xl border border-border md:grid-cols-2"><MarkdownEditor ref={editorRef} className="h-full min-h-0 overflow-hidden bg-muted/25 p-5" resetKey={note.id} value={note.bodyMd} readOnly={!note.canEdit} onChange={bodyMd => changeNote({ bodyMd })} onSave={() => void save()} onWiki={openWiki} onUpload={uploadAttachment} onScrollLine={syncPreview} onCursor={setCursor} typewriter={layout.typewriter} wysiwyg={layout.wysiwyg} vim={layout.vim} onVimMode={reportVimMode} spellcheck={layout.spellcheck} collab={me && note.canEdit ? { id: me.id, name: me.displayName } : null} onCollab={onCollab} completion={{ workspaceId: wsId, excludeNoteId: note.id, notebookNames: Object.fromEntries(nbs.map(n => [n.id, n.title])) }} wikiPreview={loadWikiPreview} placeholder="开始写作，或输入 [[笔记标题]] 建立双链…" /><ScrollArea className="h-full" viewportRef={bindPreview}><div data-note-preview className="p-6"><MarkdownView source={previewBody} sourceLines onWiki={openWiki} onToggleTask={note.canEdit ? bodyMd => changeNote({ bodyMd }, true) : undefined} /></div></ScrollArea></div></Tabs.Content></div></Tabs.Root></div>
           {rail && <NoteRail
             note={note}
             tab={rail}
@@ -634,6 +679,7 @@ function Workspace() {
             atts={atts}
             wsId={wsId}
             onJump={jumpToHeading}
+            activeLine={cursor?.line}
             onSearchTag={t => { setSearch(t); void runSearch(t); }}
             onChangeTags={tags => changeNote({ tags }, true)}
             onUpload={() => document.getElementById("note-attachment-input")?.click()}

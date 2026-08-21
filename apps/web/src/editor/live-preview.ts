@@ -65,11 +65,35 @@ class ImageWidget extends WidgetType {
   constructor(readonly url: string, readonly alt: string) { super(); }
   eq(other: ImageWidget) { return other.url === this.url && other.alt === this.alt; }
   toDOM() {
+    // 外面必须套一层固定不动的壳。
+    //
+    // **小部件的根节点绝对不能被换掉**：CodeMirror 认的就是那个根，把它 replaceWith 掉，
+    // DOM 观察器会以为是用户在编辑，转头把新节点的文字**读回文档**——
+    // 一张图裂开就能把 `![封面](...)` 原地改成「图片加载失败：封面」。实测过，会真的改。
+    // 壳留着、只换壳里面的东西就没事。
+    const box = document.createElement("span");
+    box.className = "cm-md-image-box";
+
     const img = document.createElement("img");
     img.className = "cm-md-image";
+    // 不加 loading="lazy"：CodeMirror 本来就只渲染视口内的那几行，屏幕外的图根本不在 DOM 里，
+    // 再叠一层惰性加载省不下什么，却会让「明明看得见却一直不加载」多出一种可能。
     img.src = this.url;
     img.alt = this.alt;
-    return img;
+    img.title = this.alt || this.url;
+    // 图挂了别只留一个破图标：换成一块写着 alt 与地址的占位，
+    // 至少能一眼看出是哪张图坏了——和坏公式、坏图表一个口径（设计 03 §4.6）。
+    img.addEventListener("error", () => {
+      const failed = document.createElement("span");
+      failed.className = "cm-md-image-error";
+      failed.textContent = `图片加载失败：${this.alt || this.url}`;
+      failed.title = this.url;
+      img.remove();
+      box.append(failed);
+    }, { once: true });
+
+    box.append(img);
+    return box;
   }
   ignoreEvent() { return false; }
 }
@@ -137,8 +161,14 @@ class DiagramWidget extends WidgetType {
 const hide = Decoration.replace({});
 const codeLine = Decoration.line({ class: "cm-md-code-line" });
 const quoteLine = Decoration.line({ class: "cm-md-quote-line" });
+/** 块的首尾行单独标一下，圆角与上下留白只画在两头，中间行才连成一整块。 */
+const blockFirst = Decoration.line({ class: "cm-md-block-first" });
+const blockLast = Decoration.line({ class: "cm-md-block-last" });
+/** 标题行。着色由 HighlightStyle 管，这个类只用来给标题上方留白。 */
+const headingLine = Decoration.line({ class: "cm-md-heading" });
 
-type Built = { decorations: DecorationSet; atomic: DecorationSet };
+/** `scopes` 是这一次构建里所有「要不要露出」的判定范围，光标移动时靠它短路重建。 */
+type Built = { decorations: DecorationSet; atomic: DecorationSet; scopes: Array<{ from: number; to: number }> };
 
 /**
  * 这段标记要不要露出原文。
@@ -165,19 +195,28 @@ function wholeLines(state: EditorState, from: number, to: number): boolean {
  * 「Block decorations may not be specified via plugins」，跨行的替换同理。
  * 所以这里跟下面的行内装饰分成两套，别再合回去。
  */
+/**
+ * 块级装饰的结果。`spans` 是**所有候选块**的范围（不管这一刻渲没渲），
+ * 光标动了以后靠它判断「露出关系有没有变」——没变就不重建，见下面 `update`。
+ */
+type BlockBuilt = { decorations: DecorationSet; spans: Array<{ from: number; to: number }> };
+
 function blockField(wysiwyg: boolean, noteId: string) {
-  const build = (state: EditorState): DecorationSet => {
+  const build = (state: EditorState): BlockBuilt => {
     const ranges: Range<Decoration>[] = [];
+    const spans: Array<{ from: number; to: number }> = [];
     const revealed = revealer(state, wysiwyg);
     syntaxTree(state).iterate({
       enter: node => {
         if (node.name === "FencedCode") {
           // 图只在即时渲染模式下就地画：整行粒度里光标一进块就整块跳回源码，
           // 而一张图通常有好几行，跳来跳去比不画还难用（同表格）。
-          if (!wysiwyg || revealed(node.from, node.to) || !wholeLines(state, node.from, node.to)) return false;
+          if (!wysiwyg || !wholeLines(state, node.from, node.to)) return false;
           // 用共享的那份识别逻辑，别在这里再写一套围栏解析。
           const block = diagramBlockAt(state.doc.sliceString(node.from, node.to), 0);
-          if (block?.source.trim()) {
+          if (!block?.source.trim()) return false;
+          spans.push({ from: node.from, to: node.to });
+          if (!revealed(node.from, node.to)) {
             ranges.push(Decoration.replace({ widget: new DiagramWidget(block.source), block: true }).range(node.from, node.to));
           }
           return false;
@@ -185,32 +224,47 @@ function blockField(wysiwyg: boolean, noteId: string) {
         // 行内内容占了语法树的绝大部分，而块级公式与表格都不会长在段落或代码块里面。
         if (node.name === "Paragraph" || node.name === "CodeBlock") return false;
         if (node.name === "BlockMath") {
-          if (revealed(node.from, node.to) || !wholeLines(state, node.from, node.to)) return false;
+          if (!wholeLines(state, node.from, node.to)) return false;
           const raw = state.doc.sliceString(node.from, node.to).trim();
           // 没闭合就别渲染，不然刚敲下 `$$` 后面半篇文章会突然变成一坨公式。
           if (!raw.endsWith("$$") || raw.length <= 4) return false;
           const body = raw.slice(2, -2).trim();
-          if (body) ranges.push(Decoration.replace({ widget: new MathWidget(body, true), block: true }).range(node.from, node.to));
+          if (!body) return false;
+          spans.push({ from: node.from, to: node.to });
+          if (!revealed(node.from, node.to)) {
+            ranges.push(Decoration.replace({ widget: new MathWidget(body, true), block: true }).range(node.from, node.to));
+          }
           return false;
         }
         if (node.name === "Table") {
           // 表格只在即时渲染模式下就地渲染：整行粒度里光标一进表格就整块跳回源码，
           // 而表格通常有好几行，跳来跳去比不渲染还难用。
-          if (!wysiwyg || revealed(node.from, node.to) || !wholeLines(state, node.from, node.to)) return;
+          if (!wysiwyg || !wholeLines(state, node.from, node.to)) return;
+          spans.push({ from: node.from, to: node.to });
+          if (revealed(node.from, node.to)) return;      // 回源码态，里面的行内标记照常装饰
           ranges.push(Decoration.replace({ widget: new TableWidget(state.doc.sliceString(node.from, node.to), noteId, !state.readOnly), block: true }).range(node.from, node.to));
           return false;
         }
         return;
       },
     });
-    return Decoration.set(ranges, true);
+    return { decorations: Decoration.set(ranges, true), spans };
   };
-  return StateField.define<DecorationSet>({
+  return StateField.define<BlockBuilt>({
     create: build,
-    update: (value, tr) => (tr.docChanged || tr.selection || syntaxTree(tr.state) !== syntaxTree(tr.startState)) ? build(tr.state) : value,
+    update: (value, tr) => {
+      if (tr.docChanged || syntaxTree(tr.state) !== syntaxTree(tr.startState)) return build(tr.state);
+      if (!tr.selection) return value;
+      // 光标动一下就全文重扫一遍语法树太贵了（长笔记里每次方向键都要走一趟）。
+      // 块级件就那么几个，先看这次移动有没有真的改变某个块的「露出 / 渲染」状态，没改就复用。
+      const before = revealer(tr.startState, wysiwyg);
+      const after = revealer(tr.state, wysiwyg);
+      const flipped = value.spans.some(span => before(span.from, span.to) !== after(span.from, span.to));
+      return flipped ? build(tr.state) : value;
+    },
     provide: field => [
-      EditorView.decorations.from(field),
-      EditorView.atomicRanges.of(view => view.state.field(field, false) ?? RangeSet.empty),
+      EditorView.decorations.from(field, value => value.decorations),
+      EditorView.atomicRanges.of(view => view.state.field(field, false)?.decorations ?? RangeSet.empty),
     ],
   });
 }
@@ -228,19 +282,38 @@ function build(view: EditorView, wysiwyg: boolean): Built {
 
   const { state } = view;
   const tree = syntaxTree(state);
-  const revealed = revealer(state, wysiwyg);
+  const base = revealer(state, wysiwyg);
+  /**
+   * 每问一次「这段要不要露出」就把范围记下来。光标动一下时拿它短路：
+   * 这些范围的露出结果一个都没翻转，装饰就不可能变，直接复用上一次的结果，
+   * 不必把可视区的语法树再走一遍。和 `blockField` 那套是同一个思路。
+   */
+  const scopes: Array<{ from: number; to: number }> = [];
+  const seen = new Set<string>();
+  const revealed = (from: number, to: number) => {
+    const key = `${from}:${to}`;
+    if (!seen.has(key)) { seen.add(key); scopes.push({ from, to }); }
+    return base(from, to);
+  };
   /** 标记归属的构件范围：元素粒度下判定要以整个 `**粗体**` 为准，而不是那两个星号。 */
   const owner = (node: SyntaxNodeRef) => {
     const parent = node.node.parent;
     return parent ? { from: parent.from, to: parent.to } : { from: node.from, to: node.to };
   };
-  /** 给一个多行块的每一行挂整行装饰，范围裁到可视区，别为屏幕外的几千行做无用功。 */
+  /**
+   * 给一个多行块的每一行挂整行装饰，范围裁到可视区，别为屏幕外的几千行做无用功。
+   * 首尾行额外标记——但首尾按**块**算，不按裁剪后的可视范围算，否则滚一下圆角就跑了。
+   */
   const lineDecos = (from: number, to: number, deco: Decoration, limit: { from: number; to: number }) => {
+    const first = state.doc.lineAt(from).from;
+    const last = state.doc.lineAt(to).from;
     let pos = Math.max(from, limit.from);
     const end = Math.min(to, limit.to);
     while (pos <= end) {
       const line = state.doc.lineAt(pos);
       marks.push(deco.range(line.from));
+      if (line.from === first) marks.push(blockFirst.range(line.from));
+      if (line.from === last) marks.push(blockLast.range(line.from));
       if (line.to >= end) break;
       pos = line.to + 1;
     }
@@ -254,6 +327,11 @@ function build(view: EditorView, wysiwyg: boolean): Built {
         const line = state.doc.lineAt(node.from);
 
         switch (node.name) {
+          case "ATXHeading1": case "ATXHeading2": case "ATXHeading3":
+          case "ATXHeading4": case "ATXHeading5": case "ATXHeading6":
+          case "SetextHeading1": case "SetextHeading2":
+            marks.push(headingLine.range(state.doc.lineAt(node.from).from));
+            return;                                     // 继续往里走，标记还要交给 HeaderMark 处理
           case "HeaderMark": {
             const scope = wysiwyg ? owner(node) : { from: line.from, to: line.to };
             if (revealed(scope.from, scope.to)) return;
@@ -359,7 +437,7 @@ function build(view: EditorView, wysiwyg: boolean): Built {
       },
     });
   }
-  return { decorations: Decoration.set(marks, true), atomic: Decoration.set(atoms, true) };
+  return { decorations: Decoration.set(marks, true), atomic: Decoration.set(atoms, true), scopes };
 }
 
 function decorator(wysiwyg: boolean) {
@@ -368,8 +446,17 @@ function decorator(wysiwyg: boolean) {
       built: Built;
       constructor(view: EditorView) { this.built = build(view, wysiwyg); }
       update(update: ViewUpdate) {
-        if (update.docChanged || update.viewportChanged || update.selectionSet
+        if (update.docChanged || update.viewportChanged
           || syntaxTree(update.startState) !== syntaxTree(update.state)) {
+          this.built = build(update.view, wysiwyg);
+          return;
+        }
+        if (!update.selectionSet) return;
+        // 光标动了不等于装饰要变。先按上一次记下的判定范围比一遍，
+        // 一个都没翻转就复用——方向键在长文里连按时，这一条省掉的是绝大多数重建。
+        const before = revealer(update.startState, wysiwyg);
+        const after = revealer(update.state, wysiwyg);
+        if (this.built.scopes.some(scope => before(scope.from, scope.to) !== after(scope.from, scope.to))) {
           this.built = build(update.view, wysiwyg);
         }
       }
@@ -382,7 +469,7 @@ function decorator(wysiwyg: boolean) {
 }
 
 /** 从某个位置起把整条 `[[…]]` 抠出来。比在语法树里向上爬稳，也不怕 resolveInner 落在标记上。 */
-function wikiAt(state: EditorState, from: number) {
+export function wikiAt(state: EditorState, from: number) {
   const text = state.doc.sliceString(from, Math.min(from + 512, state.doc.length));
   const hit = /^!?\[\[([^\]\n]+)\]\]/.exec(text);
   if (!hit) return null;
@@ -391,14 +478,32 @@ function wikiAt(state: EditorState, from: number) {
   return { title: title.trim() || (alias ?? "").trim(), section: section?.trim() || undefined };
 }
 
+/** 最近一次指针按下的种类。触摸屏上没有 Ctrl/⌘ 可按，只能靠它区分。 */
+let lastPointer: string = "mouse";
+
+/** 触摸设备：手指与手写笔算，外接鼠标不算。粗指针的媒体查询兜底（模拟器里 pointerType 可能缺）。 */
+function coarsePointer(): boolean {
+  if (lastPointer === "touch" || lastPointer === "pen") return true;
+  if (lastPointer === "mouse") return false;
+  return typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches;
+}
+
 /**
- * 跟随链接：`Ctrl/⌘ + 单击`。不用裸单击，是为了留住「点一下改字」这个更常用的动作
- * ——想读的时候右边有预览栏。
+ * 跟随链接：桌面是 `Ctrl/⌘ + 单击`——裸单击要留给「点一下改字」这个更常用的动作，
+ * 想读的时候右边有预览栏。
+ *
+ * **触摸设备直接单击跟随**：手机上根本按不出 Ctrl/⌘，也没有并排的预览栏，
+ * 不放开这一条，编辑态里的双链就等于死链。想改链接文字的，点它前后一格再拖光标进去。
  */
 function followHandler(onWiki?: (title: string, section?: string) => void): Extension {
   return EditorView.domEventHandlers({
+    pointerdown(event) {
+      lastPointer = event.pointerType || "mouse";
+      return false;
+    },
     mousedown(event, view) {
-      if (!(event.ctrlKey || event.metaKey) || event.button !== 0) return false;
+      if (event.button !== 0) return false;
+      if (!(event.ctrlKey || event.metaKey) && !coarsePointer()) return false;
       const target = event.target as HTMLElement;
 
       const wiki = target.closest<HTMLElement>(".cm-md-wiki");

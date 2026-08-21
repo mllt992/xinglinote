@@ -10,7 +10,14 @@ export type LayoutPrefs = {
   wysiwyg: boolean;
   /** Vim keymap。默认关：少数人的强需求、多数人的灾难（设计 17 §3.3）。 */
   vim: boolean;
+  /** 拼写检查。默认开——这是散文编辑器，CodeMirror 关掉它的默认是给代码用的。 */
+  spellcheck: boolean;
+  /** 正文字号档位。1 是基准，正文与预览一起缩放。 */
+  fontScale: number;
 };
+
+/** 字号档位。给固定几档而不是自由输入：自由输入会调出 13.7px 这种半像素的糊字。 */
+export const FONT_SCALES = [0.875, 1, 1.125, 1.25] as const;
 
 const KEY = "kb.layout";
 
@@ -22,6 +29,8 @@ export const DEFAULT_LAYOUT: LayoutPrefs = {
   typewriter: false,
   wysiwyg: true,
   vim: false,
+  spellcheck: true,
+  fontScale: 1,
 };
 
 export const NOTEBOOKS_MIN = 160, NOTEBOOKS_MAX = 420;
@@ -41,6 +50,9 @@ export function loadLayout(): LayoutPrefs {
       typewriter: raw.typewriter === true,
       wysiwyg: raw.wysiwyg !== false,
       vim: raw.vim === true,
+      spellcheck: raw.spellcheck !== false,
+      // 存进去的值可能是老版本或者被人手改过，不在档位里就退回基准
+      fontScale: (FONT_SCALES as readonly number[]).includes(Number(raw.fontScale)) ? Number(raw.fontScale) : 1,
     };
   } catch { return DEFAULT_LAYOUT; }
 }
