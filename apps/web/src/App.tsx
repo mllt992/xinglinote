@@ -468,7 +468,31 @@ function Workspace() {
   // —— 三栏布局：宽度可拖、可折叠、记在本机（设计 17 P2）——
   const [layout, setLayout] = useState<LayoutPrefs>(loadLayout);
   useEffect(() => saveLayout(layout), [layout]);
+
+  // 窄屏没有并排三栏的余地：左侧两栏改成盖在正文上的抽屉，默认收起。
+  // 用独立的 drawer 状态而不是复用 layout.showXxx——后者是存在本机的桌面端偏好，
+  // 手机上开合一次就把用户的桌面布局改了。
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 640px)").matches);
+  const [drawer, setDrawer] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 640px)");
+    const sync = () => { setNarrow(mq.matches); if (!mq.matches) setDrawer(false); };
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+  // 选了笔记本 / 笔记就自动收起，否则抽屉会一直盖着刚打开的那篇。
+  useEffect(() => { setDrawer(false); }, [noteId, nbId]);
+
   const [zen, setZen] = useState(false);
+
+  const sidesOpen = narrow ? drawer : (layout.showNotebooks || layout.showTree);
+  const showNotebooks = !zen && (narrow ? drawer : layout.showNotebooks);
+  const showTree = !zen && (narrow ? drawer : layout.showTree);
+  const toggleSides = () => {
+    if (narrow) { setDrawer(v => !v); return; }
+    setLayout(v => v.showNotebooks || v.showTree ? { ...v, showNotebooks: false, showTree: false } : { ...v, showNotebooks: true, showTree: true });
+  };
+
   const [palette, setPalette] = useState(false);
   const [cursor, setCursor] = useState<CursorInfo | null>(null);
   const sectionRef = useRef<HTMLElement | null>(null);
@@ -509,7 +533,7 @@ function Workspace() {
       if (mod && e.shiftKey && e.key.toLowerCase() === "p") { e.preventDefault(); setPalette(true); return; }
       if (mod && e.code === "Backslash") {
         e.preventDefault();
-        setLayout(v => v.showNotebooks || v.showTree ? { ...v, showNotebooks: false, showTree: false } : { ...v, showNotebooks: true, showTree: true });
+        toggleSides();
         return;
       }
       // Vim 模式下 Esc 先给 Vim（回 normal），只有已经在 normal 时才轮到退全屏。
@@ -527,7 +551,7 @@ function Workspace() {
       { id: "new-folder", group: "新建", label: "新建目录", icon: <FolderPlus />, run: () => setCreate("folder") },
       { id: "new-notebook", group: "新建", label: "新建笔记本", icon: <Notebook />, run: () => setCreate("notebook") },
       { id: "zen", group: "编辑器", label: zen ? "退出全屏" : "编辑器全屏", hint: "Esc", icon: zen ? <Minimize2 /> : <Maximize2 />, run: () => void toggleZen() },
-      { id: "toggle-sides", group: "编辑器", label: layout.showNotebooks || layout.showTree ? "折叠左侧栏" : "展开左侧栏", hint: "Ctrl+\\", icon: <PanelLeft />, run: () => setLayout(v => v.showNotebooks || v.showTree ? { ...v, showNotebooks: false, showTree: false } : { ...v, showNotebooks: true, showTree: true }) },
+      { id: "toggle-sides", group: "编辑器", label: sidesOpen ? "折叠左侧栏" : "展开左侧栏", hint: "Ctrl+\\", icon: <PanelLeft />, run: toggleSides },
       { id: "toggle-notebooks", group: "编辑器", label: layout.showNotebooks ? "折叠笔记本栏" : "展开笔记本栏", icon: <Notebook />, run: () => setLayout(v => ({ ...v, showNotebooks: !v.showNotebooks })) },
       { id: "toggle-tree", group: "编辑器", label: layout.showTree ? "折叠目录栏" : "展开目录栏", icon: <Folder />, run: () => setLayout(v => ({ ...v, showTree: !v.showTree })) },
       { id: "wysiwyg", group: "编辑器", label: layout.wysiwyg ? "切回源码模式（显示标记）" : "切到即时渲染（Typora 模式）", icon: <Type />, run: () => setLayout(v => ({ ...v, wysiwyg: !v.wysiwyg })) },
@@ -563,7 +587,7 @@ function Workspace() {
   return <TooltipProvider delayDuration={300}><div className="flex h-full flex-col bg-background">
     <header className={cn("h-14 shrink-0 items-center gap-3 border-b border-border px-3 md:px-4", zen ? "hidden" : "flex")}>
       <WorkspaceSwitcher spaces={spaces} wsId={wsId} onPick={id => nav(`/w/${id}`)} onCreate={() => setCreate("workspace")} />
-      <Tooltip content={layout.showNotebooks || layout.showTree ? "折叠左侧栏（Ctrl+\\）" : "展开左侧栏（Ctrl+\\）"}><Button variant="ghost" size="icon" aria-label="折叠或展开左侧栏" onClick={() => setLayout(v => v.showNotebooks || v.showTree ? { ...v, showNotebooks: false, showTree: false } : { ...v, showNotebooks: true, showTree: true })}><PanelLeft /></Button></Tooltip>
+      <Tooltip content={sidesOpen ? "折叠左侧栏（Ctrl+\\）" : "展开左侧栏（Ctrl+\\）"}><Button variant="ghost" size="icon" aria-label="折叠或展开左侧栏" aria-expanded={sidesOpen} onClick={toggleSides}><PanelLeft /></Button></Tooltip>
       <Separator orientation="vertical" className="h-5" />
       <AppNav wsId={wsId} active="notes" className="hidden md:inline-flex" />
       <div className="relative mx-auto w-full max-w-md"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input className="h-9 bg-muted/70 pl-9 shadow-none" value={search} onChange={e => void runSearch(e.target.value)} placeholder="搜索这个工作区…" />{search && <Button variant="ghost" size="icon" className="absolute right-0 top-0 size-9" onClick={() => { setSearch(""); setHits([]); }}><X /></Button>}{search.trim() && <div className="absolute left-0 right-0 top-11 z-40 rounded-xl border border-border bg-popover p-1.5 shadow-2xl">
@@ -580,11 +604,13 @@ function Workspace() {
       <AccountMenu me={me} wsId={wsId} />
     </header>
 
-    <main className="app-grid grid min-h-0 flex-1" style={{ gridTemplateColumns: [!zen && layout.showNotebooks ? `${layout.notebooksWidth}px` : null, !zen && layout.showTree ? `${layout.treeWidth}px` : null, "minmax(0, 1fr)"].filter(Boolean).join(" ") }}>
-      {!zen && layout.showNotebooks && <aside className="notebook-panel relative flex min-h-0 flex-col border-r border-border bg-muted/35 p-2.5">
+    <main className="app-grid grid min-h-0 flex-1" data-drawer={narrow && drawer ? "1" : undefined} style={{ gridTemplateColumns: narrow ? "minmax(0, 1fr)" : [showNotebooks ? `${layout.notebooksWidth}px` : null, showTree ? `${layout.treeWidth}px` : null, "minmax(0, 1fr)"].filter(Boolean).join(" ") }}>
+      {/* 抽屉打开时的遮罩：点一下收起。窄屏没有「点空白处」可言，必须给个明确的退出。 */}
+      {narrow && drawer && <button type="button" aria-label="收起侧栏" className="fixed inset-x-0 bottom-0 top-14 z-40 bg-foreground/40" onClick={() => setDrawer(false)} />}
+      {showNotebooks && <aside className="notebook-panel relative flex min-h-0 flex-col border-r border-border bg-muted/35 p-2.5">
         <div role="separator" aria-label="调整笔记本栏宽度" onPointerDown={e => startResize("notebooks", e)} className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize hover:bg-primary/20" /><div className="flex h-10 items-center justify-between px-2"><span className="sidebar-copy text-[11px] font-semibold uppercase tracking-[.12em] text-muted-foreground">笔记本</span><Tooltip content="新建笔记本"><Button variant="ghost" size="icon" className="size-7" onClick={() => setCreate("notebook")}><Plus /></Button></Tooltip></div><ScrollArea className="flex-1"><div className="space-y-1">{nbs.map(n => <ContextMenu key={n.id}><ContextMenuTrigger asChild><div className={cn("group flex h-9 items-center rounded-lg transition", n.id === nbId ? "bg-foreground text-background shadow-sm" : "text-muted-foreground hover:bg-muted hover:text-foreground")}><button onClick={() => pickNotebook(n.id)} className="flex h-9 min-w-0 flex-1 items-center gap-2.5 px-2.5 text-left text-sm"><Notebook className="size-4 shrink-0" /><span className="sidebar-copy truncate">{n.title}</span></button>{canDeleteNotebook && <Tooltip content="删除笔记本"><Button variant="ghost" size="icon" aria-label={`删除笔记本 ${n.title}`} className={cn("mr-0.5 size-7 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100", n.id === nbId ? "text-background hover:bg-background/15 hover:text-background" : "hover:text-destructive")} onClick={() => void deleteNotebook(n)}><Trash2 className="size-3.5" /></Button></Tooltip>}</div></ContextMenuTrigger><ContextMenuContent><ContextMenuLabel>{n.title}</ContextMenuLabel><ContextMenuItem disabled={!canManageNotebook(n)} onSelect={() => void renameNotebook(n)}><Pencil />重命名</ContextMenuItem><ContextMenuItem disabled={!canManageNotebook(n)} onSelect={() => { pickNotebook(n.id); setShowNotebookAccess(true); }}><Lock />访问权限</ContextMenuItem><ContextMenuSeparator /><ContextMenuItem onSelect={() => { pickNotebook(n.id); setShowImport(true); }}><Upload />导入 Markdown 或 zip</ContextMenuItem><ContextMenuItem onSelect={() => void downloadZip(`/api/v1/notebooks/${n.id}/export.zip`)}><Download />导出这个笔记本</ContextMenuItem>{canDeleteNotebook && <><ContextMenuSeparator /><ContextMenuItem className="text-destructive" onSelect={() => void deleteNotebook(n)}><Trash2 />删除笔记本</ContextMenuItem></>}</ContextMenuContent></ContextMenu>)}</div></ScrollArea><div className="border-t border-border pt-2"><button onClick={() => nav(`/w/${wsId}/calendar`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><CalendarDays className="size-4" /><span className="sidebar-copy">日历</span></button><button onClick={() => nav(`/w/${wsId}/today`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Sun className="size-4" /><span className="sidebar-copy">今天</span></button><button onClick={() => nav(`/w/${wsId}/feed`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Users className="size-4" /><span className="sidebar-copy">圈子</span></button><button onClick={() => nav(`/w/${wsId}/trash`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Archive className="size-4" /><span className="sidebar-copy">回收站</span></button></div></aside>}
 
-      {!zen && layout.showTree && <aside className="tree-panel relative flex min-h-0 flex-col border-r border-border bg-background">
+      {showTree && <aside className="tree-panel relative flex min-h-0 flex-col border-r border-border bg-background">
         <div role="separator" aria-label="调整目录栏宽度" onPointerDown={e => startResize("tree", e)} className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize hover:bg-primary/20" /><div className="flex h-14 items-center gap-1 border-b border-border px-3"><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{activeNb?.title ?? "笔记"}</p><p className="truncate text-[11px] text-muted-foreground">{tree.length} 篇笔记 · {activeNb?.visibility==="private"?"私密":activeNb?.visibility==="restricted"?"指定成员":"全体成员"}</p></div><NoteSortMenu mode={noteSort} onChange={changeNoteSort} /><DropdownMenu><Tooltip content="笔记本操作"><span className="inline-flex"><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label="笔记本操作" className="size-8"><MoreHorizontal /></Button></DropdownMenuTrigger></span></Tooltip><DropdownMenuContent align="end">{activeNb && <DropdownMenuItem disabled={!canManageNotebook(activeNb)} onSelect={() => void renameNotebook(activeNb)}><Pencil />重命名笔记本</DropdownMenuItem>}<DropdownMenuItem onSelect={()=>setShowNotebookAccess(true)}><Lock />访问权限</DropdownMenuItem><DropdownMenuItem onSelect={() => setShowImport(true)}><Upload />导入 Markdown 或 zip</DropdownMenuItem><DropdownMenuItem onSelect={() => { if (nbId) void downloadZip(`/api/v1/notebooks/${nbId}/export.zip`); }}><Download />导出这个笔记本</DropdownMenuItem>{canDeleteNotebook && activeNb && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onSelect={() => void deleteNotebook(activeNb)}><Trash2 />删除笔记本</DropdownMenuItem></>}</DropdownMenuContent></DropdownMenu><Tooltip content="新建文件夹"><Button variant="ghost" size="icon" className="size-8" onClick={() => setCreate("folder")}><FolderPlus /></Button></Tooltip><Tooltip content="新建笔记"><Button size="icon" className="size-8" onClick={() => void createNote()}><FilePlus2 /></Button></Tooltip></div><ScrollArea className="flex-1"><div className="p-2.5"><ContextMenu><ContextMenuTrigger asChild><button onClick={() => setActiveFolder(null)} className={cn("mb-1 flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-sm", activeFolder === null ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/70")}><Folder className="size-4" />全部笔记</button></ContextMenuTrigger><ContextMenuContent><ContextMenuItem disabled={!treeCanEdit} onSelect={() => void createNote(null)}><FilePlus2 />新建笔记</ContextMenuItem><ContextMenuItem disabled={!treeCanEdit} onSelect={() => { setActiveFolder(null); setCreate("folder"); }}><FolderPlus />新建目录</ContextMenuItem></ContextMenuContent></ContextMenu>{folders.map(f => <ContextMenu key={f.id}><ContextMenuTrigger asChild><div className={cn("group mb-1 flex h-9 items-center gap-2 rounded-lg pr-1 text-sm", activeFolder === f.id ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/70")}><button onClick={() => setActiveFolder(f.id)} className="flex h-9 min-w-0 flex-1 items-center gap-2 pl-2.5 text-left"><ChevronRight className="size-3.5 shrink-0" /><Folder className="size-4 shrink-0" /><span className="truncate">{f.title}</span></button><Tooltip content="分享此目录"><Button variant="ghost" size="icon" className="size-7 opacity-0 group-hover:opacity-100" onClick={() => setShareTarget({ kind: "folder", id: f.id, title: f.title })}><Share2 className="size-3.5" /></Button></Tooltip></div></ContextMenuTrigger><ContextMenuContent><ContextMenuLabel>{f.title}</ContextMenuLabel><ContextMenuItem disabled={!treeCanEdit} onSelect={() => void renameFolder(f)}><Pencil />重命名</ContextMenuItem><ContextMenuItem disabled={!treeCanEdit} onSelect={() => void createNote(f.id)}><FilePlus2 />在此新建笔记</ContextMenuItem><ContextMenuItem onSelect={() => setShareTarget({ kind: "folder", id: f.id, title: f.title })}><Share2 />分享此目录</ContextMenuItem><ContextMenuSeparator /><ContextMenuItem className="text-destructive" disabled={!treeCanEdit} onSelect={() => void deleteFolder(f)}><Trash2 />移到回收站</ContextMenuItem></ContextMenuContent></ContextMenu>)}<Separator className="my-3" /><NoteList notes={tree} folderId={activeFolder} noteId={noteId} wsId={wsId} mode={noteSort} canReorder={treeCanEdit} onReorder={persistNoteOrder} onRename={treeCanEdit ? renameNote : undefined} onDelete={treeCanEdit ? deleteNoteFromTree : undefined} /></div></ScrollArea></aside>}
 
       <section ref={sectionRef} data-zen={zen ? "1" : undefined} className="relative flex min-h-0 min-w-0 flex-col bg-background">{note ? <>

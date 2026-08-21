@@ -6,7 +6,10 @@ let pending: Promise<typeof import("katex")> | null = null;
 
 export function loadKatex() {
   // 样式和字体也一起按需拿：静态 import 的话 katex.min.css 会一直躺在主样式表里。
-  return (pending ??= import("katex/dist/katex.min.css").then(() => import("katex")));
+  // 失败要清掉 pending 再抛，否则一次网络抖动就把拒绝态缓存住，之后所有公式都排不出来。
+  return (pending ??= import("katex/dist/katex.min.css")
+    .then(() => import("katex"))
+    .catch(err => { pending = null; throw err; }));
 }
 
 /** 把 `root` 里还没排版的公式占位元素渲染掉。可重复调用，已渲染过的会跳过。 */

@@ -13,7 +13,9 @@ function palette(): "dark" | "default" {
 }
 
 async function ready() {
-  const { default: mermaid } = await (pending ??= import("mermaid"));
+  // 失败了要把 pending 清掉再抛：否则一次网络抖动（或改版后旧 chunk 404）会把
+  // 被拒绝的 Promise 永久缓存下来，这个页面里之后所有图都再也画不出来，只能刷新。
+  const { default: mermaid } = await (pending ??= import("mermaid").catch(err => { pending = null; throw err; }));
   const theme = palette();
   if (configured !== theme) {
     mermaid.initialize({

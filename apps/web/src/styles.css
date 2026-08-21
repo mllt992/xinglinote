@@ -60,10 +60,26 @@ button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
 /* 列宽由 App 用内联样式给（可拖、可折叠、记在本机），这里只兜没有 JS 值时的默认。 */
 .app-grid { grid-template-columns: 224px 288px minmax(0, 1fr); }
 @media (max-width: 820px) { .workspace-label { display: none; } }
-/* 窄屏一定要压过内联样式，否则用户存下来的宽度会把正文挤没。 */
+/* 窄屏一定要压过内联样式，否则用户存下来的宽度会把正文挤没。
+   左侧两栏改成抽屉：默认不占位，App 把 data-drawer="1" 打上来时才盖到正文上。
+   以前这里是无条件 display:none——按钮点了状态确实翻转、元素也挂载了，但 CSS 焊死不显示，
+   等于移动端根本没有打开侧栏的途径。 */
 @media (max-width: 640px) {
   .app-grid { grid-template-columns: minmax(0, 1fr) !important; }
   .notebook-panel, .tree-panel { display: none; }
+  .app-grid[data-drawer="1"] .notebook-panel,
+  .app-grid[data-drawer="1"] .tree-panel {
+    display: flex;
+    position: fixed;
+    top: 3.5rem;              /* 顶栏 h-14，抽屉从它下面开始，顶栏始终可操作 */
+    bottom: 0;
+    z-index: 45;              /* 压过遮罩的 40，低于弹窗 */
+    box-shadow: 0 0 24px rgb(0 0 0 / .18);
+  }
+  .app-grid[data-drawer="1"] .notebook-panel { left: 0; width: 10rem; }
+  .app-grid[data-drawer="1"] .tree-panel { left: 10rem; right: 2.5rem; }
+  /* 拖宽手柄在触屏上没用，还会挡住列表边缘 */
+  .app-grid[data-drawer="1"] [role="separator"] { display: none; }
 }
 
 /* 正文保持易读的行宽，表格 / 代码块 / 图片 / 图表则允许占满整栏——
