@@ -172,6 +172,15 @@ html[data-mode="dark"] {
 .cm-md-link:hover, .cm-md-wiki:hover { background: color-mix(in srgb, var(--primary) 10%, transparent); border-radius: 3px; }
 .cm-md-math-block { display: block; overflow-x: auto; padding: .4em 0; text-align: center; }
 
+/* 窄屏的正文排版：34rem 的表格下限是给宽屏定的，在 390px 上会让一张两列的小表
+   也被撑到要横向滑。这里放开下限——th 本来就是 white-space:nowrap，
+   表头照样不会被挤成一列一个字，只有真正装不下的宽表才滚动。 */
+@media (max-width: 640px) {
+  .markdown table { min-width: 0; }
+  .markdown { font-size: 15.5px; }
+  .markdown th, .markdown td { padding: .45em .55em; }
+}
+
 /* 右栏在宽屏是并排的一列，会把正文挤窄；窄屏没地方挤，就盖在正文上。 */
 @media (max-width: 640px) {
   .note-rail { position: absolute; inset: 0; z-index: 30; width: 100% !important; }
