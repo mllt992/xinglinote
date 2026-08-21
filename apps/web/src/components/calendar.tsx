@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { BellRing, CalendarDays, ChevronRight, FileText, History, Inbox, Link2Off, PenLine, Plus, RotateCcw, Sparkles, Star, UserPlus, X } from "lucide-react";
+import { BellRing, CalendarDays, ChevronRight, FileText, History, Inbox, Layers, Link2Off, MoreHorizontal, PenLine, Plus, RotateCcw, Sparkles, Star, UserPlus, X } from "lucide-react";
 import { api } from "../api";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
@@ -8,6 +8,9 @@ import { Input } from "./ui/input";
 import { Badge } from "./ui/badge";
 import { ScrollArea } from "./ui/scroll-area";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuLabel, ContextMenuSeparator, ContextMenuTrigger } from "./ui/context-menu";
+import { Tooltip, TooltipProvider } from "./ui/tooltip";
 import { useToast } from "./ui/toast";
 import { BatchBar, SaveTemplateDialog, TemplatePanel, type BatchPayload } from "./calendar-batch";
 
@@ -48,6 +51,7 @@ type ReminderChannel = "inapp" | "email" | "push";
 const CHANNELS: Array<[ReminderChannel, string]> = [["inapp", "站内"], ["push", "推送"], ["email", "邮件"]];
 const WEEK_LABELS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 const HOUR_PX = 48;
+const PANEL_KEY = "kb.calendar.panel";
 
 // 视图里一律用「当地民用日」运算：把渲染时区的墙钟塞进 UTC 字段，避免浏览器本地时区插一脚。
 function civil(iso: string | Date, tz: string) {
@@ -101,12 +105,21 @@ export function CalendarPage() {
     if (!parsed || Number.isNaN(parsed.getTime()) || parsed.getUTCFullYear() < 1970 || parsed.getUTCFullYear() > 2100) return atMidnight(civil(new Date(), tz));
     return parsed;
   }, [params, tz]);
-  const layers = useMemo(() => new Set((params.get("layers") ?? "task,event,note").split(",")), [params]);
+  // 足迹层默认关：一天建十几篇笔记的人，格子会被笔记标题挤满，日程反而看不见了（设计 16 §1.2）
+  const layers = useMemo(() => new Set((params.get("layers") ?? "task,event").split(",")), [params]);
 
   const [items, setItems] = useState<CalendarItem[]>([]);
   const [footprints, setFootprints] = useState<Footprint[]>([]);
   const [panel, setPanel] = useState<InboxData>({ inbox: [], groups: [], overdue: 0, me: "", workspaceKind: "personal", canEdit: true });
-  const [panelTab, setPanelTab] = useState<"tasks" | "sync" | "templates" | null>("tasks");
+  // 右栏默认常驻（设计 16 §3.3）：收件箱要能随手接住想法、随手拖上历，藏起来等于没有。
+  // 开合状态粘在本地——每次进日历都要重新点开一次，比默认关还烦。
+  const [panelTab, setPanelTab] = useState<"tasks" | "sync" | "templates" | null>(() => {
+    try { return localStorage.getItem(PANEL_KEY) === "off" ? null : "tasks"; } catch { return "tasks"; }
+  });
+  useEffect(() => {
+    // 只记「待办面板开着没」，模板与订阅是临时性的，不该被记住
+    try { localStorage.setItem(PANEL_KEY, panelTab === "tasks" ? "on" : "off"); } catch { /* 隐私模式忽略 */ }
+  }, [panelTab]);
   const [pushReady, setPushReady] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [saveTemplate, setSaveTemplate] = useState(false);
@@ -479,24 +492,47 @@ export function CalendarPage() {
     ? `${cursor.getUTCFullYear()}年${cursor.getUTCMonth() + 1}月`
     : `${cursor.getUTCFullYear()}年${cursor.getUTCMonth() + 1}月${cursor.getUTCDate()}日`;
 
-  return <SelectionCtx.Provider value={selection}><div className="flex h-full min-h-0 flex-col bg-background">
+  return <TooltipProvider delayDuration={300}><SelectionCtx.Provider value={selection}><div className="flex h-full min-h-0 flex-col bg-background">
     <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-4">
       <Button variant="ghost" size="sm" onClick={() => nav(`/w/${wsId}`)}><ChevronRight className="rotate-180" />笔记</Button>
       <MiniMonthJump title={title} cursor={cursor} today={today} onPick={d => setCursor(d)} />
       <div className="ml-4 inline-flex rounded-lg bg-muted p-1">
         {VIEWS.map(v => <button key={v.id} onClick={() => setView(v.id)} title={`快捷键 ${v.key.toUpperCase()}`} className={cn("rounded-md px-3 py-1 text-sm transition", view === v.id ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground")}>{v.label}</button>)}
       </div>
+      {/* 右区只留高频：翻页、新建、订阅、右栏、更多。层开关 / 模板 / 今天页 / 写日记全收进「⋯」（设计 16 §3.2） */}
       <div className="ml-auto flex items-center gap-1">
-        {(["task", "event", "note"] as const).map(l => <button key={l} onClick={() => toggleLayer(l)} className={cn("rounded-md px-2 py-1 text-xs transition", layers.has(l) ? "bg-muted font-medium" : "text-muted-foreground/60")}>{{ task: "待办", event: "日程", note: "笔记" }[l]}</button>)}
-        <span className="mx-2 text-xs text-muted-foreground">{tz}</span>
         <Button variant="ghost" size="sm" onClick={() => setCursor(addDays(cursor, view === "month" ? -30 : view === "week" ? -7 : view === "agenda" ? -14 : -1))} aria-label="上一段">‹</Button>
         <Button variant="outline" size="sm" onClick={() => setCursor(atMidnight(civil(new Date(), tz)))}>今天</Button>
         <Button variant="ghost" size="sm" onClick={() => setCursor(addDays(cursor, view === "month" ? 30 : view === "week" ? 7 : view === "agenda" ? 14 : 1))} aria-label="下一段">›</Button>
-        <Button variant="ghost" size="sm" onClick={() => nav(`/w/${wsId}/today`)}>今天页</Button>
-        <Button variant={panelTab === "templates" ? "secondary" : "ghost"} size="sm" onClick={() => setPanelTab(t => t === "templates" ? null : "templates")}>模板</Button>
-        <Button variant={panelTab === "sync" ? "secondary" : "ghost"} size="sm" onClick={() => setPanelTab(t => t === "sync" ? null : "sync")}>订阅</Button>
-        <Button size="sm" onClick={() => { setQuick(q => ({ ...q, open: true })); setTimeout(() => quickRef.current?.focus(), 0); }}><Plus />新建</Button>
-        <Button variant={panelTab === "tasks" ? "secondary" : "ghost"} size="sm" onClick={() => setPanelTab(t => t === "tasks" ? null : "tasks")}><Inbox />待办{panel.overdue > 0 && <span className="ml-1 rounded-full bg-destructive px-1.5 text-[10px] text-destructive-foreground">{panel.overdue}</span>}</Button>
+        <Button size="sm" className="ml-2" onClick={() => { setQuick(q => ({ ...q, open: true })); setTimeout(() => quickRef.current?.focus(), 0); }}><Plus />新建</Button>
+        <Tooltip content="订阅与导出（ICS）">
+          <Button variant={panelTab === "sync" ? "secondary" : "ghost"} size="icon" className="size-8" aria-label="订阅与导出" onClick={() => setPanelTab(t => t === "sync" ? null : "sync")}><CalendarDays /></Button>
+        </Tooltip>
+        <Tooltip content={panelTab === "tasks" ? "收起待办面板" : "展开待办面板"}>
+          <Button variant={panelTab === "tasks" ? "secondary" : "ghost"} size="icon" className="relative size-8" aria-label="待办面板" onClick={() => setPanelTab(t => t === "tasks" ? null : "tasks")}>
+            <Inbox />
+            {panel.overdue > 0 && <span className="absolute -right-0.5 -top-0.5 grid min-w-4 place-items-center rounded-full bg-destructive px-1 text-[10px] leading-4 text-destructive-foreground">{panel.overdue}</span>}
+          </Button>
+        </Tooltip>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon" className="size-8" aria-label="更多"><MoreHorizontal /></Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-52">
+            <p className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground"><Layers className="size-3" />显示哪些层</p>
+            {(["task", "event", "note"] as const).map(l => <DropdownMenuItem key={l} onSelect={e => { e.preventDefault(); toggleLayer(l); }}>
+              <span className={cn("grid size-4 shrink-0 place-items-center rounded border", layers.has(l) ? "border-transparent bg-primary text-primary-foreground" : "border-input")}>{layers.has(l) ? "✓" : ""}</span>
+              <span className="flex-1">{{ task: "待办", event: "日程", note: "笔记足迹" }[l]}</span>
+              {l === "note" && <span className="text-[10px] text-muted-foreground">默认关</span>}
+            </DropdownMenuItem>)}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => setPanelTab(t => t === "templates" ? null : "templates")}><Star className="size-4" />日历模板</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => nav(`/w/${wsId}/today`)}><Sparkles className="size-4" />今天页</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void openDiary()}><PenLine className="size-4" />写今天的日记</DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <p className="px-2.5 py-1.5 text-[11px] text-muted-foreground">时区 {tz}</p>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </header>
 
@@ -506,16 +542,16 @@ export function CalendarPage() {
       onSaveTemplate={() => setSaveTemplate(true)} onClear={clearSelection} />}
     {loadError && <div className="flex items-center gap-3 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-sm"><span className="flex-1">日历加载失败：{loadError}</span><Button size="sm" variant="outline" onClick={() => void load()}><RotateCcw />重试</Button></div>}
     {!loading && !loadError && view === "month" && items.length === 0 && <div className="flex items-center gap-3 border-b border-border bg-muted/30 px-4 py-2 text-sm">
-      <span className="flex-1 text-muted-foreground">这个月还什么都没有。</span>
-      <Button size="sm" variant="outline" onClick={() => void openDiary()}><PenLine />写今天的日记</Button>
-      <Button size="sm" variant="outline" onClick={() => { setQuick(q => ({ ...q, open: true })); setTimeout(() => quickRef.current?.focus(), 0); }}><Plus />新建日程</Button>
+      <span className="flex-1 text-muted-foreground">这个月还什么都没有。点任意一格就能建日程。</span>
+      <Button size="sm" onClick={() => { setQuick(q => ({ ...q, open: true })); setTimeout(() => quickRef.current?.focus(), 0); }}><Plus />新建日程</Button>
+      <Button size="sm" variant="ghost" onClick={() => void openDiary()}><PenLine />写今天的日记</Button>
     </div>}
 
     <div className="flex min-h-0 flex-1">
       <div className="min-w-0 flex-1 overflow-auto">
         {loading ? <GridSkeleton view={view} />
           : view === "month" && narrow ? <MonthCompact cursor={cursor} today={today} byDay={byDay} notesByDay={notesByDay} onToggle={toggleDone} onPick={setCursor} onDiary={openDiary} tz={tz} />
-          : view === "month" ? <MonthGrid start={start} cursor={cursor} today={today} byDay={byDay} notesByDay={notesByDay} onDrop={reschedule} onToggle={toggleDone} onDiary={openDiary} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />
+          : view === "month" ? <MonthGrid start={start} cursor={cursor} today={today} byDay={byDay} notesByDay={notesByDay} showFootprint={layers.has("note")} onDrop={reschedule} onToggle={toggleDone} onDiary={openDiary} onCreate={createEvent} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />
           : view === "agenda" ? <AgendaList start={start} days={14} today={today} byDay={byDay} notesByDay={notesByDay} onToggle={toggleDone} onDiary={() => void openDiary()} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />
           : <TimeGrid start={start} days={view === "week" ? 7 : 1} today={today} byDay={byDay} notesByDay={notesByDay} onDrop={reschedule} onToggle={toggleDone} onResize={resizeItem} onCreate={createEvent} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />}
       </div>
@@ -550,7 +586,7 @@ export function CalendarPage() {
           onClose={() => setSaveTemplate(false)} />
       </DialogContent>
     </Dialog>
-  </div></SelectionCtx.Provider>;
+  </div></SelectionCtx.Provider></TooltipProvider>;
 }
 
 /** 顶栏的迷你月历：点标题就能跳到任意一天，不必一路 ‹ › 翻过去（设计 16 §3.2）。 */
@@ -685,65 +721,128 @@ function useDropTarget(onDrop: (payload: DropPayload) => void) {
 
 // ── 月 ──────────────────────────────────────────────────────────────────
 
-function MonthGrid(props: { start: Date; cursor: Date; today: string; byDay: Map<string, CalendarItem[]>; notesByDay: Map<string, Footprint[]>; onDrop: (i: CalendarItem, d: Date, copy: boolean) => void; onToggle: (i: CalendarItem, done: boolean) => void; onDiary: (d: Date) => void; focusKey: string | null; setFocusKey: (k: string | null) => void; tz: string }) {
+/**
+ * 月视图。格子是「日程的地方」：点空白就地建日程，写日记退到右键菜单（设计 16 §3.2）。
+ * 每格能放几条按实测格高算，不写死 3 条——1080p 上一格放得下 5 条，写死 3 条等于凭空多出两行「还有 N 项」。
+ */
+function MonthGrid(props: { start: Date; cursor: Date; today: string; byDay: Map<string, CalendarItem[]>; notesByDay: Map<string, Footprint[]>; showFootprint: boolean; onDrop: (i: CalendarItem, d: Date, copy: boolean) => void; onToggle: (i: CalendarItem, done: boolean) => void; onDiary: (d: Date) => void; onCreate: (start: Date, end: Date, title: string) => void; focusKey: string | null; setFocusKey: (k: string | null) => void; tz: string }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [draftKey, setDraftKey] = useState<string | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [perCell, setPerCell] = useState(3);
+  // 格高一变（窗口缩放、右栏开合）就重算能放几条
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const measure = () => {
+      const cellH = el.getBoundingClientRect().height / 6;
+      // 26px 是日期行，20px 是一条 chip 的行高，留 18px 给「还有 N 项」和角标
+      // 上限 6：再多格子就读不动了，看全该走悬停浮层而不是把格子撑爆
+      setPerCell(Math.min(6, Math.max(1, Math.floor((cellH - 26 - 18) / 20))));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const cells = Array.from({ length: 42 }, (_, i) => addDays(props.start, i));
   const all = [...props.byDay.values()].flat();
   return <div role="grid" aria-label="月视图" className="flex min-h-full flex-col">
     <div className="grid shrink-0 grid-cols-7 border-b border-border">
       {WEEK_LABELS.map(l => <div key={l} className="px-2 py-1.5 text-center text-xs text-muted-foreground">{l}</div>)}
     </div>
-    <div className="grid flex-1 grid-cols-7 grid-rows-6">
+    <div ref={bodyRef} className="grid flex-1 grid-cols-7 grid-rows-6">
       {cells.map(day => {
         const key = dayKey(day);
         const list = props.byDay.get(key) ?? [];
-        const notes = props.notesByDay.get(key) ?? [];
+        const notes = props.showFootprint ? props.notesByDay.get(key) ?? [] : [];
         const outside = day.getUTCMonth() !== props.cursor.getUTCMonth();
         const isToday = key === props.today;
         const open = expanded === key;
-        const shown = open ? list : list.slice(0, 3);
-        return <MonthCell key={key} dayKeyStr={key} day={day} outside={outside} isToday={isToday} notes={notes} onDiary={() => props.onDiary(day)} onDrop={p => { const item = all.find(i => i.id === p.id && i.occurrenceStart === p.occurrenceStart); if (item) props.onDrop(item, day, p.copy); }}>
+        const shown = open ? list : list.slice(0, perCell);
+        return <MonthCell key={key} dayKeyStr={key} day={day} outside={outside} isToday={isToday} notes={notes}
+          onDiary={() => props.onDiary(day)}
+          onCreate={() => { setDraftKey(key); setExpanded(null); }}
+          onDrop={p => { const item = all.find(i => i.id === p.id && i.occurrenceStart === p.occurrenceStart); if (item) props.onDrop(item, day, p.copy); }}>
           {shown.map(it => <ItemChip key={`${it.id}:${it.occurrenceStart}`} item={it} tz={props.tz} onToggle={props.onToggle} compact focused={props.focusKey === `${it.id}:${it.occurrenceStart}`} onFocus={() => props.setFocusKey(`${it.id}:${it.occurrenceStart}`)} />)}
-          {list.length > 3 && <div className="group/more relative">
-            <button onClick={() => setExpanded(open ? null : key)} className="w-full rounded px-1.5 py-0.5 text-left text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground">
-              {open ? "收起" : `还有 ${list.length - 3} 项`}
+          {draftKey === key && <MonthDraft
+            onCancel={() => setDraftKey(null)}
+            onSave={title => { setDraftKey(null); props.onCreate(new Date(day.getTime() + 9 * 3600_000), new Date(day.getTime() + 10 * 3600_000), title); }}
+          />}
+          {list.length > shown.length && <div className="group/more relative">
+            <button onClick={e => { e.stopPropagation(); setExpanded(open ? null : key); }} className="w-full rounded px-1.5 py-0.5 text-left text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground">
+              还有 {list.length - shown.length} 项
             </button>
             {/* 溢出不是死的「还有 N 项」：悬停就能看全，点击才原地展开（设计 16 §3.2） */}
-            {!open && <div className="pointer-events-none absolute left-0 top-full z-40 hidden w-56 rounded-lg border border-border bg-popover p-1.5 shadow-lg group-hover/more:block">
+            <div className="pointer-events-none absolute left-0 top-full z-40 hidden w-56 rounded-lg border border-border bg-popover p-1.5 shadow-lg group-hover/more:block">
               <p className="px-1.5 pb-1 text-[10px] text-muted-foreground">{day.getUTCMonth() + 1}月{day.getUTCDate()}日 · {list.length} 项</p>
               {list.map(it => <div key={`${it.id}:${it.occurrenceStart}`} className="truncate px-1.5 py-0.5 text-[11px]">
                 {!it.allDay && (it.startsAt ?? it.dueAt) ? `${fmtHM(civil((it.startsAt ?? it.dueAt)!, props.tz))} ` : ""}{it.title}
               </div>)}
-            </div>}
+            </div>
           </div>}
+          {open && <button onClick={e => { e.stopPropagation(); setExpanded(null); }} className="w-full rounded px-1.5 py-0.5 text-left text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground">收起</button>}
         </MonthCell>;
       })}
     </div>
   </div>;
 }
 
-function MonthCell({ day, dayKeyStr, outside, isToday, notes, onDrop, onDiary, children }: { day: Date; dayKeyStr: string; outside: boolean; isToday: boolean; notes: Footprint[]; onDrop: (p: DropPayload) => void; onDiary: () => void; children: React.ReactNode }) {
-  const [showNotes, setShowNotes] = useState(false);
-  const drop = useDropTarget(onDrop);
-  return <div
-    role="gridcell"
-    aria-label={`${day.getUTCFullYear()}年${day.getUTCMonth() + 1}月${day.getUTCDate()}日，${notes.length} 篇笔记`}
-    {...drop.handlers}
-    className={cn("group/cell flex min-h-24 flex-col gap-0.5 border-b border-r border-border p-1 transition", outside && "bg-muted/20", drop.over && "bg-accent/40 ring-1 ring-inset ring-ring", drop.over === "copy" && "ring-2")}
-  >
-    <div className="flex items-center gap-1 px-1">
-      <button onClick={onDiary} title="写这天的日记" aria-label={`写 ${day.getUTCMonth() + 1}月${day.getUTCDate()}日 的日记`} className="rounded p-0.5 text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/cell:opacity-100"><PenLine className="size-3" /></button>
-      <span className={cn("ml-auto grid size-5 place-items-center rounded-full text-[11px] tabular-nums", isToday ? "bg-destructive font-semibold text-destructive-foreground" : outside ? "text-muted-foreground/50" : "text-muted-foreground")}>{day.getUTCDate()}</span>
-    </div>
-    {children}
-    {showNotes && notes.map(n => <span key={n.id} className="truncate px-1.5 text-[11px] text-muted-foreground">· {n.title}</span>)}
-    {/* 笔记数角标在左下角，点开就是当天的足迹层（设计 16 §3.2） */}
-    {notes.length > 0 && <button onClick={() => setShowNotes(v => !v)} className="mt-auto flex w-fit items-center gap-0.5 rounded px-1 text-[10px] text-muted-foreground hover:bg-muted" aria-label={`当天 ${notes.length} 篇笔记`}><FileText className="size-3" />{notes.length}</button>}
-    <span className="sr-only">{dayKeyStr}</span>
+/** 月视图里的建日程小卡片：默认 09:00–10:00，回车即存，Esc 丢弃。和日/周划时段用的是同一套手感。 */
+function MonthDraft({ onSave, onCancel }: { onSave: (title: string) => void; onCancel: () => void }) {
+  return <div className="rounded-md border-2 border-dashed border-ring bg-accent/50 px-1 py-0.5">
+    <div className="text-[10px] tabular-nums text-muted-foreground">09:00–10:00</div>
+    <input
+      autoFocus
+      placeholder="日程标题，回车即存"
+      className="w-full bg-transparent text-[11px] outline-none placeholder:text-muted-foreground/70"
+      onPointerDown={e => e.stopPropagation()}
+      onClick={e => e.stopPropagation()}
+      onBlur={onCancel}
+      onKeyDown={e => {
+        if (e.key === "Escape") { onCancel(); return; }
+        if (e.key !== "Enter") return;
+        const title = e.currentTarget.value.trim();
+        if (title) onSave(title); else onCancel();
+      }}
+    />
   </div>;
 }
 
-/** 窄屏的月视图：上面一张迷你月历，下面当天列表。七列网格在手机上一格塞不下一条。 */
+function MonthCell({ day, dayKeyStr, outside, isToday, notes, onDrop, onDiary, onCreate, children }: { day: Date; dayKeyStr: string; outside: boolean; isToday: boolean; notes: Footprint[]; onDrop: (p: DropPayload) => void; onDiary: () => void; onCreate: () => void; children: React.ReactNode }) {
+  const [showNotes, setShowNotes] = useState(false);
+  const drop = useDropTarget(onDrop);
+  const label = `${day.getUTCFullYear()}年${day.getUTCMonth() + 1}月${day.getUTCDate()}日`;
+  return <ContextMenu>
+    <ContextMenuTrigger asChild>
+      <div
+        role="gridcell"
+        aria-label={`${label}，${notes.length} 篇笔记。点击新建日程`}
+        {...drop.handlers}
+        // 点空白 = 建日程。点在条目/按钮上不算，否则勾选待办会顺手弹出一张草稿卡
+        onClick={e => { if (!(e.target as HTMLElement).closest("[data-kb-item],button,input")) onCreate(); }}
+        className={cn("group/cell flex min-h-24 cursor-pointer flex-col gap-0.5 border-b border-r border-border p-1 transition", outside && "bg-muted/20", drop.over && "bg-accent/40 ring-1 ring-inset ring-ring", drop.over === "copy" && "ring-2")}
+      >
+        <div className="flex items-center gap-1 px-1">
+          <Plus className="size-3 text-muted-foreground opacity-0 transition group-hover/cell:opacity-60" aria-hidden />
+          <span className={cn("ml-auto grid size-5 place-items-center rounded-full text-[11px] tabular-nums", isToday ? "bg-destructive font-semibold text-destructive-foreground" : outside ? "text-muted-foreground/50" : "text-muted-foreground")}>{day.getUTCDate()}</span>
+        </div>
+        {children}
+        {showNotes && notes.map(n => <span key={n.id} className="truncate px-1.5 text-[11px] text-muted-foreground">· {n.title}</span>)}
+        {/* 笔记数角标只在足迹层开着时出现，点开就是当天写了什么（设计 16 §3.2） */}
+        {notes.length > 0 && <button onClick={e => { e.stopPropagation(); setShowNotes(v => !v); }} className="mt-auto flex w-fit items-center gap-0.5 rounded px-1 text-[10px] text-muted-foreground hover:bg-muted" aria-label={`当天 ${notes.length} 篇笔记`}><FileText className="size-3" />{notes.length}</button>}
+        <span className="sr-only">{dayKeyStr}</span>
+      </div>
+    </ContextMenuTrigger>
+    <ContextMenuContent>
+      <ContextMenuLabel>{label}</ContextMenuLabel>
+      <ContextMenuItem onSelect={onCreate}><Plus className="size-4" />新建日程</ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={onDiary}><PenLine className="size-4" />写这天的日记</ContextMenuItem>
+    </ContextMenuContent>
+  </ContextMenu>;
+}
+
 function MonthCompact(props: { cursor: Date; today: string; byDay: Map<string, CalendarItem[]>; notesByDay: Map<string, Footprint[]>; onToggle: (i: CalendarItem, done: boolean) => void; onPick: (d: Date) => void; onDiary: (d: Date) => void; tz: string }) {
   const first = new Date(Date.UTC(props.cursor.getUTCFullYear(), props.cursor.getUTCMonth(), 1));
   const cells = Array.from({ length: 42 }, (_, i) => addDays(mondayOf(first), i));

@@ -81,6 +81,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | GET | `/api/v1/notes/:id/versions` | |
 | POST | `/api/v1/notes/:id/versions/:v/restore` | |
 | POST | `/api/v1/notes/:id/presence` | heartbeat |
+| GET | `/api/v1/notes/:id/collaborators` | 谁能一起编这篇：工作区内有效名单（`can=edit|read`、权限来自 `workspace|notebook|owner`）+ `canInvite`。协同没有开关，跟着 ACL 走，这个接口就是把那份名单摊开给人看（设计 17 §3.4） |
 | GET | `/api/v1/notes/:id/backlinks` | |
 | GET | `/api/v1/notes/:id/mentions` | 未链接提及 |
 | GET | `/api/v1/notes/:id/graph` | 局部图 |
@@ -226,6 +227,10 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 
 `SaveNoteBody`：`{ expectedVersion, bodyMd?, title?, published?, aiIndex?, force?: false }`  
 冲突：`409 CONFLICT_VERSION` + `data: { version, updatedBy, bodyMd }`。
+
+**保存的响应也是一份完整的 `NoteDTO`，`canEdit` 一个都不能少。** 前端拿它整个换掉手上的笔记对象，
+缺字段等于告诉界面「这篇变只读了」——编辑器锁上、协同房间被拆、自动保存自己停掉，
+用户只看见「人还在编辑页却存不进去」，非刷新不可。以后新增写接口同理。
 
 ---
 

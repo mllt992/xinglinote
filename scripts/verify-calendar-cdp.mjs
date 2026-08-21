@@ -34,11 +34,12 @@ await go('http://127.0.0.1:12098/app');
 const wsId = await ex('location.pathname.split("/")[2]||""');
 const result = {};
 
-// —— 造数据：同一天五条，好验月视图溢出；一条带时长的日程，好验拉伸 ——
+// —— 造数据：同一天九条，好验月视图溢出；一条带时长的日程，好验拉伸 ——
+// 九条而不是五条：月视图每格显示几条按实测格高算（上限 6），五条在大屏上塞得下，就验不到溢出了
 const day = '2027-09-17';
 const at = h => `2027-09-17T0${h}:00:00.000Z`;
 const seeded = [];
-for (let i = 0; i < 5; i++) seeded.push((await post(`/api/v1/workspaces/${wsId}/calendar/items`, { kind: 'task', title: `验收待办${i + 1}`, dueAt: at(1 + i) })).id);
+for (let i = 0; i < 9; i++) seeded.push((await post(`/api/v1/workspaces/${wsId}/calendar/items`, { kind: 'task', title: `验收待办${i + 1}`, dueAt: at(1 + i) })).id);
 const meeting = await post(`/api/v1/workspaces/${wsId}/calendar/items`, { kind: 'event', title: '验收会议', startsAt: at(2), endsAt: at(3) });
 const itemsOf = async () => call(`/api/v1/workspaces/${wsId}/calendar?from=2027-09-01T00:00:00.000Z&to=2027-09-30T00:00:00.000Z`).then(d => d.items);
 

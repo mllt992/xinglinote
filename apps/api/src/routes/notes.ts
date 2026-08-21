@@ -199,6 +199,47 @@ knowledge.get("/notes/:id", async (c) => {
   return ok(c, { ...note, canEdit });
 });
 
+/**
+ * 「谁能一起编这篇」。协同没有开关，它跟着 ACL 走（设计 17 §3.4），
+ * 所以前端要能把这份名单摊开给人看，否则「协同在哪分享」就永远是个谜。
+ * 只回工作区内的人；对外只读分享是另一套，不在这里。
+ */
+knowledge.get("/notes/:id/collaborators", async (c) => {
+  const user = await requireUser(c);
+  const { note, workspace } = await noteAccess(c.req.param("id"), user.id, "read");
+  const [notebook] = await db.select().from(notebooks).where(eq(notebooks.id, note.notebookId));
+  if (!notebook) throw fail("NOT_FOUND", "笔记不存在");
+  const team = await db.select().from(workspaceMembers).where(eq(workspaceMembers.workspaceId, note.workspaceId));
+  const ids = team.map(m => m.userId);
+  const people = ids.length ? await db.select({ id: users.id, displayName: users.displayName, handle: users.handle, status: users.status }).from(users).where(inArray(users.id, ids)) : [];
+  const nbMembers = await db.select().from(notebookMembers).where(eq(notebookMembers.notebookId, notebook.id));
+  const nbAcl = { id: notebook.id, workspaceId: notebook.workspaceId, visibility: notebook.visibility as "open" | "restricted" | "private", createdBy: notebook.createdBy, frozenWorkspace: workspace.frozen };
+  const noteAcl = { id: note.id, workspaceId: note.workspaceId, notebookId: note.notebookId, trashed: !!note.trashedAt };
+
+  const list = people.filter(u => u.status === "active").map(u => {
+    const wsRole = (team.find(m => m.userId === u.id)?.role ?? null) as WsRole | null;
+    const nbMemberRole = (nbMembers.find(m => m.userId === u.id)?.role as "edit" | "view" | undefined) ?? null;
+    const ctx = { actor: { kind: "user" as const, userId: u.id }, note: noteAcl, notebook: nbAcl, wsRole, nbMemberRole, canSeeTrash: false };
+    const can = canEditNote(ctx) ? "edit" as const : canReadNote(ctx) ? "read" as const : null;
+    if (!can) return null;
+    // 权限从哪来：非公开笔记本靠创建者身份或单独授权，公开笔记本就是工作区角色
+    const via = notebook.visibility === "open" ? "workspace" as const
+      : u.id === notebook.createdBy ? "owner" as const
+      : nbMemberRole ? "notebook" as const : "workspace" as const;
+    return { userId: u.id, displayName: u.displayName, handle: u.handle, wsRole, can, via, me: u.id === user.id };
+  }).filter(Boolean);
+
+  const myRole = team.find(m => m.userId === user.id)?.role ?? null;
+  return ok(c, {
+    people: list,
+    workspaceId: note.workspaceId,
+    workspaceKind: workspace.kind,
+    frozen: workspace.frozen,
+    notebookVisibility: notebook.visibility,
+    canInvite: workspace.kind !== "personal" && (myRole === "owner" || myRole === "admin"),
+  });
+});
+
 knowledge.patch("/notes/:id", async (c) => {
   const user = await requireUser(c);
   const body = z
@@ -258,7 +299,10 @@ knowledge.patch("/notes/:id", async (c) => {
   await writeNoteFile({ ...saved, noteId: saved.id });
   await rebuildLinks(saved.id, saved.workspaceId, saved.bodyMd);
   if (verdict) await recordReview({ targetType: "note", targetId: saved.id, scope: "article", workspaceId: saved.workspaceId, authorUserId: user.id, snapshot: `${saved.title}\n\n${saved.bodyMd}`, verdict });
-  return ok(c, { ...saved, moderation: { held: !!held, message: held ? pendingMessage(verdict!) : null } });
+  // canEdit 必须跟着回：前端拿这份响应整个换掉手上的笔记对象，少一个字段就等于「这篇变只读了」
+  // ——编辑器会锁上、协同房间会被拆掉，而且它的 save() 见 canEdit 假就直接 return，之后连保存都停了，
+  // 只能刷新页面才好。走到这里 noteAccess(…, "edit") 已经过了，此刻就是能编的。
+  return ok(c, { ...saved, canEdit: true, moderation: { held: !!held, message: held ? pendingMessage(verdict!) : null } });
 });
 
 knowledge.post("/workspaces", async (c) => {

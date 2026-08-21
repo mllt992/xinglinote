@@ -42,7 +42,8 @@ export function ShareDialog({target,open,onOpenChange}:{target:ShareTarget|null;
 
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-w-xl">
     <DialogHeader><DialogTitle className="flex items-center gap-2"><Share2 className="size-5"/>分享《{target?.title}》</DialogTitle>
-      <DialogDescription>{target?.kind==="folder"?"目录链接是实时子树，之后在这个目录下新建的笔记也会出现在链接里。":target?.kind==="attachment"?"附件只能经这条链接下载，不暴露物理路径。":"每条链接相互独立，可以设置密码、有效期或单独撤销。"}</DialogDescription></DialogHeader>
+      <DialogDescription>{target?.kind==="folder"?"目录链接是实时子树，之后在这个目录下新建的笔记也会出现在链接里。":target?.kind==="attachment"?"附件只能经这条链接下载，不暴露物理路径。":"每条链接相互独立，可以设置密码、有效期或单独撤销。"}</DialogDescription>
+      <p className="text-xs text-muted-foreground">这条链接<b className="font-medium">只读</b>，访客能看能评论，但不能编辑。想让人跟你一起写，用顶栏的「协作」。</p></DialogHeader>
     <div className="rounded-xl border border-border bg-muted/30 p-4">
       {target?.kind==="note"&&headings.length>0&&<select className="mb-3 h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none" value={anchor} onChange={e=>setAnchor(e.target.value)}><option value="">分享整篇</option>{headings.map(h=><option key={h.anchor} value={h.anchor}>只分享这一节：{h.text}</option>)}</select>}
       <div className="grid gap-3 sm:grid-cols-[1fr_150px_auto]">
