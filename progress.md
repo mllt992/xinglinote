@@ -230,13 +230,34 @@ failed to solve: process "/bin/sh -c pnpm install --frozen-lockfile" did not com
 `xinglinote` 库建了 **46 张表**，api healthy，外网 `:12097` 首页与 `/api/healthz` 均 200，
 `wiki.mllt.cc` 也已确认可正常访问。
 
+### 服务器那份接回 git（已完成）
+
+原先是手工拷贝、没有 `.git`、Dockerfile 还被就地改过。接回来时踩了三个坑：
+
+1. **仓库是私有的**（`info/refs` 返回 401），且 **HTTPS 到 GitHub 时通时断**（`github.com` 20 秒超时）。
+   先用 `git bundle` 把完整历史打包传过去做冷启动，绕开网络与鉴权。
+2. **共享卷强制 777 权限**，`git status` 把每个文件都报成 modified（可执行位变化）。
+   `git config core.fileMode false` 解决。
+3. 最后配 SSH 部署密钥走通了直连：**HTTPS 拉不动，SSH 却只要 3.76 秒**。
+   密钥在服务器 `~/.ssh/id_ed25519_github`，`~/.ssh/config` 里 `IdentitiesOnly yes`
+   保证只用这把（那台机器上另有三把无关的钥匙）。
+
+现在服务器上就是正常的 git 工作树，`origin` 指向 `git@github.com:...`，更新只需：
+
+```bash
+cd ~/xinglinote && git pull && docker compose --profile app up -d --build
+```
+
+换成仓库版 Dockerfile 后，镜像从 **710MB 降到 591MB**（`prod-deps` 阶段让运行时不再带
+eslint / typescript / vite）。
+
 ### 遗留
 
 - **worker 显示 unhealthy**（功能正常）。`HEALTHCHECK` 写在共用的 `runtime` 阶段去打 `/api/healthz`，
   但三个镜像同源，worker / migrate 根本不起 HTTP 服务，必然失败。
-  修法：compose 里给 worker 覆盖 `healthcheck: {disable: true}`。**未做。**
-- **服务器上那份源码没有 `.git`**，是手工拷的，Dockerfile 还被就地改过，已与仓库分叉。
-  建议改成 `git clone` + `git pull`。**未做。**
+  修法：compose 里给 worker 与 migrate 覆盖 `healthcheck: {disable: true}`。**未做。**
+- 服务器上留了几个可删的文件：`~/xinglinote-备份-20260821.tar.gz`、`~/xrilang/xinglinote.bundle`
+  （冷启动用过，现在 SSH 直连了就没用了）、目录里的 `Dockerfile.bak.20260821` / `.env.bak.20260821`。
 
 ## 顺带核实过的兼容性
 
