@@ -82,7 +82,11 @@ const clients = [];
 try {
   const nb = (await q(`/workspaces/${ws.id}/notebooks`, { method: 'POST', body: JSON.stringify({ title: '协同', slug: 'collab' }) }, c)).data;
   let note = (await q('/notes', { method: 'POST', body: JSON.stringify({ notebookId: nb.id, title: '协同验收' }) }, c)).data;
-  note = (await q(`/notes/${note.id}`, { method: 'PATCH', body: JSON.stringify({ expectedVersion: note.version, bodyMd: '起始正文\n' }) }, c)).data;
+  const patched = (await q(`/notes/${note.id}`, { method: 'PATCH', body: JSON.stringify({ expectedVersion: note.version, bodyMd: '起始正文\n' }) }, c)).data;
+  // 保存的响应必须带 canEdit（架构 03 §3）：前端拿它整个换掉手上的笔记对象，缺这一个字段整篇就变只读
+  // ——编辑器锁上、协同房间被拆、自动保存自己停掉，人还停在编辑页却怎么打字都存不进去，非刷新不可。
+  result.saveKeepsCanEdit = patched.canEdit === true;
+  note = patched;
   const read = async () => (await q(`/notes/${note.id}`, {}, c)).data.bodyMd;
 
   // —— 两个客户端 ——
