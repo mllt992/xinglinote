@@ -27,6 +27,11 @@ services:
     env_file: [.env]
     environment:
       DATABASE_URL: ${DATABASE_URL_INTERNAL:-${DATABASE_URL}}
+    # 镜像里的 HEALTHCHECK 是打 /api/healthz 的，只对 api 成立。三个服务共用同一个镜像
+    # （靠 entrypoint 的参数分流），不关掉的话这里会一直红着——建完表就退出的容器，
+    # 探活本来也没有意义。
+    healthcheck:
+      disable: true
     volumes:
       - kbdata:/data
     restart: "no"
@@ -62,6 +67,11 @@ services:
     env_file: [.env]
     environment:
       DATABASE_URL: ${DATABASE_URL_INTERNAL:-${DATABASE_URL}}
+    # 同上：worker 不起 HTTP 服务，镜像里那条 fetch /api/healthz 必然 ECONNREFUSED，
+    # 于是它永远显示 unhealthy——功能其实一直正常（轮询 background_jobs）。
+    # 留着这个假红灯的代价是真出事时没人会当回事，以及给它配重启/告警时会误触发。
+    healthcheck:
+      disable: true
     depends_on:
       migrate:
         condition: service_completed_successfully
