@@ -71,13 +71,28 @@ button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
   .app-grid[data-drawer="1"] .tree-panel {
     display: flex;
     position: fixed;
-    top: 3.5rem;              /* 顶栏 h-14，抽屉从它下面开始，顶栏始终可操作 */
-    bottom: 0;
+    left: 0;
+    /* 右边留一条给遮罩，让「点空白处收起」有地方可点 */
+    right: 3rem;
     z-index: 45;              /* 压过遮罩的 40，低于弹窗 */
+    /* 必须不透明：桌面端 .notebook-panel 是 bg-muted/35，在网格里没问题，
+       一旦浮到正文上面，底下的字就会透出来，糊成一片。 */
+    background: var(--background);
     box-shadow: 0 0 24px rgb(0 0 0 / .18);
   }
-  .app-grid[data-drawer="1"] .notebook-panel { left: 0; width: 10rem; }
-  .app-grid[data-drawer="1"] .tree-panel { left: 10rem; right: 2.5rem; }
+  /* 两栏并排在手机上谁都不够宽（笔记本名会截成「项目_星…」），改成上下堆叠，各占满宽度 */
+  .app-grid[data-drawer="1"] .notebook-panel {
+    top: 3.5rem;             /* 顶栏 h-14，抽屉从它下面开始，顶栏始终可操作 */
+    height: 38vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--muted) 35%, var(--background));
+  }
+  .app-grid[data-drawer="1"] .tree-panel {
+    top: calc(3.5rem + 38vh);
+    bottom: 0;
+    border-right: 0;
+  }
   /* 拖宽手柄在触屏上没用，还会挡住列表边缘 */
   .app-grid[data-drawer="1"] [role="separator"] { display: none; }
 }
