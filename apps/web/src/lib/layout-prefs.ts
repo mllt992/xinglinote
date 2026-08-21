@@ -14,6 +14,17 @@ export type LayoutPrefs = {
   spellcheck: boolean;
   /** 正文字号档位。1 是基准，正文与预览一起缩放。 */
   fontScale: number;
+  /**
+   * 就地渲染哪些东西。默认全开；关掉的那项在编辑器里退回源码（预览栏不受影响）。
+   * 「只想看源码但保留表格」这类需求靠它，而不是把整个即时渲染关掉。
+   */
+  render: RenderToggles;
+};
+
+export type RenderToggles = { image: boolean; math: boolean; table: boolean; diagram: boolean };
+export const RENDER_KEYS = ["image", "math", "table", "diagram"] as const;
+export const RENDER_LABELS: Record<keyof RenderToggles, string> = {
+  image: "图片", math: "公式", table: "表格", diagram: "图表",
 };
 
 /** 字号档位。给固定几档而不是自由输入：自由输入会调出 13.7px 这种半像素的糊字。 */
@@ -31,6 +42,7 @@ export const DEFAULT_LAYOUT: LayoutPrefs = {
   vim: false,
   spellcheck: true,
   fontScale: 1,
+  render: { image: true, math: true, table: true, diagram: true },
 };
 
 export const NOTEBOOKS_MIN = 160, NOTEBOOKS_MAX = 420;
@@ -53,6 +65,8 @@ export function loadLayout(): LayoutPrefs {
       spellcheck: raw.spellcheck !== false,
       // 存进去的值可能是老版本或者被人手改过，不在档位里就退回基准
       fontScale: (FONT_SCALES as readonly number[]).includes(Number(raw.fontScale)) ? Number(raw.fontScale) : 1,
+      // 缺项一律当开：新增一项渲染时，老用户不该莫名其妙少一样东西
+      render: Object.fromEntries(RENDER_KEYS.map(k => [k, (raw.render as Partial<RenderToggles> | undefined)?.[k] !== false])) as RenderToggles,
     };
   } catch { return DEFAULT_LAYOUT; }
 }

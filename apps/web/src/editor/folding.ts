@@ -5,9 +5,10 @@
  *
  * 折叠是**纯显示**：折起来的还是原来那些字节，保存、diff、导出都当它不存在。
  */
-import { codeFolding, foldGutter, foldService, syntaxTree } from "@codemirror/language";
-import type { EditorState, Extension } from "@codemirror/state";
+import { codeFolding, ensureSyntaxTree, foldEffect, foldGutter, foldService, foldable, foldedRanges, syntaxTree } from "@codemirror/language";
+import type { EditorState, Extension, StateEffect } from "@codemirror/state";
 import type { SyntaxNode } from "@lezer/common";
+import { ViewPlugin, type EditorView } from "@codemirror/view";
 
 /** `ATXHeading3` / `SetextHeading1` → 3 / 1；不是标题回 null。 */
 function headingLevel(name: string): number | null {
@@ -64,6 +65,80 @@ const gutter = foldGutter({
   },
 });
 
-export function markdownFolding(): Extension {
-  return [codeFolding({ placeholderText: "⋯" }), headings, fences, gutter];
+/**
+ * 折叠状态的记忆。
+ *
+ * **按「折的是哪一行的原文」记，不按行号记**：MCP、AI、恢复历史版本都会在别处改正文，
+ * 行号存下来隔一会儿就指到别的地方去了，一打开就折错段落，比不记还糟。
+ * 标题重名时两处都折上——这比猜一个更不容易出错。
+ */
+const KEY = "kb.fold";
+const LIMIT = 200;
+
+type FoldStore = Record<string, string[]>;
+
+function readFolds(): FoldStore {
+  try {
+    const raw = JSON.parse(localStorage.getItem(KEY) ?? "{}") as FoldStore;
+    return raw && typeof raw === "object" ? raw : {};
+  } catch { return {}; }
+}
+
+function writeFolds(store: FoldStore) {
+  // 只留最近 200 篇，不然一个用得久的库会把 localStorage 撑满
+  const entries = Object.entries(store).slice(-LIMIT);
+  try { localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(entries))); } catch { /* 隐私模式写不进就算了 */ }
+}
+
+function foldMemory(noteId: string): Extension {
+  if (!noteId) return [];
+  return ViewPlugin.define(view => {
+    const wanted = new Set(readFolds()[noteId] ?? []);
+    if (wanted.size) {
+      /**
+       * 建视图的这一刻语法树还没解析到，`foldable` 会一路回 null。
+       * 先催一把解析（有时间预算，长文催不完就算了），折上一批就把它从待办里划掉，
+       * 没折全再退避重试几次——只试一帧是不够的，实测会一条都折不上。
+       */
+      let tries = 0;
+      const attempt = () => {
+        if (!view.dom.isConnected || !wanted.size) return;
+        ensureSyntaxTree(view.state, view.state.doc.length, 300);
+        const effects: StateEffect<unknown>[] = [];
+        for (let n = 1; n <= view.state.doc.lines; n++) {
+          const line = view.state.doc.line(n);
+          if (!wanted.has(line.text)) continue;
+          const range = foldable(view.state, line.from, line.to);
+          if (!range) continue;
+          effects.push(foldEffect.of(range));
+          wanted.delete(line.text);
+        }
+        if (effects.length) view.dispatch({ effects });
+        // 找不着的（标题被改名或删了）重试几次就放弃，别一直空转
+        if (wanted.size && ++tries < 5) window.setTimeout(attempt, 80 * tries);
+      };
+      // 用 setTimeout 而不是 requestAnimationFrame：后者在不可见的标签页里根本不跑，
+      // 从「恢复上次会话」打开的一堆后台标签会全都折不上。
+      window.setTimeout(attempt, 0);
+    }
+    return {
+      destroy() {
+        const texts: string[] = [];
+        const state = view.state;
+        // 折叠范围是从「标题行末」起算的，所以 from 落在哪一行，折起来的就是哪一条
+        foldedRanges(state).between(0, state.doc.length, from => {
+          const text = state.doc.lineAt(from).text;
+          if (text.trim() && !texts.includes(text)) texts.push(text);
+        });
+        const store = readFolds();
+        if (texts.length) store[noteId] = texts;
+        else delete store[noteId];
+        writeFolds(store);
+      },
+    };
+  });
+}
+
+export function markdownFolding(noteId = ""): Extension {
+  return [codeFolding({ placeholderText: "⋯" }), headings, fences, gutter, foldMemory(noteId)];
 }

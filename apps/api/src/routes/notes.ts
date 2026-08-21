@@ -86,9 +86,42 @@ knowledge.get("/workspaces/:id/notebooks", async (c) => {
   const id = c.req.param("id");
   const role = await memberRole(id, user.id);
   if (!role) throw fail("FORBIDDEN", "不是该工作区成员");
-  const list = await db.select().from(notebooks).where(and(eq(notebooks.workspaceId, id), isNull(notebooks.trashedAt)));
+  // 按自定义顺序发出去，客户端还会再按用户选的排序模式排一遍；这里定一个稳定的底。
+  const list = await db
+    .select()
+    .from(notebooks)
+    .where(and(eq(notebooks.workspaceId, id), isNull(notebooks.trashedAt)))
+    .orderBy(asc(notebooks.sortKey), asc(notebooks.createdAt));
   const visible=[];for(const nb of list){try{await notebookAccess(nb.id,user.id,"read");visible.push(nb);}catch{}}
   return ok(c, { notebooks: visible });
+});
+
+/**
+ * 笔记本的自定义顺序。规则与上面那条「笔记顺序」完全一致：整串重写 `sort_key`，
+ * 不做增量插值——插值省的那点写入换来的是「排久了 key 挤在一起要重排」的隐患。
+ *
+ * 权限按工作区算而不是按单个笔记本算：这是工作区侧栏的排列，不是某一本的内部事务。
+ */
+knowledge.patch("/workspaces/:id/notebooks/order", async (c) => {
+  const user = await requireUser(c);
+  const workspaceId = c.req.param("id");
+  const role = await memberRole(workspaceId, user.id);
+  if (!role) throw fail("FORBIDDEN", "不是该工作区成员");
+  const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, workspaceId));
+  if (ws?.frozen) throw fail("FORBIDDEN", "工作区已冻结，暂时只读");
+  const body = z.object({ notebookIds: z.array(z.string().uuid()).min(1).max(500) }).parse(await c.req.json());
+  if (new Set(body.notebookIds).size !== body.notebookIds.length) throw fail("VALIDATION", "笔记本顺序不能重复");
+  const rows = await db
+    .select({ id: notebooks.id })
+    .from(notebooks)
+    .where(and(eq(notebooks.workspaceId, workspaceId), isNull(notebooks.trashedAt), inArray(notebooks.id, body.notebookIds)));
+  if (rows.length !== body.notebookIds.length) throw fail("VALIDATION", "只能排列当前工作区里的笔记本");
+  await db.transaction(async (tx) => {
+    for (let i = 0; i < body.notebookIds.length; i++) {
+      await tx.update(notebooks).set({ sortKey: i }).where(eq(notebooks.id, body.notebookIds[i]!));
+    }
+  });
+  return ok(c, { notebookIds: body.notebookIds });
 });
 
 knowledge.get("/notebooks/:id/tree", async (c) => {
@@ -252,7 +285,9 @@ knowledge.post("/workspaces/:id/notebooks", async (c) => {
   if (ws?.frozen) throw fail("FORBIDDEN", "工作区已冻结，暂时只读");
   const body = z.object({ title: z.string().min(1).max(80), visibility: z.enum(["open", "private", "restricted"]).default("open") }).parse(await c.req.json());
   const slug = `nb-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
-  const [nb] = await db.insert(notebooks).values({ workspaceId, slug, title: body.title.trim(), visibility: body.visibility, createdBy: user.id }).returning();
+  // 新本排在最后。不给的话所有本的 sort_key 都是 0，自定义排序等于没有起点。
+  const keys = await db.select({ sortKey: notebooks.sortKey }).from(notebooks).where(and(eq(notebooks.workspaceId, workspaceId), isNull(notebooks.trashedAt)));
+  const [nb] = await db.insert(notebooks).values({ workspaceId, slug, title: body.title.trim(), visibility: body.visibility, createdBy: user.id, sortKey: nextSortKey(keys.map(k => k.sortKey)) }).returning();
   return ok(c, nb, 201);
 });
 

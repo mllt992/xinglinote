@@ -177,7 +177,44 @@ html[data-mode="dark"] {
 .cm-md-wiki-card-missing .cm-md-wiki-card-body { font-style: italic; }
 
 /* 图片小部件的外壳。它存在的唯一理由是「根节点不能被换掉」（见 live-preview.ts 的注释）。 */
-.cm-md-image-box { display: inline-block; max-width: 100%; vertical-align: top; }
+.cm-md-image-box { position: relative; display: inline-block; max-width: 100%; vertical-align: top; }
+.cm-md-image-zoom {
+  position: absolute; right: .4rem; top: .4rem; display: grid; place-items: center;
+  width: 1.75rem; height: 1.75rem; border: 0; border-radius: 8px;
+  background: color-mix(in srgb, var(--background) 82%, transparent);
+  color: var(--foreground); font-size: 13px; line-height: 1; cursor: pointer;
+  opacity: 0; transition: opacity 120ms ease-out;
+  box-shadow: 0 1px 4px rgb(0 0 0 / .18);
+}
+.cm-md-image-box:hover .cm-md-image-zoom, .cm-md-image-zoom:focus-visible { opacity: 1; }
+/* 触摸屏没有 hover，按钮得一直在，否则手机上等于没有这个功能 */
+@media (pointer: coarse) { .cm-md-image-zoom { opacity: .85; } }
+
+/* 预览里的图可以直接点开看大图，所以给个手势提示 */
+.markdown img { cursor: zoom-in; }
+.markdown a img { cursor: pointer; }
+
+/* 代码块的语言标签与复制按钮。渲染器不吐这两样，是宿主在客户端补的（lib/code-block.ts）。 */
+.markdown pre .code-tools {
+  position: absolute; right: .5rem; top: .5rem; display: flex; align-items: center; gap: .4rem;
+  opacity: 0; transition: opacity 120ms ease-out;
+}
+.markdown pre:hover .code-tools, .markdown pre:focus-within .code-tools { opacity: 1; }
+@media (pointer: coarse) { .markdown pre .code-tools { opacity: .9; } }
+.markdown .code-lang {
+  border-radius: 6px; background: color-mix(in srgb, var(--background) 70%, transparent);
+  padding: .1em .45em; color: var(--muted-foreground);
+  font: 11px var(--font-ui); letter-spacing: .04em; text-transform: uppercase;
+}
+.markdown .code-copy {
+  border: 1px solid var(--border-ui); border-radius: 6px;
+  background: var(--background); padding: .15em .5em;
+  color: var(--muted-foreground); font: 11px var(--font-ui); cursor: pointer;
+}
+.markdown .code-copy:hover { color: var(--foreground); }
+.markdown .code-copy-done { border-color: var(--good); color: var(--good); }
+
+/* 图挂了别只留一个破图标：至少要能一眼看出是哪张坏了（同坏公式、坏图表）。 */
 
 /* 图挂了别只留一个破图标：至少要能一眼看出是哪张坏了（同坏公式、坏图表）。 */
 .cm-md-image-error {

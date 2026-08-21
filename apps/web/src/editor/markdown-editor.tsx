@@ -24,6 +24,9 @@ import { createCollab, type CollabPeer, type CollabSession, type CollabStatus, t
 import { cachedVim, loadVim, vimExtension, vimModeOf, type VimMode } from "./vim";
 import { wikiCompletion, type WikiCompleteOptions } from "./wiki-complete";
 import { wikiHover, type WikiPreviewLoader } from "./wiki-hover";
+import type { RenderToggles } from "../lib/layout-prefs";
+
+const ALL_ON: RenderToggles = { image: true, math: true, table: true, diagram: true };
 
 /**
  * 换篇再回来时的光标与滚动位置。**只活在这一次会话里**，不进 localStorage：
@@ -60,9 +63,9 @@ export type EditorAction = "bold" | "italic" | "strike" | "code" | "link" | "wik
  * 即时渲染的那一套装饰。**当前行高亮跟着模式走**：Typora 那类即时渲染编辑器都不高亮当前行，
  * 一条横贯正文的底色会把连续的段落切成一格一格；源码模式下它仍然有用。
  */
-function previewExtensions(onWiki: () => ((title: string, section?: string) => void) | undefined, wysiwyg: boolean, noteId: string): Extension {
+function previewExtensions(onWiki: () => ((title: string, section?: string) => void) | undefined, wysiwyg: boolean, noteId: string, render: RenderToggles): Extension {
   return [
-    livePreview((title, section) => onWiki()?.(title, section), wysiwyg, noteId),
+    livePreview((title, section) => onWiki()?.(title, section), wysiwyg, noteId, render),
     wysiwyg ? [] : highlightActiveLine(),
   ];
 }
@@ -130,6 +133,7 @@ export function MarkdownEditor({
   wikiPreview,
   typewriter = false,
   wysiwyg = false,
+  render = ALL_ON,
   vim = false,
   onVimMode,
   spellcheck = true,
@@ -162,6 +166,8 @@ export function MarkdownEditor({
   typewriter?: boolean;
   /** 即时渲染（Typora 那套）：标记按元素显隐、表格就地渲染、正文比例字体。 */
   wysiwyg?: boolean;
+  /** 就地渲染哪些东西。默认全开；关掉的那项退回源码。 */
+  render?: RenderToggles;
   /** Vim keymap。按需加载，关着的时候一个字节都不下。 */
   vim?: boolean;
   /** Vim 模式变了：底栏拿它显示 NORMAL / INSERT / VISUAL；关着时给 null。 */
@@ -283,9 +289,9 @@ export function MarkdownEditor({
           EditorView.lineWrapping,
           EditorState.allowMultipleSelections.of(true),
           markdown({ base: markdownLanguage, codeLanguages: languages, extensions: markdownSyntaxExtensions }),
-          livePreviewCompartment.of(previewExtensions(() => latest.current.onWiki, wysiwyg, resetKey ?? "")),
+          livePreviewCompartment.of(previewExtensions(() => latest.current.onWiki, wysiwyg, resetKey ?? "", render)),
           hangingIndent(),
-          markdownFolding(),
+          markdownFolding(resetKey ?? ""),
           typewriterScroll(() => latest.current.typewriter === true),
           fileDrop(file => latest.current.onUpload?.(file) ?? Promise.resolve(null)),
           smartPaste(),
@@ -332,8 +338,9 @@ export function MarkdownEditor({
     // 那会白白产生一次 docChanged，把刚打开的笔记标成「未保存」并触发一次空保存。
     mine.current = value;
     if (autoFocus) instance.focus();
-    // 滚动位置要等 CodeMirror 量完行高才有意义，下一帧再放回去
-    if (spot) requestAnimationFrame(() => { if (instance.dom.isConnected) instance.scrollDOM.scrollTop = spot.top; });
+    // 滚动位置要等 CodeMirror 量完行高才有意义，下一轮任务再放回去。
+    // 用 setTimeout 不用 requestAnimationFrame：后者在不可见的标签页里根本不跑。
+    if (spot) window.setTimeout(() => { if (instance.dom.isConnected) instance.scrollDOM.scrollTop = spot.top; }, 0);
 
     // scroll 不冒泡，CM 也不转发，只能自己在滚动容器上听。
     const report = () => {
@@ -375,9 +382,9 @@ export function MarkdownEditor({
 
   useEffect(() => {
     view.current?.dispatch({
-      effects: livePreviewCompartment.reconfigure(previewExtensions(() => latest.current.onWiki, wysiwyg, resetKey ?? "")),
+      effects: livePreviewCompartment.reconfigure(previewExtensions(() => latest.current.onWiki, wysiwyg, resetKey ?? "", render)),
     });
-  }, [wysiwyg, resetKey]);
+  }, [wysiwyg, resetKey, render]);
 
   useEffect(() => {
     view.current?.dispatch({ effects: spellcheckCompartment.reconfigure(contentAttrs(spellcheck)) });

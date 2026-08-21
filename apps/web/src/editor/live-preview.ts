@@ -6,9 +6,14 @@ import {
 } from "@codemirror/view";
 import { diagramBlockAt } from "@kb/shared/markdown";
 import { hydrateMath, loadKatex } from "../lib/katex-hydrate";
+import { openLightbox } from "../lib/lightbox";
 import { renderDiagram } from "../lib/mermaid-hydrate";
 import { toSafeHtml } from "../lib/render-html";
 import { mountTableEditor } from "./table-edit";
+import type { RenderToggles } from "../lib/layout-prefs";
+
+/** 没传开关时一律全开——这个模块被别处直接引用时不该悄悄少渲染点什么。 */
+const ALL_ON: RenderToggles = { image: true, math: true, table: true, diagram: true };
 
 /**
  * 就地渲染。标记（`#`、`**`、`[]()`、`[[]]`）平时藏起来只显示内容，光标凑近了才露出原文。
@@ -92,10 +97,26 @@ class ImageWidget extends WidgetType {
       box.append(failed);
     }, { once: true });
 
-    box.append(img);
+    // 放大按钮：hover 才出现。不用「点图就放大」——裸单击要留给「把光标放到这儿」，
+    // 和双链那条口径一样（§5）。触摸设备没有 hover，所以按钮常驻，靠 CSS 判定。
+    const zoom = document.createElement("button");
+    zoom.type = "button";
+    zoom.className = "cm-md-image-zoom";
+    zoom.textContent = "⤢";
+    zoom.title = "放大查看";
+    zoom.setAttribute("aria-label", "放大查看");
+    zoom.addEventListener("mousedown", event => { event.preventDefault(); event.stopPropagation(); });
+    zoom.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      openLightbox(this.url, this.alt);
+    });
+
+    box.append(img, zoom);
     return box;
   }
-  ignoreEvent() { return false; }
+  /** 放大按钮上的事件归自己，其余（点一下把光标放过来）照旧交给 CodeMirror。 */
+  ignoreEvent(event: Event) { return !!(event.target as HTMLElement | null)?.closest?.(".cm-md-image-zoom"); }
 }
 
 class MathWidget extends WidgetType {
@@ -201,7 +222,7 @@ function wholeLines(state: EditorState, from: number, to: number): boolean {
  */
 type BlockBuilt = { decorations: DecorationSet; spans: Array<{ from: number; to: number }> };
 
-function blockField(wysiwyg: boolean, noteId: string) {
+function blockField(wysiwyg: boolean, noteId: string, render: RenderToggles) {
   const build = (state: EditorState): BlockBuilt => {
     const ranges: Range<Decoration>[] = [];
     const spans: Array<{ from: number; to: number }> = [];
@@ -211,7 +232,7 @@ function blockField(wysiwyg: boolean, noteId: string) {
         if (node.name === "FencedCode") {
           // 图只在即时渲染模式下就地画：整行粒度里光标一进块就整块跳回源码，
           // 而一张图通常有好几行，跳来跳去比不画还难用（同表格）。
-          if (!wysiwyg || !wholeLines(state, node.from, node.to)) return false;
+          if (!render.diagram || !wysiwyg || !wholeLines(state, node.from, node.to)) return false;
           // 用共享的那份识别逻辑，别在这里再写一套围栏解析。
           const block = diagramBlockAt(state.doc.sliceString(node.from, node.to), 0);
           if (!block?.source.trim()) return false;
@@ -224,7 +245,7 @@ function blockField(wysiwyg: boolean, noteId: string) {
         // 行内内容占了语法树的绝大部分，而块级公式与表格都不会长在段落或代码块里面。
         if (node.name === "Paragraph" || node.name === "CodeBlock") return false;
         if (node.name === "BlockMath") {
-          if (!wholeLines(state, node.from, node.to)) return false;
+          if (!render.math || !wholeLines(state, node.from, node.to)) return false;
           const raw = state.doc.sliceString(node.from, node.to).trim();
           // 没闭合就别渲染，不然刚敲下 `$$` 后面半篇文章会突然变成一坨公式。
           if (!raw.endsWith("$$") || raw.length <= 4) return false;
@@ -239,7 +260,7 @@ function blockField(wysiwyg: boolean, noteId: string) {
         if (node.name === "Table") {
           // 表格只在即时渲染模式下就地渲染：整行粒度里光标一进表格就整块跳回源码，
           // 而表格通常有好几行，跳来跳去比不渲染还难用。
-          if (!wysiwyg || !wholeLines(state, node.from, node.to)) return;
+          if (!render.table || !wysiwyg || !wholeLines(state, node.from, node.to)) return;
           spans.push({ from: node.from, to: node.to });
           if (revealed(node.from, node.to)) return;      // 回源码态，里面的行内标记照常装饰
           ranges.push(Decoration.replace({ widget: new TableWidget(state.doc.sliceString(node.from, node.to), noteId, !state.readOnly), block: true }).range(node.from, node.to));
@@ -269,7 +290,7 @@ function blockField(wysiwyg: boolean, noteId: string) {
   });
 }
 
-function build(view: EditorView, wysiwyg: boolean): Built {
+function build(view: EditorView, wysiwyg: boolean, render: RenderToggles): Built {
   const marks: Range<Decoration>[] = [];
   // 只有「被替换掉的」区间该是原子的：方向键要能一步跨过藏起来的标记。
   // 样式类的 mark 与整行装饰绝不能进这里，否则那段文字就没法把光标放进去改。
@@ -381,7 +402,7 @@ function build(view: EditorView, wysiwyg: boolean): Built {
             return;
           }
           case "Image": {
-            if (revealed(node.from, node.to)) return false;
+            if (!render.image || revealed(node.from, node.to)) return false;
             const parsed = /^!\[([^\]]*)\]\(([^)\s]+)/.exec(state.doc.sliceString(node.from, node.to));
             if (parsed) replace(Decoration.replace({ widget: new ImageWidget(parsed[2], parsed[1]) }), node.from, node.to);
             return false;
@@ -404,7 +425,7 @@ function build(view: EditorView, wysiwyg: boolean): Built {
             return false;
           }
           case "InlineMath": {
-            if (revealed(node.from, node.to)) return false;
+            if (!render.math || revealed(node.from, node.to)) return false;
             replace(Decoration.replace({ widget: new MathWidget(state.doc.sliceString(node.from + 1, node.to - 1)) }), node.from, node.to);
             return false;
           }
@@ -413,7 +434,7 @@ function build(view: EditorView, wysiwyg: boolean): Built {
             return false;
           case "Table":
             // 已经渲成表格小部件的，里面的行内标记不必再装饰；回到源码态时照常往里走。
-            return wysiwyg && !revealed(node.from, node.to) ? false : undefined;
+            return render.table && wysiwyg && !revealed(node.from, node.to) ? false : undefined;
           case "TaskMarker": {
             // 复选框一直是复选框（Obsidian、Typora 都这样），光标在这一行也不退回 `[ ]`。
             const checked = state.doc.sliceString(node.from + 1, node.to - 1).trim().toLowerCase() === "x";
@@ -440,15 +461,15 @@ function build(view: EditorView, wysiwyg: boolean): Built {
   return { decorations: Decoration.set(marks, true), atomic: Decoration.set(atoms, true), scopes };
 }
 
-function decorator(wysiwyg: boolean) {
+function decorator(wysiwyg: boolean, render: RenderToggles) {
   return ViewPlugin.fromClass(
     class {
       built: Built;
-      constructor(view: EditorView) { this.built = build(view, wysiwyg); }
+      constructor(view: EditorView) { this.built = build(view, wysiwyg, render); }
       update(update: ViewUpdate) {
         if (update.docChanged || update.viewportChanged
           || syntaxTree(update.startState) !== syntaxTree(update.state)) {
-          this.built = build(update.view, wysiwyg);
+          this.built = build(update.view, wysiwyg, render);
           return;
         }
         if (!update.selectionSet) return;
@@ -457,7 +478,7 @@ function decorator(wysiwyg: boolean) {
         const before = revealer(update.startState, wysiwyg);
         const after = revealer(update.state, wysiwyg);
         if (this.built.scopes.some(scope => before(scope.from, scope.to) !== after(scope.from, scope.to))) {
-          this.built = build(update.view, wysiwyg);
+          this.built = build(update.view, wysiwyg, render);
         }
       }
     },
@@ -530,6 +551,11 @@ function followHandler(onWiki?: (title: string, section?: string) => void): Exte
   });
 }
 
-export function livePreview(onWiki: ((title: string, section?: string) => void) | undefined, wysiwyg: boolean, noteId = ""): Extension {
-  return [blockField(wysiwyg, noteId), decorator(wysiwyg), followHandler(onWiki)];
+export function livePreview(
+  onWiki: ((title: string, section?: string) => void) | undefined,
+  wysiwyg: boolean,
+  noteId = "",
+  render: RenderToggles = ALL_ON,
+): Extension {
+  return [blockField(wysiwyg, noteId, render), decorator(wysiwyg, render), followHandler(onWiki)];
 }
