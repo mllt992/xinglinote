@@ -9,6 +9,7 @@ import { currentUser } from "../lib/session.ts";
 import { hashCode, registrationCode } from "../lib/tokens.ts";
 import { assertSafeOutboundUrl } from "../lib/net-guard.ts";
 import { seal } from "../lib/secrets.ts";
+import { normalizeCategories } from "../lib/moderation-verdict.ts";
 
 function pageQuery(c: { req: { query: (k: string) => string | undefined } }) {
   const page = Math.max(1, Number(c.req.query("page") ?? 1) || 1);
@@ -26,7 +27,7 @@ function maskSettings(s: typeof instanceSettings.$inferSelect | undefined) {
   if (!s) return s;
   // VAPID 私钥一个字节都不该出这台机器；公钥要给前端订阅用，照常回。
   const { vapidPrivateKey, ...rest } = s;
-  return { ...rest, smtpPassword: s.smtpPassword ? "••••••••" : null, moderationApiKey: s.moderationApiKey ? "••••••••" : null, vapidConfigured: !!vapidPrivateKey };
+  return { ...rest, smtpPassword: s.smtpPassword ? "••••••••" : null, moderationApiKey: s.moderationApiKey ? "••••••••" : null, vapidConfigured: !!vapidPrivateKey, moderationCategories: normalizeCategories(s.moderationCategories) };
 }
 
 function publicUser(row: typeof users.$inferSelect) {
@@ -63,7 +64,11 @@ adminRoutes.patch("/admin/settings", async c => {
   const body = z.object({ allowOpenRegistration: z.boolean().optional(), allowCodeRegistration: z.boolean().optional(), requireEmailVerification: z.boolean().optional(), allowUserCreateWorkspace: z.boolean().optional(), squareEnabled: z.boolean().optional(), aiEnabled: z.boolean().optional(), defaultUserStorageBytes: z.number().int().min(1048576).max(1099511627776).optional(), smtpHost:z.string().nullable().optional(),smtpPort:z.number().int().min(1).max(65535).nullable().optional(),smtpUser:z.string().nullable().optional(),smtpPassword:z.string().nullable().optional(),smtpFrom:z.string().nullable().optional(),smtpSecure:z.boolean().optional(),
     moderationEnabled: z.boolean().optional(), moderationSquare: z.boolean().optional(), moderationCircle: z.boolean().optional(), moderationArticle: z.boolean().optional(),
     moderationBaseUrl: z.string().url().nullable().optional(), moderationModel: z.string().max(120).nullable().optional(), moderationApiKey: z.string().max(400).nullable().optional(),
-    moderationRules: z.string().max(4000).nullable().optional(), moderationCategories: z.array(z.string().min(1).max(40)).max(20).optional(),
+    moderationRules: z.string().max(4000).nullable().optional(),
+    moderationCategories: z.array(z.union([
+      z.string().min(1).max(40),
+      z.object({ key: z.string().min(1).max(40), label: z.string().min(1).max(40) }),
+    ])).max(30).optional(),
     moderationThreshold: z.number().int().min(1).max(100).optional(), moderationOnError: z.enum(["pass", "review"]).optional(),
     pushEnabled: z.boolean().optional(), vapidSubject: z.string().max(200).nullable().optional() }).parse(await c.req.json());
   // 前端回填的是掩码，别把 •••••••• 当成新密钥存进去。
@@ -77,6 +82,7 @@ adminRoutes.patch("/admin/settings", async c => {
   const values: Record<string, unknown> = { ...body, updatedAt: new Date() };
   if (key === undefined) delete values.moderationApiKey; else values.moderationApiKey = key;
   if (smtpPassword === undefined) delete values.smtpPassword; else values.smtpPassword = smtpPassword;
+  if (body.moderationCategories) values.moderationCategories = normalizeCategories(body.moderationCategories);
   const [saved] = await db.update(instanceSettings).set(values).where(eq(instanceSettings.id, 1)).returning();
   return ok(c, maskSettings(saved));
 });

@@ -3,11 +3,12 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { auditLogs, moderationReviews, notes, notifications, posts, users, workspaces } from "../db/schema.ts";
+import { auditLogs, contentReports, moderationReviews, notes, notifications, posts, users, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
-import { SCOPE_LABEL, settleReports, type ModerationScope } from "../lib/moderation.ts";
+import { instanceConfig, SCOPE_LABEL, settleReports, type ModerationScope } from "../lib/moderation.ts";
+import { normalizeCategories } from "../lib/moderation-verdict.ts";
 import { writeNoteFile } from "../lib/files.ts";
 
 export const moderationRoutes = new Hono();
@@ -32,21 +33,33 @@ moderationRoutes.get("/moderation/queue", async c => {
   await assertCanReview(u.id, u.roleInstance, wsId);
   const handled = c.req.query("status") === "handled";
   const scope = z.enum(["square", "circle", "article"]).optional().catch(undefined).parse(c.req.query("scope") || undefined);
+  const kind = z.enum(["publish", "report", "appeal"]).optional().catch(undefined).parse(c.req.query("kind") || undefined);
   const rows = await db.select().from(moderationReviews).where(and(
     wsId ? eq(moderationReviews.workspaceId, wsId) : undefined,
     scope ? eq(moderationReviews.scope, scope) : undefined,
+    kind ? eq(moderationReviews.kind, kind) : undefined,
     handled ? inArray(moderationReviews.status, ["approved", "rejected"]) : eq(moderationReviews.status, "pending"),
   )).orderBy(desc(moderationReviews.createdAt)).limit(handled ? 100 : 200);
   const people = rows.length ? await db.select().from(users).where(inArray(users.id, [...new Set(rows.flatMap(r => [r.authorUserId, r.reviewerId].filter(Boolean) as string[]))])) : [];
   const spaces = rows.some(r => r.workspaceId) ? await db.select().from(workspaces) : [];
+  const reportRows = rows.length ? await db.select().from(contentReports).where(and(
+    eq(contentReports.targetType, "post"),
+    inArray(contentReports.targetId, [...new Set(rows.filter(r => r.targetType === "post").map(r => r.targetId))]),
+  )) : [];
   const name = (id: string | null) => (id ? people.find(p => p.id === id)?.displayName ?? "已注销用户" : null);
+  const catalog = normalizeCategories((await instanceConfig())?.moderationCategories);
   return ok(c, {
+    categories: catalog,
     items: rows.map(r => ({
       id: r.id, targetType: r.targetType, targetId: r.targetId, scope: r.scope, scopeLabel: SCOPE_LABEL[r.scope as ModerationScope] ?? r.scope,
+      kind: r.kind ?? "publish",
       workspaceId: r.workspaceId, workspaceName: r.workspaceId ? spaces.find(w => w.id === r.workspaceId)?.name ?? null : null,
       author: name(r.authorUserId), snapshot: r.snapshot,
       aiVerdict: r.aiVerdict, aiScore: r.aiScore, aiCategories: r.aiCategories as string[], aiReason: r.aiReason, aiModel: r.aiModel,
       status: r.status, reviewer: name(r.reviewerId), reviewNote: r.reviewNote, reviewedAt: r.reviewedAt, createdAt: r.createdAt,
+      reports: reportRows.filter(x => x.targetId === r.targetId).map(x => ({
+        reason: x.reason, note: x.note, status: x.status, createdAt: x.createdAt,
+      })),
     })),
   });
 });
@@ -56,9 +69,10 @@ moderationRoutes.patch("/moderation/:id", async c => {
   const [item] = await db.select().from(moderationReviews).where(eq(moderationReviews.id, c.req.param("id")));
   if (!item) throw fail("NOT_FOUND", "审核记录不存在");
   await assertCanReview(u.id, u.roleInstance, item.workspaceId);
-  if (item.status !== "pending") throw fail("VALIDATION", "这条已经审过了");
+  if (item.status === "queued") throw fail("VALIDATION", "AI 还在审，等它结束再改");
   const body = z.object({ action: z.enum(["approve", "reject"]), note: z.string().max(500).optional() }).parse(await c.req.json());
   const pass = body.action === "approve";
+  const changed = item.status !== (pass ? "approved" : "rejected");
 
   if (item.targetType === "post") {
     const [p] = await db.select().from(posts).where(eq(posts.id, item.targetId));
@@ -83,16 +97,20 @@ moderationRoutes.patch("/moderation/:id", async c => {
   await settleReports(item.targetType, item.targetId, pass ? "dismissed" : "accepted", u.id);
 
   const label = SCOPE_LABEL[item.scope as ModerationScope] ?? item.scope;
+  const wasHandled = item.status === "approved" || item.status === "rejected";
   await db.insert(notifications).values({
     userId: item.authorUserId, type: "moderation_result",
-    title: pass ? `你的${label}已通过人工审核` : `你的${label}未通过人工审核`,
+    title: wasHandled
+      ? (pass ? `你的${label}已恢复公开` : `你的${label}已被下架`)
+      : (pass ? `你的${label}已通过人工审核` : `你的${label}未通过人工审核`),
     body: body.note?.trim() || (pass ? "已经正常展示了。" : "内容不符合本站规则，可以修改后重新发布。"),
     href: item.targetType === "note" ? `/w/${item.workspaceId}/n/${item.targetId}` : item.workspaceId ? `/w/${item.workspaceId}/feed` : "/",
   });
   await db.insert(auditLogs).values({
     userId: u.id, workspaceId: item.workspaceId, actorType: "user",
     action: pass ? "moderation.approve" : "moderation.reject", result: "ok",
-    targetType: item.targetType, targetId: item.targetId, details: { scope: item.scope, aiVerdict: item.aiVerdict, aiScore: item.aiScore },
+    targetType: item.targetType, targetId: item.targetId,
+    details: { scope: item.scope, aiVerdict: item.aiVerdict, aiScore: item.aiScore, revised: changed && wasHandled },
   });
   return ok(c, { id: item.id, status: pass ? "approved" : "rejected" });
 });

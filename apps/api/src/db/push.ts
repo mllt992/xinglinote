@@ -375,6 +375,7 @@ const statements = [
   `CREATE INDEX IF NOT EXISTS moderation_reviews_pending_idx ON moderation_reviews (status, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS moderation_reviews_target_idx ON moderation_reviews (target_type, target_id)`,
   `ALTER TABLE notes ADD COLUMN IF NOT EXISTS moderation_status text NOT NULL DEFAULT 'none'`,
+  `ALTER TABLE moderation_reviews ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'publish'`,
 
   // —— 日历 P2：Web Push 与模板 ——
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS push_enabled boolean NOT NULL DEFAULT false`,

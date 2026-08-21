@@ -274,6 +274,8 @@ export const moderationReviews = pgTable("moderation_reviews", {
   targetType: text("target_type").notNull(), targetId: uuid("target_id").notNull(),
   scope: text("scope").notNull(), workspaceId: uuid("workspace_id"), authorUserId: uuid("author_user_id").notNull().references(() => users.id),
   snapshot: text("snapshot").notNull(),
+  /** publish=发布预审；report=用户举报；appeal=作者申诉。 */
+  kind: text("kind").notNull().default("publish"),
   aiVerdict: text("ai_verdict").notNull(), aiScore: integer("ai_score"), aiCategories: jsonb("ai_categories").notNull().default([]), aiReason: text("ai_reason"), aiModel: text("ai_model"),
   status: text("status").notNull().default("pending"),
   reviewerId: uuid("reviewer_id").references(() => users.id), reviewNote: text("review_note"), reviewedAt: timestamp("reviewed_at", { withTimezone: true }),

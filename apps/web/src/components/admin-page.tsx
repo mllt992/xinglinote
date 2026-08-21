@@ -31,7 +31,7 @@ type PageResult<T> = T & { total: number; page: number; pageSize: number };
 const TABS: { id: Tab; label: string; hint: string; icon: typeof LayoutGrid }[] = [
   { id: "overview", label: "概览", hint: "规模与关键开关", icon: LayoutGrid },
   { id: "registration", label: "注册策略", hint: "谁能进来、能做什么", icon: Shield },
-  { id: "moderation", label: "内容审核", hint: "AI 先审，拦下来的转人工", icon: ShieldCheck },
+  { id: "moderation", label: "内容审核", hint: "AI 先审，拿不准再转人工", icon: ShieldCheck },
   { id: "notifications", label: "通知与推送", hint: "SMTP、VAPID 密钥与推送总开关", icon: BellRing },
   { id: "codes", label: "注册码", hint: "批量发放一次性准入", icon: Ticket },
   { id: "users", label: "用户", hint: "封禁、角色与状态", icon: Users },

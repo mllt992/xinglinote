@@ -968,7 +968,7 @@ function Square() {
     title="广场" subtitle="整个实例的公开时间线。这里发的东西谁都看得到，写给自己人的用圈子。"
     rail={<SquareRail posts={posts} me={me} homeWsId={home} onOpenNote={openNote} onNav={to => nav(to)} />}
   >
-    <FeedView scope="public" workspaces={spaces} canPost={!!me} signedIn={!!me} onOpenNote={openNote} onLoaded={setPosts} />
+    <FeedView scope="public" workspaces={spaces} canPost={!!me} signedIn={!!me} canModerate={me?.instanceRole==="admin"} onOpenNote={openNote} onLoaded={setPosts} />
   </FeedShell>;
 }
 
@@ -989,7 +989,7 @@ function WorkspaceFeed() {
     notice={readOnly ? <p className="mt-4 rounded-xl border border-dashed px-3 py-2 text-xs text-muted-foreground">{here?.frozen ? "工作区已冻结，圈子现在只能看。" : "你在这个工作区是 Viewer，可以看动态但不能发。"}</p> : undefined}
     rail={<CircleRail wsId={wsId} wsName={here?.name ?? "这个工作区"} wsKind={here?.kind ?? ""} canInvite={here?.kind !== "personal" && (here?.role === "owner" || here?.role === "admin")} posts={posts} squareEnabled={squareOn} onOpenNote={openNote} onNav={to => nav(to)} />}
   >
-    <FeedView scope="workspace" workspaceId={wsId} workspaces={spaces} canPost={!!me && !readOnly} signedIn={!!me} onOpenNote={openNote} onLoaded={setPosts} />
+    <FeedView scope="workspace" workspaceId={wsId} workspaces={spaces} canPost={!!me && !readOnly} signedIn={!!me} canModerate={me?.instanceRole==="admin"||here?.role==="owner"||here?.role==="admin"} onOpenNote={openNote} onLoaded={setPosts} />
     <CreateDialog kind={create} onOpenChange={v => !v && setCreate(null)} onSubmit={async name => { const d = await api<{ workspace: Ws }>("/api/v1/workspaces", { method: "POST", body: JSON.stringify({ name }) }); nav(`/w/${d.workspace.id}/feed`); }} />
   </FeedShell>;
 }
