@@ -52,6 +52,17 @@ const TOOL_DEFS:Record<string,{description:string;properties?:Record<string,unkn
  complete_task:{description:"勾选或取消勾选任务；重复任务用 occurrence_start 指定是哪一次。",properties:{id:UUID,done:{type:"boolean",default:true},occurrence_start:{type:"string",format:"date-time"}},required:["id"]},
 };
 function toolsFor(t:typeof mcpTokens.$inferSelect){const names=[...baseTools];if(t.feedPublic||t.feedWorkspace)names.push("post_to_feed");return names.map(name=>{const d=TOOL_DEFS[name];return{name,description:d?.description??"",inputSchema:{type:"object",properties:d?.properties??{},required:d?.required??[]}};});}
+/** 未认证的应答：401 且带 WWW-Authenticate，云端客户端靠它发现授权服务器（RFC 9728）。 */
+function unauthorized(c:Ctx,id:unknown,message:string){return c.json({jsonrpc:"2.0",id,error:{code:-32001,message}},401,{"WWW-Authenticate":`Bearer resource_metadata="${env.publicUrl}/.well-known/oauth-protected-resource"`});}
+/** Streamable HTTP 的客户端会先 GET 一次，探服务端主动推的那条 SSE 流；会话结束时可能发 DELETE。
+ *  这个端点是纯请求-响应，按协议回 405 客户端就认了。以前这两个动词落到 404 上，有的客户端
+ *  会把它理解成「端点不存在」而不是「这里没有 SSE」，于是不停重连——看着就像服务不稳定。
+ *  没带 token 的探测仍旧回 401，别把发现授权服务器那条路一起堵死。 */
+mcpRoutes.on(["GET","DELETE"],"/mcp",c=>c.req.header("Authorization")?c.json({jsonrpc:"2.0",id:null,error:{code:-32000,message:"该端点只接受 POST"}},405,{Allow:"POST"}):unauthorized(c,null,"缺少 Bearer token"));
+/** 审计只记「调了什么」，不记正文：一篇笔记已经在 notes 和 note_versions 里各存了一份，
+ *  再往 audit_logs 的 jsonb 里塞第三份，批量迁移时库会被撑大好几倍，大 jsonb 的插入
+ *  本身也会把这次写请求拖慢。长字符串一律截断，id / 标题这些短字段原样留着。 */
+function auditArgs(x:unknown){if(!x||typeof x!=="object"||Array.isArray(x))return x;const out:Record<string,unknown>={};for(const[k,v]of Object.entries(x as Record<string,unknown>))out[k]=typeof v==="string"&&v.length>200?`${v.slice(0,200)}…（共 ${v.length} 字，正文见笔记本身）`:v;return out;}
 mcpRoutes.post("/mcp",async c=>{let a:Auth|undefined,name="",id:unknown=null;try{a=await auth(c);const body=z.object({jsonrpc:z.literal("2.0"),id:z.any().optional(),method:z.string(),params:z.any().optional()}).parse(await c.req.json());id=body.id??null;if(body.method==="initialize")return c.json({jsonrpc:"2.0",id,result:{protocolVersion:"2025-03-26",capabilities:{tools:{}},serverInfo:{name:"knowledge-brain",version:"1.0.0"}}});if(body.method==="notifications/initialized")return c.body(null,204);if(body.method==="tools/list")return c.json({jsonrpc:"2.0",id,result:{tools:toolsFor(a.t)}});if(body.method!=="tools/call")throw fail("VALIDATION","不支持的方法");name=String(body.params?.name??"");const x=body.params?.arguments??{};/** MCP 工具的返回值按协议就是任意 JSON：要么是一组条目，要么是一个对象。 */
 type ToolResult=Array<Record<string,unknown>>|Record<string,unknown>|undefined;let result:ToolResult;
 if(name==="get_me"){const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,a.t.workspaceId));result={handle:a.u.handle,workspace:{id:ws.id,name:ws.name},rw:a.t.rw,notebook_mode:a.t.notebookMode,expires_at:a.t.expiresAt};}
@@ -117,8 +128,8 @@ else if(name==="complete_task"){requireWrite(a);
  await charge(a,textBytes(item.title,""));
  const r=await completeCalendarItem(item,a.u.id,b.done,b.occurrence_start?new Date(b.occurrence_start):undefined,"mcp");
  result={id:item.id,status:r.status,note_written:r.noteWritten,detached:r.detached,note_id:r.noteId};}
-else throw fail("VALIDATION","未知工具");await db.insert(auditLogs).values({userId:a.u.id,workspaceId:a.t.workspaceId,actorType:"mcp",actorId:a.t.id,action:`mcp.${name}`,result:"ok",details:{arguments:x}});const sc=result&&typeof result==="object"&&!Array.isArray(result)?result:undefined;return c.json({jsonrpc:"2.0",id,result:{content:[{type:"text",text:JSON.stringify(result)}],...(sc?{structuredContent:sc}:{})}});
+else throw fail("VALIDATION","未知工具");await db.insert(auditLogs).values({userId:a.u.id,workspaceId:a.t.workspaceId,actorType:"mcp",actorId:a.t.id,action:`mcp.${name}`,result:"ok",details:{arguments:auditArgs(x)}}).catch(e=>console.warn("mcp 审计写入失败（不影响本次调用）:",e));const sc=result&&typeof result==="object"&&!Array.isArray(result)?result:undefined;return c.json({jsonrpc:"2.0",id,result:{content:[{type:"text",text:JSON.stringify(result)}],...(sc?{structuredContent:sc}:{})}});
 }catch(e){
   // 未认证必须回 401 且带 WWW-Authenticate，云端客户端靠它发现授权服务器（RFC 9728）
-  if(e instanceof AppError&&e.code==="UNAUTHENTICATED")return c.json({jsonrpc:"2.0",id,error:{code:-32001,message:e.message}},401,{"WWW-Authenticate":`Bearer resource_metadata="${env.publicUrl}/.well-known/oauth-protected-resource"`});
-  if(a)await db.insert(auditLogs).values({userId:a.u.id,workspaceId:a.t.workspaceId,actorType:"mcp",actorId:a.t.id,action:`mcp.${name||"request"}`,result:"error",details:{message:e instanceof Error?e.message:String(e)}});return c.json({jsonrpc:"2.0",id,error:{code:-32000,message:e instanceof Error?e.message:String(e)}});}});
+  if(e instanceof AppError&&e.code==="UNAUTHENTICATED")return unauthorized(c,id,e.message);
+  if(a)await db.insert(auditLogs).values({userId:a.u.id,workspaceId:a.t.workspaceId,actorType:"mcp",actorId:a.t.id,action:`mcp.${name||"request"}`,result:"error",details:{message:e instanceof Error?e.message:String(e)}}).catch(err=>console.warn("mcp 审计写入失败（不影响本次调用）:",err));return c.json({jsonrpc:"2.0",id,error:{code:-32000,message:e instanceof Error?e.message:String(e)}});}});

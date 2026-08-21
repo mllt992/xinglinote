@@ -230,13 +230,48 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 
 ## 4. MCP 传输
 
-- 端点：`POST/GET https://{PUBLIC_URL}/mcp`（Streamable HTTP，官方 SDK）。
+- 端点：`POST {PUBLIC_URL}/api/v1/mcp`（Streamable HTTP）。
 - 头：`Authorization: Bearer kbk_{8}_{secret}`。
-- 备选：同镜像提供 `knowledge-mcp-stdio`，从 stdin 读，把请求转到 `/mcp`，给只支持 stdio 的客户端。
+- **只有 POST 有语义**。这是个纯请求-响应的端点，不提供服务端主动推的 SSE 流，所以
+  `GET`（客户端探 SSE）和 `DELETE`（客户端结束会话）一律回 **405 + `Allow: POST`**：
+  协议允许这么答，客户端见到 405 就不会再试。这两个动词早先落在 404 上，有的客户端把它
+  读成「端点不存在」而不是「这里没有 SSE」，于是不停重连——看着就像服务不稳定。
+  唯一的例外是**不带 `Authorization` 的 GET**，仍回 401 + `WWW-Authenticate`，
+  否则发现授权服务器那条路（RFC 9728）会被一起堵死。
+- 备选：同镜像提供 `knowledge-mcp-stdio`，从 stdin 读，把请求转到该端点，给只支持 stdio 的客户端。
 - 初始化后 `tools/list` 按钥匙 rw/feed/delete **动态减工具**，不要列出再 403（减少 Agent 胡调）。
 - 错误：MCP `isError` + 正文 `{ code, message }`，code 同 HTTP。
 
 鉴权链严格按 [设计 11 §5.1](../设计/11-MCP.md)。
+
+### 4.1 连接寿命：api 与反代必须成对配
+
+MCP 的每次工具调用都是 POST，而 **POST 不可安全重试**——连接在请求已经写进去之后被对端
+关掉，就是一次无法挽回的失败。这类失败不会稳定复现，只会表现成「偶发失败、重试一下又好了」，
+所以「谁先关闭空闲的复用连接」必须是确定的：**永远让反向代理先关**。
+
+| 位置 | 参数 | 值 |
+|---|---|---|
+| [docker/Caddyfile](../../docker/Caddyfile) | `transport http { keepalive }` | 30s |
+| [apps/api/src/index.ts](../../apps/api/src/index.ts) | `server.keepAliveTimeout` | 75s |
+| 同上 | `server.headersTimeout` | 80s |
+
+约束是 `反代 keepalive < api keepAliveTimeout < api headersTimeout`。Node 的出厂值只有 5s，
+比 Caddy 出厂的 2m 短得多，**两边都不配就正好落在这条竞态里**。换别的反代
+（Nginx `keepalive_timeout`、Traefik `idleConnTimeout`）同样要压到 75s 以下。
+
+Caddy 另外配了 `lb_try_duration 5s`：api 容器重启的那几秒里拨号失败会重试，而不是直接把 502
+甩给客户端。它只对「请求还没发出去」的失败生效，所以对 POST 也是安全的。
+
+### 4.2 审计只记调用，不记正文
+
+`audit_logs.details.arguments` 里超过 200 字的字符串一律截断成 `…（共 N 字，正文见笔记本身）`。
+正文在 `notes` 与 `note_versions` 里已经各存了一份，审计再存第三份，批量导入时会把库撑大
+好几倍，大 jsonb 的插入本身也会把这次写请求拖慢。短字段（id、标题、标签）原样保留，
+足够回答「谁在什么时候调了什么」。
+
+审计写失败**不回滚、也不影响本次调用的返回值**：笔记已经落库了还回一个错，会自动重试的
+Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了只在进程日志里喊一声。
 
 ---
 

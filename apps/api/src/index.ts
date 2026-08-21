@@ -124,5 +124,15 @@ const server = serve({ fetch: app.fetch, port: env.port }, () => {
   console.log(`api http://127.0.0.1:${env.port}${web ? " (含前端静态托管)" : ""}`);
 });
 
+const http = server as unknown as Server;
+
+// Node 默认 keepAliveTimeout 只有 5 秒，比任何反向代理的空闲复用窗口都短。代理刚把一个请求
+// 写进复用连接、Node 同一时刻把这条连接关掉，就是一次凭空的 502——而 POST 不可安全重试，
+// MCP 的每次工具调用又都是 POST，这条竞态表现出来就是「偶发失败、重试一下又好了」。
+// 规矩是让代理永远先关：docker/Caddyfile 那边压到 30s，这里留足 75s。
+// headersTimeout 必须比它更大，否则读头超时会抢在 keep-alive 之前把连接断掉。
+http.keepAliveTimeout = 75_000;
+http.headersTimeout = 80_000;
+
 // 协同房间挂在同一个端口上：另开一个端口意味着反向代理、CORS、Cookie 都要再配一遍
-attachCollab(server as unknown as Server);
+attachCollab(http);

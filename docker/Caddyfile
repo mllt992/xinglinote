@@ -8,5 +8,19 @@
 		# 关闭响应缓冲：AI 问答、SSE 这类长响应要能边出边发
 		flush_interval -1
 		header_up X-Forwarded-Proto {scheme}
+
+		transport http {
+			# 空闲连接压到 30s，必须短于 api 那边的 keepAliveTimeout（75s，见 apps/api/src/index.ts）。
+			# 谁先关这条复用连接是有讲究的：Node 的默认值只有 5s，比 Caddy 默认的 2m 短得多，
+			# 于是 Caddy 常常把请求写进一条对端正在关闭的连接里，凭空 502。MCP 的工具调用
+			# 全是 POST，不可安全重试，这条竞态表现出来就是「偶发失败」。让 Caddy 始终是
+			# 先关的那一方，竞态就不存在了。
+			keepalive 30s
+		}
+
+		# api 容器重启的那几秒：拨号失败在这个窗口内重试，而不是直接把 502 甩给客户端。
+		# 只对「还没把请求发出去」的失败生效，所以对 POST 也是安全的。
+		lb_try_duration 5s
+		lb_try_interval 250ms
 	}
 }
