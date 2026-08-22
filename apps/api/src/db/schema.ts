@@ -41,6 +41,11 @@ export const instanceSettings = pgTable("instance_settings", {
   /** Web Push：实例级的一对 VAPID 密钥，私钥走 secrets.seal。没配就整个实例不出现推送这个渠道。 */
   pushEnabled: boolean("push_enabled").notNull().default(false),
   vapidPublicKey: text("vapid_public_key"), vapidPrivateKey: text("vapid_private_key"), vapidSubject: text("vapid_subject"),
+  /** 实例导航页（设计 19）。默认开、默认对访客公开。 */
+  navEnabled: boolean("nav_enabled").notNull().default(true),
+  navPublic: boolean("nav_public").notNull().default(true),
+  navTitle: text("nav_title"),
+  navSubtitle: text("nav_subtitle"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -518,6 +523,31 @@ export const calendarTemplates = pgTable("calendar_templates", {
   scope: text("scope").notNull().default("private"),
   items: jsonb("items").notNull().default([]),
   createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+/** 实例导航的分组。站点挂在组下，删组会级联删站点（设计 19）。 */
+export const navGroups = pgTable("nav_groups", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  title: text("title").notNull(),
+  description: text("description"),
+  sortKey: integer("sort_key").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+/** 导航里的一条去处。图标走 blob_store，url 可以是站内路径或 http(s)。 */
+export const navLinks = pgTable("nav_links", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  groupId: uuid("group_id").notNull().references(() => navGroups.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  url: text("url").notNull(),
+  description: text("description"),
+  iconSha256: text("icon_sha256"),
+  iconMime: text("icon_mime"),
+  sortKey: integer("sort_key").notNull().default(0),
+  createdBy: uuid("created_by").references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });

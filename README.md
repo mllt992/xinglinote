@@ -83,6 +83,7 @@ node scripts/verify-calendar-p2.mjs     # 批量操作、模板、去年今日 /
 node --experimental-strip-types scripts/verify-push.mjs   # 推送投递闭环：VAPID 验签、密文解回原文、失效端点停用
 node scripts/verify-collab.mjs      # 协同：两个客户端真收敛、落库、只读发不出更新、无权连不上
 node scripts/verify-hardening.mjs   # 安全加固：CSP 头、验证码、出站 SSRF 护栏、目录归属、搜索分页
+node scripts/verify-nav.mjs         # 导航页：公开读、管理员配置、站内路径、非法 URL、清理
 node --experimental-strip-types scripts/verify-transfer.mjs   # 导入向导、zip 导出、版本裁剪（约 3 分钟）
 node scripts/verify-manage-cdp.mjs
 node scripts/verify-gaps-cdp.mjs

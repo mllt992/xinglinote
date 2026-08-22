@@ -471,6 +471,34 @@ const statements = [
     path text NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS attachments_sha256_idx ON attachments(sha256)`,
+
+  // —— 实例导航页（设计 19）。图标走 blob_store，不进 attachments ——
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS nav_enabled boolean NOT NULL DEFAULT true`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS nav_public boolean NOT NULL DEFAULT true`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS nav_title text`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS nav_subtitle text`,
+  `CREATE TABLE IF NOT EXISTS nav_groups (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    title text NOT NULL,
+    description text,
+    sort_key integer NOT NULL DEFAULT 0,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS nav_links (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    group_id uuid NOT NULL REFERENCES nav_groups(id) ON DELETE CASCADE,
+    title text NOT NULL,
+    url text NOT NULL,
+    description text,
+    icon_sha256 text,
+    icon_mime text,
+    sort_key integer NOT NULL DEFAULT 0,
+    created_by uuid REFERENCES users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS nav_links_group_sort_idx ON nav_links(group_id, sort_key)`,
 ];
 
 async function main() {

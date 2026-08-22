@@ -33,6 +33,7 @@ auth.get("/meta", async (c) => {
     allowOpenRegistration: settings?.allowOpenRegistration ?? false,
     allowCodeRegistration: settings?.allowCodeRegistration ?? true,
     squareEnabled: settings?.squareEnabled ?? true,
+    navEnabled: settings?.navEnabled ?? true,
     defaultThemeId: settings?.defaultThemeId ?? "mono-modern",
     defaultAccent: settings?.defaultAccent ?? null,
   });

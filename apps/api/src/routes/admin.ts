@@ -71,7 +71,10 @@ adminRoutes.patch("/admin/settings", async c => {
       z.object({ key: z.string().min(1).max(40), label: z.string().min(1).max(40) }),
     ])).max(30).optional(),
     moderationThreshold: z.number().int().min(1).max(100).optional(), moderationOnError: z.enum(["pass", "review"]).optional(),
-    pushEnabled: z.boolean().optional(), vapidSubject: z.string().max(200).nullable().optional() }).parse(await c.req.json());
+    pushEnabled: z.boolean().optional(), vapidSubject: z.string().max(200).nullable().optional(),
+    navEnabled: z.boolean().optional(), navPublic: z.boolean().optional(),
+    navTitle: z.string().max(20).nullable().optional(), navSubtitle: z.string().max(80).nullable().optional(),
+  }).parse(await c.req.json());
   // 前端回填的是掩码，别把 •••••••• 当成新密钥存进去。
   // 两个密钥字段都要这么处理——以前只有 moderationApiKey 有这层保护。
   const secret = (raw: string | null | undefined) =>
@@ -84,6 +87,8 @@ adminRoutes.patch("/admin/settings", async c => {
   if (key === undefined) delete values.moderationApiKey; else values.moderationApiKey = key;
   if (smtpPassword === undefined) delete values.smtpPassword; else values.smtpPassword = smtpPassword;
   if (body.moderationCategories) values.moderationCategories = normalizeCategories(body.moderationCategories);
+  if (body.navTitle !== undefined) values.navTitle = body.navTitle?.trim() || null;
+  if (body.navSubtitle !== undefined) values.navSubtitle = body.navSubtitle?.trim() || null;
   const [saved] = await db.update(instanceSettings).set(values).where(eq(instanceSettings.id, 1)).returning();
   return ok(c, maskSettings(saved));
 });

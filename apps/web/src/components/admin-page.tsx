@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode, type SelectHTMLAttributes } from "
 import { useNavigate, useSearchParams } from "react-router-dom";
 import * as Avatar from "@radix-ui/react-avatar";
 import {
-  Ban, BellRing, Check, ChevronRight, Copy, Download, HardDrive, Image, KeyRound, LayoutGrid, MoreHorizontal,
+  Ban, BellRing, Check, ChevronRight, Compass, Copy, Download, HardDrive, Image, KeyRound, LayoutGrid, MoreHorizontal,
   Plus, Search, Shield, ShieldCheck, Sparkles, Ticket, Trash2, UserCog, Users, X,
 } from "lucide-react";
 import { api } from "../api";
@@ -18,8 +18,9 @@ import { useToast } from "./ui/toast";
 import { ModerationConfig, ModerationQueue } from "./moderation-panel";
 import { PushConfig } from "./push-admin-panel";
 import { SmtpConfig } from "./smtp-panel";
+import { NavAdmin } from "./nav-admin";
 
-type Tab = "overview" | "registration" | "moderation" | "notifications" | "codes" | "users";
+type Tab = "overview" | "registration" | "moderation" | "notifications" | "codes" | "users" | "nav";
 type AdminUser = { id: string; displayName: string; email: string; handle: string; roleInstance: string; status: string; createdAt?: string };
 type AdminCode = { id: string; prefix: string; usedCount: number; maxUses: number; status: string; note?: string | null; expiresAt?: string | null; createdAt?: string; skipEmailVerification?: boolean; bindRole?: string | null };
 type Overview = {
@@ -33,6 +34,7 @@ const TABS: { id: Tab; label: string; hint: string; icon: typeof LayoutGrid }[] 
   { id: "registration", label: "注册策略", hint: "谁能进来、能做什么", icon: Shield },
   { id: "moderation", label: "内容审核", hint: "AI 先审，拿不准再转人工", icon: ShieldCheck },
   { id: "notifications", label: "通知与推送", hint: "SMTP、VAPID 密钥与推送总开关", icon: BellRing },
+  { id: "nav", label: "导航", hint: "分组、站点与自动取图标", icon: Compass },
   { id: "codes", label: "注册码", hint: "批量发放一次性准入", icon: Ticket },
   { id: "users", label: "用户", hint: "封禁、角色与状态", icon: Users },
 ];
@@ -341,6 +343,8 @@ export function AdminPage() {
                 ["广场", !!overview?.settings?.squareEnabled],
                 ["AI", !!overview?.settings?.aiEnabled],
                 ["内容审核", !!overview?.settings?.moderationEnabled],
+                ["导航", overview?.settings?.navEnabled !== false],
+                ["导航公开", overview?.settings?.navPublic !== false],
               ].map(([label, on]) => <div key={String(label)} className="flex items-center justify-between bg-background px-5 py-3.5">
                 <span className="text-sm">{label}</span>
                 <Badge className={on ? statusTone("active") : undefined}>{on ? "开" : "关"}</Badge>
@@ -367,6 +371,8 @@ export function AdminPage() {
           <ModerationConfig settings={overview?.settings ?? {}} onSaved={loadOverview} />
           <ModerationQueue />
         </div>}
+
+        {!error && !loading && tab === "nav" && <NavAdmin settings={overview?.settings ?? {}} onSaved={loadOverview} />}
 
         {!error && !loading && tab === "registration" && <div className="space-y-5">
           {SETTING_GROUPS.map(group => <section key={group.title} className="overflow-hidden rounded-xl border bg-background">

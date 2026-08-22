@@ -28,7 +28,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 
 | 方法 | 路径 | 谁 | 说明 |
 |---|---|---|---|
-| GET | `/api/v1/meta` | 公开 | 实例名、是否零用户、开放注册/码、广场开否 |
+| GET | `/api/v1/meta` | 公开 | 实例名、是否零用户、开放注册/码、广场开否、导航开否 |
 | POST | `/api/v1/auth/register` | 公开 | email, password, handle, displayName, code? |
 | POST | `/api/v1/auth/verify-email` | 公开 | token |
 | POST | `/api/v1/auth/login` | 公开 | email, password |
@@ -44,7 +44,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | PATCH | `/api/v1/me` | 登录 | displayName, handle, bio, avatar |
 | POST | `/api/v1/me/password` | 登录 | old, new |
 | GET | `/api/v1/admin/settings` | 实例管理员 | |
-| PATCH | `/api/v1/admin/settings` | 同上 | 注册策略、广场、限额 |
+| PATCH | `/api/v1/admin/settings` | 同上 | 注册策略、广场、限额、导航开关与文案 |
 | POST | `/api/v1/admin/smtp/test` | 同上 | |
 | CRUD | `/api/v1/admin/codes` | 同上 | 批量生成只在 POST 响应里给明文 |
 | GET/POST | `/api/v1/admin/users` | 同上 | 封禁、解封、升/降管理员、启动注销 |
@@ -135,7 +135,27 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 
 导入导出：`POST /api/v1/import`（job）、`GET /api/v1/export?notebookId=`（job + 下载 token）。
 
-### 2.6 日历与任务
+### 2.6 导航页
+
+业务规则见 [设计 19](../设计/19-导航页.md)。
+
+| 方法 | 路径 | 谁 | 说明 |
+|---|---|---|---|
+| GET | `/api/v1/nav` | 视开关 | `{ enabled, title, subtitle, groups: [{ id, title, description, sortKey, links }] }`；关总闸时 `enabled=false` 且 `groups=[]`；未公开且未登录 → 401 |
+| GET | `/api/v1/nav/icons/:sha256` | 视引用 | 只出已被站点引用的图标；管理员可预览尚未保存的哈希 |
+| GET | `/api/v1/admin/nav` | 实例管理员 | 完整目录，不受总闸影响 |
+| POST | `/api/v1/admin/nav/groups` | 同上 | `{ title, description? }` |
+| PATCH | `/api/v1/admin/nav/groups/:id` | 同上 | 改标题 / 简介 |
+| DELETE | `/api/v1/admin/nav/groups/:id` | 同上 | 级联删站点并释放图标引用 |
+| POST | `/api/v1/admin/nav/links` | 同上 | `{ groupId, title, url, description?, iconSha256?, iconMime?, fetchIcon? }`；`fetchIcon` 默认 true |
+| PATCH | `/api/v1/admin/nav/links/:id` | 同上 | 可改组、可 `fetchIcon: true` 重抓 |
+| DELETE | `/api/v1/admin/nav/links/:id` | 同上 | |
+| POST | `/api/v1/admin/nav/reorder` | 同上 | `{ groups?: [{id,sortKey}], links?: [{id,groupId?,sortKey}] }` |
+| POST | `/api/v1/admin/nav/favicon` | 同上 | `{ url }` → `{ sha256, mime }` 或 `{ sha256: null }`；10 分钟 20 次 |
+
+`NavLinkDTO`：`id, groupId, title, url, description, iconUrl, sortKey`。`iconUrl` 是本域路径，不是外站。
+
+### 2.7 日历与任务
 
 业务规则见 [设计 16](../设计/16-日历与任务.md)。
 
