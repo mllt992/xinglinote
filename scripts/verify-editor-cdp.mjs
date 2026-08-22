@@ -381,7 +381,7 @@ await click(`[...document.querySelectorAll('[role=tab]')].find(x=>x.textContent.
 await wait(600);
 await toEnd();
 await ex(`(()=>{const v=document.querySelector('.cm-content');if(!v)return;const d=new DataTransfer();
-d.setData('text/plain','\\n\\n> [!WARNING] 小心台阶\\n> 警告正文\\n\\n> 普通引用\\n\\n[草稿] 不是链接，这句有 ==重点== 与脚注[^甲]。\\n\\n[^甲]: 注释\\n');
+d.setData('text/plain','\\n\\n> [!WARNING] 小心台阶\\n> 警告正文\\n\\n> 普通引用\\n\\n[草稿] 不是链接，这句有 ==重点== 与脚注[^甲]。\\n\\n[https://github.com/gsvps/GSNode](https://github.com/gsvps/GSNode)\\n\\n[^甲]: 注释\\n');
 v.dispatchEvent(new ClipboardEvent('paste',{clipboardData:d,bubbles:true,cancelable:true}))})()`);
 await wait(900);
 const closedSet = await ex(`(()=>{
@@ -396,6 +396,9 @@ const closedSet = await ex(`(()=>{
     markerVisible: text.includes('[!WARNING]'),
     bracketsKept: text.includes('[草稿]'),
     equalsHidden: !text.includes('==重点=='),
+    // 标签是裸地址时，显示文本得留下，只藏 `](目标)`。
+    urlLabelKept: text.includes('https://github.com/gsvps/GSNode'),
+    urlDestHidden: !text.includes('](https://github.com/gsvps/GSNode)'),
   };
 })()`);
 result.calloutColored = !!closedSet && closedSet.callout >= 2 && closedSet.plainQuote >= 1;
@@ -404,6 +407,7 @@ result.footnoteRefStyled = !!closedSet && closedSet.footnote >= 1;
 // Callout 的标记是源码，编辑器里不许藏；而「[方括号]文字」也不许被当成链接吃掉括号
 result.calloutMarkerStaysVisible = !!closedSet && closedSet.markerVisible;
 result.plainBracketsNotEatenByLink = !!closedSet && closedSet.bracketsKept;
+result.urlLabelNotHiddenAsDestination = !!closedSet && closedSet.urlLabelKept && closedSet.urlDestHidden;
 await settle();
 
 // 预览侧：同一段东西两边要一致

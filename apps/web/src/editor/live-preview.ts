@@ -209,15 +209,28 @@ const CALLOUT_ALIAS: Record<string, string> = {
 };
 
 /**
+ * 这个 URL 是不是 `](` 后面的目标地址。
+ *
+ * GFM Autolink 会把标签里的裸地址也收成 `URL`——`[https://example.com](https://example.com)`
+ * 于是有两个同名节点。标签里那个是显示文本，藏掉光标一离开链接就什么都不剩。
+ * 目标地址紧跟在 `]` `(` 两个 LinkMark 后面（中间空白不成节点）。
+ */
+function isDestinationUrl(node: SyntaxNode): boolean {
+  const prev = node.prevSibling;
+  return prev?.name === "LinkMark" && prev.prevSibling?.name === "LinkMark";
+}
+
+/**
  * 这个 Link 节点有没有真的地址。
  *
  * lezer 会给任何一段方括号文字发一个 `Link` 节点——`[草稿] 会议纪要`、`> [!NOTE] 小心`
  * 都算。照单藏掉方括号的话，正文里所有「[方括号]开头」的写法都会莫名其妙少一对括号，
- * 而它们既不是链接也点不开。**没地址就当普通文字，一个字节都不动。**
+ * 而它们既不是链接也点不开。**没目标地址就当普通文字，一个字节都不动。**
+ * 标签里被 Autolink 认出来的 URL 不算地址。
  */
 function hasUrl(link: SyntaxNode | null): boolean {
   for (let child = link?.firstChild; child; child = child.nextSibling) {
-    if (child.name === "URL") return true;
+    if (child.name === "URL" && isDestinationUrl(child)) return true;
   }
   return false;
 }
@@ -445,6 +458,8 @@ function build(view: EditorView, wysiwyg: boolean, render: RenderToggles): Built
           case "LinkTitle": {
             const parent = node.node.parent;
             if (parent?.name !== "Link" || !hasUrl(parent)) return;
+            // 标签里的 Autolink 是显示文本，不能跟目标地址一起藏。
+            if (node.name === "URL" && !isDestinationUrl(node.node)) return;
             const scope = wysiwyg ? owner(node) : { from: line.from, to: line.to };
             if (!revealed(scope.from, scope.to)) replace(hide, node.from, node.to);
             return;
