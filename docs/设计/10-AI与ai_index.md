@@ -62,7 +62,7 @@
 
 ### 3.4 问答侧栏
 
-范围：当前笔记本 / 当前工作区。输入问题。流式回答。每条答案下挂引用：标题 + 片段，点击打开笔记定位。无引用则明示「库中未找到，以下是模型自身知识」——一期**禁止**无引用时瞎编库内事实：检索 0 命中就直接说找不到。
+范围：当前笔记本 / 当前工作区。输入问题。流式回答。答案按 Markdown 渲染（与正文同一套 `renderMarkdown`，侧栏用短文一档字号）。每条答案下挂引用：标题 + 片段，点击打开笔记定位。无引用则明示「库中未找到，以下是模型自身知识」——一期**禁止**无引用时瞎编库内事实：检索 0 命中就直接说找不到。
 
 ### 3.5 无 Key
 
@@ -111,19 +111,42 @@ on NoteUpserted or extract_ok:
 ### 5.2 问答
 
 ```
-q_emb = embed(question)
-cands_vec = topK 20 chunks by cosine where note in can_ai_read set
-cands_kw = 05.search 的 top 20（同一可见集）
-merge RRF → 取 8 个 chunk
-prompt = system + 编号片段 + 问题
+q_emb = embed(question)          # 问句 embedding 走缓存，见 5.4
+cands_vec = topK 24 chunks by cosine
+            where note.ai_index ∧ 未 trash ∧（可选 notebook）
+            再逐条 can_ai_read
+cands_kw = 关键词预筛后打分的 top 20（同一可见集；预筛最多拉 80 篇，PDF 文本只取这 80 篇的）
+merge RRF → 先取最多 8 个 chunk
+pack：每篇最多 2 段、单段 ≤360 字、上下文合计 ≤2200 字，截断低分
+prompt = system + 编号片段（[#n]《标题》+ 摘录，不含 note UUID）+ 问题
 模型必须用 [#n] 引用
 解析引用，丢掉编造的编号
-0 片段: 直接返回「找不到」不调用「自由发挥」；可选仍 call 但 temperature 0 且指令禁止臆造 —— 一期选择：0 片段不调用聊天模型
+0 片段: 直接返回「找不到」不调用聊天模型
 ```
+
+塞进模型的是摘录不是全文。引用列表仍带 `note_id`，只是不进 prompt。
 
 ### 5.3 写作 diff
 
 以选区为 old，模型输出为 new，行级 diff。接受则替换选区保存。
+
+### 5.4 缓存（省 embedding token）
+
+向量是内容寻址的，同一段文本 + 同一模型不必再调一次 embedding API。这是检索里最贵、也最好省的 token。
+
+```
+key = kb:emb:v1:sha256(base_url + "\0" + model + "\0" + text)
+ttl = 7 天
+```
+
+落点：
+
+1. **进程内 LRU**（默认就有，最多 512 条）。单机 `pnpm dev`、单副本部署够用。
+2. **Redis**（可选）。配了 `REDIS_URL` 才连；api 与 worker 共用，重启、多副本也能命中。没配、连不上、超时时当作未命中，**不得让问答失败**。外部已有带密码的实例：`redis://:密码@host:6379`（`--requirepass`）或 `redis://用户:密码@host:6379`（ACL）。密码含 `@` `:` `/` 时用 `REDIS_PASSWORD`，不要塞进 URL。不支持 `rediss://`。
+
+只缓存 embedding 向量，**不**缓存最终检索命中——命中要过 `can_ai_read`，设计 05 要求成员被移出后立刻搜不到，不能靠短 TTL 蒙混。问句 embedding 不含 ACL，缓存是安全的。笔记切块在 `index_note` 里也走同一把 `embed()`：改几个字重索引时，没变的块直接命中，不必整篇重算。
+
+不上 Redis Search / Redis 向量库。权威仍是 Postgres + `ai_chunks`；Redis 只是旁路缓存，挂了功能在。
 
 ---
 

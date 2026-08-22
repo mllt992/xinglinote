@@ -357,17 +357,20 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 
 ```
 { query: string, notebook_id?: string, tag?: string,
-  mode?: "keyword"|"semantic"|"hybrid" }
-→ { hits: [{ id, title, path, snippet }] }   // ≤20，snippet≤240
+  mode?: "keyword"|"semantic"|"hybrid", limit?: number }
+→ { hits: [{ id, title, path, snippet }] }   // 默认 8，≤20，snippet≤240
 ```
 
 ### get_note
 
 ```
-{ id: string }
+{ id: string, offset?: number, max_chars?: number }
 → { id, title, path, body_md, version, tags, ai_index, published,
-    links: [{ raw, target_id, state }] }
+    links: [{ raw, target_id, state }],
+    offset, total_chars, truncated }
 ```
+
+`max_chars` 默认 6000、上限 20000。超长笔记只回窗口。
 
 无权 / 被 require_ai_index 挡掉：`NOT_FOUND`。
 

@@ -1,7 +1,8 @@
 import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import { folders, notebooks, notes } from "../db/schema.ts";
-import { retrieve } from "./knowledge-ai.ts";
+import { retrieve, snippetAround } from "./knowledge-ai.ts";
+import { tokenize } from "@kb/core";
 import { likeContains } from "./like.ts";
 
 export { likeContains };
@@ -65,16 +66,20 @@ export async function searchNotesInScope(input: {
   };
 
   if (input.mode !== "semantic") {
-    const rows = await db.select().from(notes).where(and(
+    const rows = await db.select({
+      id: notes.id, title: notes.title, bodyMd: notes.bodyMd, tags: notes.tags,
+      notebookId: notes.notebookId, folderId: notes.folderId,
+    }).from(notes).where(and(
       inArray(notes.workspaceId, input.workspaceIds),
       isNull(notes.trashedAt),
       likeClause(input.query),
     )).limit(80);
+    const parts = tokenize(input.query);
     let rank = 0;
     for (const n of rows) {
       const tags = n.tags as string[];
       if (input.tag && !tags.includes(input.tag)) continue;
-      await take(n.id, n.title, n.bodyMd, n.notebookId, n.folderId, 1 / (60 + rank++));
+      await take(n.id, n.title, snippetAround(n.bodyMd, parts), n.notebookId, n.folderId, 1 / (60 + rank++));
     }
   }
 

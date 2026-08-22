@@ -169,11 +169,12 @@ target notes:
 **`list_folder(notebook_id, path?)`**  
 出：子目录与笔记标题、id。不含正文。
 
-**`search_notes(query, notebook_id?, workspace_id?, tag?, mode=keyword|semantic|hybrid)`**  
-limit≤20。出：`{ hits: [{ id, title, path, snippet }] }`，snippet≤240。默认搜全部勾选区；传了 `workspace_id` 只搜那一区。keyword 走转义后的 ILIKE；semantic / hybrid 复用 10 的 `retrieve()`，但仍要过钥匙范围，不得绕开 `require_ai_index`。查询里的 `%` `_` 当字面量，不当通配符。
+**`search_notes(query, notebook_id?, workspace_id?, tag?, mode=keyword|semantic|hybrid, limit?)`**  
+limit≤20，**默认 8**（不要一上来塞 20 条摘要）。出：`{ hits: [{ id, title, path, snippet }] }`，snippet≤240。默认搜全部勾选区；传了 `workspace_id` 只搜那一区。keyword 走转义后的 ILIKE；semantic / hybrid 复用 10 的 `retrieve()`，但仍要过钥匙范围，不得绕开 `require_ai_index`。查询里的 `%` `_` 当字面量，不当通配符。
 
-**`get_note(id)`**  
-出：id、title、path（笔记本 → 目录 → 标题）、body_md、version、tags、ai_index、published、links[{raw,target_id,state}]。
+**`get_note(id, offset?, max_chars?)`**  
+出：id、title、path（笔记本 → 目录 → 标题）、body_md、version、tags、ai_index、published、links[{raw,target_id,state}]、`offset`、`total_chars`、`truncated`。  
+`max_chars` 默认 **6000**、上限 20000；`offset` 默认 0。超长笔记只回窗口，`truncated=true` 时用 `offset += 本次 body_md 长度` 再读。改正文仍靠 `version` + `replace_in_note` / `append_to_note`，不要为了改一段把整篇读进上下文。
 
 **`get_backlinks(id)`**  
 出：from id/title/snippet，仅 can_read 的 from。

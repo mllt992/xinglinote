@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { keywordNeedles, rankKeywordNotes, snippetAround } from "./knowledge-ai.ts";
+import { formatAskUserMessage, keywordNeedles, packAskContext, rankKeywordNotes, snippetAround } from "./knowledge-ai.ts";
 import { tokenize } from "@kb/core";
 
 test("中文问句拆成 2-gram，而不是整句去 ILIKE", () => {
@@ -27,4 +27,26 @@ test("摘录落在命中附近", () => {
   const excerpt = snippetAround("前言若干字。蓝色灯塔项目的安全口令是青瓷河流。后记。", parts);
   assert.match(excerpt, /安全口令/);
   assert.match(excerpt, /青瓷河流/);
+});
+
+test("packAskContext 压预算：每篇最多两段、合计截断", () => {
+  const rows = [
+    { noteId: "a", title: "甲", excerpt: "x".repeat(400), score: 3 },
+    { noteId: "a", title: "甲", excerpt: "y".repeat(400), score: 2 },
+    { noteId: "a", title: "甲", excerpt: "z".repeat(400), score: 1 },
+    { noteId: "b", title: "乙", excerpt: "k".repeat(400), score: 1 },
+  ];
+  const packed = packAskContext(rows);
+  assert.equal(packed.filter(h => h.noteId === "a").length, 2);
+  assert.ok(packed.every(h => h.excerpt.length <= 360));
+  assert.ok(packed.reduce((n, h) => n + h.excerpt.length + h.title.length + 16, 0) <= 2200 + 360);
+});
+
+test("问答 prompt 不带 note UUID", () => {
+  const msg = formatAskUserMessage(
+    [{ noteId: "11111111-1111-1111-1111-111111111111", title: "灯塔", excerpt: "口令是青瓷", score: 1 }],
+    "口令？",
+  );
+  assert.match(msg, /\[#1\] 《灯塔》/);
+  assert.equal(msg.includes("11111111-1111-1111-1111-111111111111"), false);
 });

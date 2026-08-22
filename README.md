@@ -44,6 +44,8 @@ pnpm db:up
 它会按 `.env` 里的 `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` 建库，
 并把 `POSTGRES_HOST_PORT`（默认 5432）映射到本机。已经有别的 Postgres 占着 5432 的，改这个值错开。
 
+可选 Redis（embedding 缓存，不配也能跑）：`pnpm redis:up`，`.env` 写 `REDIS_URL=redis://127.0.0.1:6379`。
+
 - 前端：http://127.0.0.1:12098（固定监听 IPv4）
 - API：http://127.0.0.1:12099/api/healthz
 

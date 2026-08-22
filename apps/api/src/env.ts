@@ -52,4 +52,8 @@ export const env = {
   dataDir: resolve(repoRoot, process.env.DATA_DIR ?? "data"),
   webDist: resolve(repoRoot, process.env.WEB_DIST ?? "apps/web/dist"),
   repoRoot,
+  /** 可选。空字符串 = 只用进程内 LRU，见 lib/cache.ts。 */
+  redisUrl: process.env.REDIS_URL ?? "",
+  /** 覆盖 URL 里的密码。外部 Redis 密码含 @ : / 时用这个，别塞进 URL。 */
+  redisPassword: process.env.REDIS_PASSWORD ?? "",
 };

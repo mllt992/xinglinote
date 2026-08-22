@@ -8,6 +8,8 @@
     "dev:web": "pnpm --filter @kb/web dev",
     "db:up": "docker compose -f docker-compose.yml -f compose.db.yml --profile db up -d db",
     "db:down": "docker compose -f docker-compose.yml -f compose.db.yml --profile db stop db",
+    "redis:up": "docker compose -f docker-compose.yml -f compose.redis.yml --profile redis up -d redis",
+    "redis:down": "docker compose -f docker-compose.yml -f compose.redis.yml --profile redis stop redis",
     "db:push": "pnpm --filter @kb/api db:push",
     "test": "pnpm --filter @kb/shared test && pnpm --filter @kb/core test && pnpm --filter @kb/api test",
     "lint": "eslint .",

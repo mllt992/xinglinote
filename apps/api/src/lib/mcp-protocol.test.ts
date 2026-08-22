@@ -32,6 +32,16 @@ test("管理+删除+动态才挂 trash 和 post_to_feed", () => {
   assert.ok(toolsFor({ rw: "manage", allowDelete: false, feedPublic: false, feedWorkspace: false }).every(t => t.name !== "trash_note"));
 });
 
+test("get_note 带翻页参数，search_notes 默认 8 条", () => {
+  const tools = toolsFor({ rw: "read", allowDelete: false, feedPublic: false, feedWorkspace: false });
+  const get = tools.find(t => t.name === "get_note");
+  const search = tools.find(t => t.name === "search_notes");
+  assert.ok(get?.inputSchema.properties && "offset" in get.inputSchema.properties);
+  assert.ok(get?.inputSchema.properties && "max_chars" in get.inputSchema.properties);
+  const limit = (search?.inputSchema.properties as { limit?: { default?: number } } | undefined)?.limit;
+  assert.equal(limit?.default, 8);
+});
+
 test("每个列出的工具都带注解", () => {
   for (const t of toolsFor({ rw: "manage", allowDelete: true, feedPublic: true, feedWorkspace: true })) {
     assert.equal(typeof t.annotations.readOnlyHint, "boolean");

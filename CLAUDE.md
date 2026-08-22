@@ -80,6 +80,9 @@ pnpm db:down        # 停掉它
 把别的实例顶掉或自己起不来。这台机器上就并存着好几个 Postgres 容器，踩过这个坑。
 真要两边都留着，在 `.env` 里改 `POSTGRES_HOST_PORT` 错开端口。
 
+Redis 同样是可选件（`compose.redis.yml` / `pnpm redis:up`），只缓存 embedding。
+不配 `REDIS_URL` 也能跑，走进程内 LRU。别把它写进主 compose。
+
 拆成两个文件而不是在主文件里挂 profile，是因为 **compose 的变量插值是全局的，不看 profile**：
 `POSTGRES_USER` 这些一旦写成 `${VAR:?}` 必填，哪怕根本不启用 db 服务，光跑 `docker compose config`
 都会因为缺变量报错，把所有接外部数据库的人挡在门外。反过来在主文件写 `${DATABASE_URL_INTERNAL:?}`

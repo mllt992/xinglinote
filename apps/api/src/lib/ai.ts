@@ -3,6 +3,7 @@ import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { aiProviders } from "../db/schema.ts";
 import { extractChatContent, providerErrorHint } from "./ai-chat.ts";
+import { cacheGet, cacheSet, embedCacheKey, EMBED_CACHE_TTL_SEC } from "./cache.ts";
 import { safeFetch } from "./net-guard.ts";
 import { open } from "./secrets.ts";
 
@@ -25,8 +26,8 @@ export async function aiProvider(wsId: string, userId?: string) {
  * baseUrl 是用户填的，所以每次真正发请求前都要再过一遍出站护栏（DNS 可能被改指向），
  * 并且必须带超时——一个吊住不返回的 provider 会把请求和 worker 任务一起占死。
  */
-export async function embed(p: Provider, input: string[]) {
-  if (!p.embeddingModel) throw fail("AI_NOT_CONFIGURED", "请先配置 Embedding 模型");
+async function embedRemote(p: Provider, input: string[]) {
+  if (!input.length) return [] as number[][];
   const r = await safeFetch(`${p.baseUrl}/embeddings`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${open(p.apiKey)}` },
@@ -35,6 +36,40 @@ export async function embed(p: Provider, input: string[]) {
   if (!r.ok) throw fail("AI_PROVIDER_ERROR", `Embedding 请求失败 (${r.status})`);
   const d = (await r.json()) as { data?: Array<{ index: number; embedding: number[] }> };
   return (d.data ?? []).sort((a, b) => a.index - b.index).map(x => x.embedding);
+}
+
+function parseCachedVector(raw: string): number[] | undefined {
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (!Array.isArray(v) || !v.length || v.some(n => typeof n !== "number" || !Number.isFinite(n))) return;
+    return v;
+  } catch {
+    return;
+  }
+}
+
+/** 按条查缓存，未命中的才打 embedding API。问句和笔记切块共用。 */
+export async function embed(p: Provider, input: string[]) {
+  if (!p.embeddingModel) throw fail("AI_NOT_CONFIGURED", "请先配置 Embedding 模型");
+  const out: Array<number[] | undefined> = new Array(input.length);
+  const missing: Array<{ i: number; text: string; key: string }> = [];
+  for (let i = 0; i < input.length; i++) {
+    const text = input[i] ?? "";
+    const key = embedCacheKey(p.baseUrl, p.embeddingModel, text);
+    const hit = parseCachedVector((await cacheGet(key)) ?? "");
+    if (hit) out[i] = hit;
+    else missing.push({ i, text, key });
+  }
+  if (missing.length) {
+    const vecs = await embedRemote(p, missing.map(m => m.text));
+    if (vecs.length !== missing.length) throw fail("AI_PROVIDER_ERROR", "Embedding 返回条数对不上");
+    for (let j = 0; j < missing.length; j++) {
+      const vec = vecs[j]!;
+      out[missing[j]!.i] = vec;
+      await cacheSet(missing[j]!.key, JSON.stringify(vec), EMBED_CACHE_TTL_SEC);
+    }
+  }
+  return out as number[][];
 }
 
 /** 唯一一份聊天调用。routes/ai.ts 以前自己抄了一模一样的一份，别再抄了。 */

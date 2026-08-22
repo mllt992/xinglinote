@@ -5,6 +5,7 @@ import { agentReplies, agents, backgroundJobs, comments, instanceSettings, noteb
 import { chatAi } from "./ai.ts";
 import { sanitizeAgentReply } from "./agents-text.ts";
 import { feedPostHref } from "./comments.ts";
+import { keywordNeedles, rankKeywordNotes } from "./knowledge-ai.ts";
 import { likeContains } from "./like.ts";
 import { assertSafeOutboundUrl } from "./net-guard.ts";
 import { seal, suffix } from "./secrets.ts";
@@ -191,10 +192,17 @@ export async function enqueueAgentMentions(input: {
   }
 }
 
-export async function retrievePublishedNotes(query: string, limit = 6) {
-  const q = query.trim();
-  if (q.length < 2) return [];
-  const pat = likeContains(q.slice(0, 200));
+export async function retrievePublishedNotes(query: string, limit = 4) {
+  const q = query.trim().slice(0, 200);
+  const needles = keywordNeedles(q);
+  if (needles.length < 1) return [];
+  const clauses = needles.slice(0, 8).flatMap(n => {
+    const pat = likeContains(n);
+    return [
+      sql`${notes.title} ILIKE ${pat} ESCAPE ${"\\"}`,
+      sql`${notes.bodyMd} ILIKE ${pat} ESCAPE ${"\\"}`,
+    ];
+  });
   const rows = await db.select({
     id: notes.id, title: notes.title, bodyMd: notes.bodyMd,
   }).from(notes).innerJoin(notebooks, eq(notebooks.id, notes.notebookId)).where(and(
@@ -203,9 +211,9 @@ export async function retrievePublishedNotes(query: string, limit = 6) {
     isNull(notes.trashedAt),
     eq(notebooks.sitePublished, true),
     isNull(notebooks.trashedAt),
-    or(sql`${notes.title} ILIKE ${pat} ESCAPE ${"\\"}`, sql`${notes.bodyMd} ILIKE ${pat} ESCAPE ${"\\"}`),
-  )).limit(20);
-  return rows.slice(0, limit).map(n => ({ title: n.title, excerpt: n.bodyMd.slice(0, 600) }));
+    or(...clauses),
+  )).limit(30);
+  return rankKeywordNotes(q, rows, limit).map(h => ({ title: h.title, excerpt: h.excerpt.slice(0, 360) }));
 }
 
 function systemPrompt(agent: AgentRow) {
