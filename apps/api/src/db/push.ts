@@ -464,6 +464,13 @@ const statements = [
     body_md text NOT NULL DEFAULT '',
     updated_at timestamptz NOT NULL DEFAULT now()
   )`,
+  `CREATE TABLE IF NOT EXISTS blob_store (
+    sha256 text PRIMARY KEY,
+    bytes bigint NOT NULL,
+    refcount integer NOT NULL DEFAULT 0,
+    path text NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS attachments_sha256_idx ON attachments(sha256)`,
 ];
 
 async function main() {

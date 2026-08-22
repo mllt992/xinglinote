@@ -8,6 +8,7 @@ import {
   mcpTokens, notebookMembers, notebooks, notes, posts, shareLinks, workspaceMembers, workspaces,
 } from "../db/schema.ts";
 import { env } from "../env.ts";
+import { isBlobPath } from "./blob-path.ts";
 import { noteCandidates, rebuildLinks } from "./links.ts";
 
 export type NotebookMoveResult = {
@@ -76,8 +77,9 @@ export async function moveNotebook(notebookId: string, targetWorkspaceId: string
   const copied: string[] = [];
   try {
     if (await cp(notesFrom, notesTo, { recursive: true, force: true }).then(() => true, missing)) copied.push(notesTo);
-    if (files.length) await mkdir(join(env.dataDir, "attachments", dst.id), { recursive: true });
-    for (const a of files) {
+    const legacyFiles = files.filter(a => !isBlobPath(a.storedName));
+    if (legacyFiles.length) await mkdir(join(env.dataDir, "attachments", dst.id), { recursive: true });
+    for (const a of legacyFiles) {
       const to = join(env.dataDir, "attachments", dst.id, a.storedName);
       if (await copyFile(join(env.dataDir, "attachments", a.workspaceId, a.storedName), to).then(() => true, missing)) copied.push(to);
     }
@@ -148,7 +150,7 @@ export async function moveNotebook(notebookId: string, targetWorkspaceId: string
 
   // —— 第三步：收尾。旧文件删不掉只是留了垃圾，双链重建失败只是少几条反向链接，
   //     都不该把一次已经成功的搬迁回报成失败。——
-  await discard([notesFrom, ...files.map(a => join(env.dataDir, "attachments", srcWorkspaceId, a.storedName))]);
+  await discard([notesFrom, ...files.filter(a => !isBlobPath(a.storedName)).map(a => join(env.dataDir, "attachments", srcWorkspaceId, a.storedName))]);
   try {
     await relinkAll(noteIds, dst.id);
     await relinkAll(inbound, srcWorkspaceId);

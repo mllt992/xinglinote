@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { Hono } from "hono";
 import { and, count, desc, eq, gte, inArray, isNotNull, isNull } from "drizzle-orm";
 import { z } from "zod";
@@ -10,8 +8,8 @@ import {
   attachments, auditLogs, backupRuns, backupTargets, folders, mcpTokens, notebooks, notes,
   shareLinks, users, workspaceInvites, workspaceMembers, workspaces,
 } from "../db/schema.ts";
-import { env } from "../env.ts";
 import { ok } from "../http.ts";
+import { readStoredFile } from "../lib/blobs.ts";
 import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
 import { writeNoteFile } from "../lib/files.ts";
@@ -162,7 +160,7 @@ async function packNotes(rows:typeof notes.$inferSelect[],label:(n:typeof notes.
     for(const a of mine){
       const rel=uniquePath(used,`${bag}/${safeSegment(a.filename,"附件")}`);
       try{
-        const data=await readFile(join(env.dataDir,"attachments",a.workspaceId,a.storedName));
+        const data=await readStoredFile(a);
         total+=data.length;if(total>MAX_EXPORT_BYTES)throw fail("QUOTA","导出内容超过 200MB，请按笔记本分批导出");
         entries.push({path:rel,data});
         body=body.split(`/api/v1/attachments/${a.id}`).join(`./${rel.slice(dir.length+1)}`);

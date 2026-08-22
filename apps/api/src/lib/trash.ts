@@ -7,6 +7,7 @@ import {
   noteFavorites,notebooks,notes,noteVersions,noteVisits,posts,
 } from "../db/schema.ts";
 import { env } from "../env.ts";
+import { releaseStoredFile } from "./blobs.ts";
 export async function descendantFolderIds(rootId:string){const all=await db.select({id:folders.id,parentId:folders.parentId}).from(folders);const ids=[rootId];for(let i=0;i<ids.length;i++)for(const f of all)if(f.parentId===ids[i]&&!ids.includes(f.id))ids.push(f.id);return ids;}
 export async function trashNotebook(notebookId:string,userId:string){const at=new Date(),batch=crypto.randomUUID();await db.transaction(async tx=>{await tx.update(notebooks).set({trashedAt:at,trashedBy:userId,trashBatchId:batch}).where(eq(notebooks.id,notebookId));await tx.update(folders).set({trashedAt:at,trashedBy:userId,trashBatchId:batch}).where(and(eq(folders.notebookId,notebookId),isNull(folders.trashedAt)));await tx.update(notes).set({trashedAt:at,trashedBy:userId,trashBatchId:batch}).where(and(eq(notes.notebookId,notebookId),isNull(notes.trashedAt)));});return batch;}
 export async function trashFolder(folderId:string,userId:string){const ids=await descendantFolderIds(folderId),at=new Date(),batch=crypto.randomUUID();await db.transaction(async tx=>{await tx.update(folders).set({trashedAt:at,trashedBy:userId,trashBatchId:batch}).where(and(inArray(folders.id,ids),isNull(folders.trashedAt)));await tx.update(notes).set({trashedAt:at,trashedBy:userId,trashBatchId:batch}).where(and(inArray(notes.folderId,ids),isNull(notes.trashedAt)));});return batch;}
@@ -26,7 +27,7 @@ export async function restoreFolder(id:string,batch:string){await db.transaction
 export async function purgeNotes(ids:string[]){
   for(const id of ids){
     const files=await db.select().from(attachments).where(eq(attachments.noteId,id));
-    for(const a of files)await rm(join(env.dataDir,"attachments",a.workspaceId,a.storedName),{force:true});
+    for(const a of files)await releaseStoredFile(a);
     const [note]=await db.select().from(notes).where(eq(notes.id,id));
     if(note)await rm(join(env.dataDir,"workspaces",note.workspaceId,"notes",note.notebookId,`${note.id}.md`),{force:true});
     const doomedItems=await db.select({id:calendarItems.id}).from(calendarItems).where(eq(calendarItems.sourceNoteId,id));

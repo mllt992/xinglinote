@@ -1,6 +1,4 @@
 import { and,asc,eq,inArray,lte,lt,or,sql } from "drizzle-orm";
-import { readFile,rm } from "node:fs/promises";
-import { join } from "node:path";
 import { db } from "../../api/src/db/client.ts";
 import { aiChunks,aiProviders,aiUsage,attachments,backupRuns,backupTargets,auditLogs,authTokens,backgroundJobs,calendarFeedTokens,comments,calendarItems,calendarOverrides,calendarReminders,calendarSubscriptions,calendarTemplates,folders,mcpTokens,notebookMembers,notebooks,notes,notifications,posts,pushSubscriptions,sessions,shareLinks,users,workspaceInvites,workspaceMembers,workspaces } from "../../api/src/db/schema.ts";
 import { nextOccurrence,reminderFireAt,rescheduleReminders,syncNoteTasks } from "../../api/src/lib/calendar.ts";
@@ -15,12 +13,13 @@ import { open } from "../../api/src/lib/secrets.ts";
 import { pruneNoteVersions } from "../../api/src/lib/versions.ts";
 import { purgeNotes } from "../../api/src/lib/trash.ts";
 import { extractPdfText } from "../../api/src/lib/pdf-text.ts";
+import { readStoredFile, releaseStoredFile } from "../../api/src/lib/blobs.ts";
 import { applyModeration } from "../../api/src/lib/moderation.ts";
 const interval=Number(process.env.WORKER_INTERVAL_MS??5000); // durable worker cadence
 async function claim(){return db.transaction(async tx=>{const[job]=await tx.select().from(backgroundJobs).where(and(or(eq(backgroundJobs.status,"pending"),and(eq(backgroundJobs.status,"running"),lt(backgroundJobs.lockedAt,new Date(Date.now()-300000)))),lte(backgroundJobs.runAfter,new Date()))).orderBy(asc(backgroundJobs.createdAt)).limit(1).for("update",{skipLocked:true});if(!job)return null;const[claimed]=await tx.update(backgroundJobs).set({status:"running",lockedAt:new Date(),attempts:job.attempts+1}).where(eq(backgroundJobs.id,job.id)).returning();return claimed;});}
 async function execute(job:typeof backgroundJobs.$inferSelect){
   if(job.type==="extract_pdf"){const[a]=await db.select().from(attachments).where(eq(attachments.id,(job.payload as {attachmentId:string}).attachmentId));if(!a)return;
-  try{const bytes=await readFile(join(env.dataDir,"attachments",a.workspaceId,a.storedName));const text=await extractPdfText(new Uint8Array(bytes));
+  try{const bytes=await readStoredFile(a);const text=await extractPdfText(new Uint8Array(bytes));
    await db.update(attachments).set({extractedText:text||null,extractStatus:text?"ok":"failed"}).where(eq(attachments.id,a.id));}
   catch{await db.update(attachments).set({extractStatus:"failed"}).where(eq(attachments.id,a.id));}   // 抽不出来就只留文件
   return;}
@@ -29,7 +28,7 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
    const cutoff=new Date(Date.now()-30*86400000);
    // 单独被删掉的附件（笔记还在）
    const orphanFiles=await db.select().from(attachments).where(lt(attachments.trashedAt,cutoff));
-   for(const a of orphanFiles){await rm(join(env.dataDir,"attachments",a.workspaceId,a.storedName),{force:true});await db.delete(attachments).where(eq(attachments.id,a.id));}
+   for(const a of orphanFiles){await releaseStoredFile(a);await db.delete(attachments).where(eq(attachments.id,a.id));}
    // 笔记走 purgeNotes 这唯一一个入口，别在这儿再抄一份删表清单
    const oldNotes=await db.select({id:notes.id}).from(notes).where(lt(notes.trashedAt,cutoff));
    await purgeNotes(oldNotes.map(n=>n.id));

@@ -220,7 +220,16 @@ export const attachments = pgTable("attachments", {
   index("attachments_note_idx").on(t.noteId),
   index("attachments_workspace_idx").on(t.workspaceId),
   index("attachments_created_by_idx").on(t.createdBy),
+  index("attachments_sha256_idx").on(t.sha256),
 ]);
+
+/** 按内容哈希去重的物理文件。attachments / post_assets 只是引用，refcount 到 0 再删盘。 */
+export const blobStore = pgTable("blob_store", {
+  sha256: text("sha256").primaryKey(),
+  bytes: bigint("bytes", { mode: "number" }).notNull(),
+  refcount: integer("refcount").notNull().default(0),
+  path: text("path").notNull(),
+});
 
 export const links = pgTable("links", {
   id: uuid("id").defaultRandom().primaryKey(),

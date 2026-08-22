@@ -1,6 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { Hono } from "hono";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { getCookie, setCookie } from "hono/cookie";
@@ -9,8 +7,8 @@ import { hashPassword, verifyPassword } from "@kb/core";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { attachments, folders, notebooks, notes, shareLinks, workspaces } from "../db/schema.ts";
-import { env } from "../env.ts";
 import { ok } from "../http.ts";
+import { readStoredFile } from "../lib/blobs.ts";
 import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
 import { noteAccess } from "../lib/note-access.ts";
@@ -254,7 +252,7 @@ shareRoutes.get("/public/shares/:token/file", async (c) => {
   if (!file || file.trashedAt) throw gone();
   const [note] = await db.select().from(notes).where(eq(notes.id, file.noteId));
   if (!note || note.trashedAt) throw gone();
-  const data = await readFile(join(env.dataDir, "attachments", file.workspaceId, file.storedName));
+  const data = await readStoredFile(file);
   c.header("Content-Type", file.mime);
   c.header("Content-Disposition", `${file.mime.startsWith("image/") ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
   c.header("X-Content-Type-Options", "nosniff");
