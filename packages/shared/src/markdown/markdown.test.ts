@@ -205,6 +205,14 @@ test("==高亮== 支持嵌套，落单的等号不吃字", () => {
   assert.doesNotMatch(renderMarkdown("`==代码里的==`"), /<mark>/);
 });
 
+test("传了 mentionHandles 才把 @handle 标成 mention", () => {
+  assert.doesNotMatch(renderMarkdown("找 @Arch 帮忙"), /class="mention"/);
+  assert.match(renderMarkdown("找 @Arch 帮忙", { mentionHandles: ["arch"] }), /<span class="mention">@Arch<\/span>/);
+  assert.doesNotMatch(renderMarkdown("mailbox@domain.com", { mentionHandles: ["domain"] }), /class="mention"/);
+  assert.doesNotMatch(renderMarkdown("`@Arch`", { mentionHandles: ["arch"] }), /class="mention"/);
+  assert.doesNotMatch(renderMarkdown("找 @Nobody 帮忙", { mentionHandles: ["arch"] }), /class="mention"/);
+});
+
 test("闭集新增的三样都不进字数与摘要", () => {
   const src = "> [!NOTE] 提示\n> 正文\n\n段落[^1] 与 ==重点==\n\n[^1]: 注释\n";
   const plain = plainTextOf(src);

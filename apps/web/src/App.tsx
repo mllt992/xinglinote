@@ -1047,7 +1047,7 @@ function PublicProfile() { const { handle } = useParams();
     {data.sites.length>0&&<section className="mt-8"><h2 className="mb-3 text-sm font-semibold">公开的文档站</h2><div className="space-y-2">{data.sites.map(s=><a key={s.url} href={s.url} className="flex items-center gap-2.5 rounded-xl border p-3 text-sm hover:bg-muted"><Globe2 className="size-4 text-muted-foreground"/>{s.title}</a>)}</div></section>}
     <section className="mt-8"><h2 className="mb-3 text-sm font-semibold">广场动态</h2>
       {data.posts.length===0?<p className="py-10 text-center text-sm text-muted-foreground">还没有公开动态。</p>
-      :<div className="space-y-3">{data.posts.map(p=><article key={p.id} className="rounded-2xl border bg-background p-4"><p className="text-xs text-muted-foreground">{new Date(p.createdAt).toLocaleString()}{p.editedAt?" · 已编辑":""}</p>{p.body&&<p className="mt-2 whitespace-pre-wrap text-sm leading-7">{p.body}</p>}<PostAssetGrid assets={p.assets??[]}/><p className="mt-2 text-xs text-muted-foreground">{p.likes} 次喜欢</p></article>)}</div>}
+      :<div className="space-y-3">{data.posts.map(p=><article key={p.id} className="rounded-2xl border bg-background p-4"><p className="text-xs text-muted-foreground">{new Date(p.createdAt).toLocaleString()}{p.editedAt?" · 已编辑":""}</p>{p.body&&<MarkdownView source={p.body} mode="public" className="feed-md mt-2"/>}<PostAssetGrid assets={p.assets??[]}/><p className="mt-2 text-xs text-muted-foreground">{p.likes} 次喜欢</p></article>)}</div>}
     </section>
   </div></PublicFrame>;
 }

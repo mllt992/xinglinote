@@ -5,6 +5,7 @@ import { hydrateMath } from "./lib/katex-hydrate";
 import { hydrateDiagrams } from "./lib/mermaid-hydrate";
 import { hydrateCodeBlocks } from "./lib/code-block";
 import { openLightbox } from "./lib/lightbox";
+import { cn } from "./lib/utils";
 
 export function MarkdownView({
   source,
@@ -13,6 +14,8 @@ export function MarkdownView({
   mode = "library",
   resolveWiki,
   sourceLines = false,
+  className,
+  mentionHandles,
 }: {
   source: string;
   /** 点双链。宿主负责消歧、跨区跳转、点未创建的就地新建（规格 §9.4）。 */
@@ -23,10 +26,14 @@ export function MarkdownView({
   resolveWiki?: WikiResolver;
   /** 给块级元素打 `data-line`，供分栏视图和编辑器对齐滚动。 */
   sourceLines?: boolean;
+  className?: string;
+  /** 动态里要高亮的智能体 handle。笔记正文不要传。 */
+  mentionHandles?: Iterable<string>;
 }) {
+  const mentionKey = mentionHandles ? [...mentionHandles].join("\0") : "";
   const html = useMemo(
-    () => toSafeHtml(source || "_空白笔记_", { mode, resolveWiki, interactiveTasks: !!onToggleTask, sourceLines }),
-    [source, mode, resolveWiki, onToggleTask, sourceLines],
+    () => toSafeHtml(source || "_空白笔记_", { mode, resolveWiki, interactiveTasks: !!onToggleTask, sourceLines, mentionHandles }),
+    [source, mode, resolveWiki, onToggleTask, sourceLines, mentionKey],
   );
 
   const host = useRef<HTMLDivElement | null>(null);
@@ -44,7 +51,7 @@ export function MarkdownView({
   return (
     <div
       ref={host}
-      className="markdown"
+      className={cn("markdown", className)}
       dangerouslySetInnerHTML={{ __html: html }}
       onClick={event => {
         const target = event.target as HTMLElement;

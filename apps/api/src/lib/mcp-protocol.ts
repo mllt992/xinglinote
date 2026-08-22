@@ -250,7 +250,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
   },
   post_to_feed: {
     tier: "feed",
-    description: "发一条动态到工作区圈子或公开广场，可带笔记回链。",
+    description: "发一条动态到工作区圈子或公开广场。body 是 Markdown（粗体、链接、引用、[[双链]] 与笔记同一套解析器渲染），可带笔记回链。",
     properties: {
       body: { type: "string", minLength: 1, maxLength: 5000 },
       scope: { type: "string", enum: ["workspace", "public"], default: "workspace" },

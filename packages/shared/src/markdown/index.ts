@@ -5,6 +5,7 @@ import { footnotePlugin } from "./footnote.js";
 import { headingAnchorPlugin, outlineFromTokens, type OutlineItem } from "./headings.js";
 import { mathPlugin } from "./math.js";
 import { markPlugin } from "./mark.js";
+import { mentionPlugin } from "./mention.js";
 import { sourceLinePlugin } from "./source-lines.js";
 import { taskListPlugin } from "./tasklist.js";
 import { wikilinkPlugin, type WikiResolver } from "./wikilink.js";
@@ -30,6 +31,8 @@ export type MarkdownEnv = {
   interactiveTasks?: boolean;
   /** 给块级元素打 `data-line`，供源码⇄预览滚动同步对齐。只在 App 编辑器里开。 */
   sourceLines?: boolean;
+  /** 动态里要高亮的 @handle。不传则整段当普通文本，笔记正文不要开。 */
+  mentionHandles?: Iterable<string>;
 };
 
 /**
@@ -48,6 +51,7 @@ const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographe
   .use(calloutPlugin)
   .use(footnotePlugin)
   .use(markPlugin)
+  .use(mentionPlugin)
   .use(headingAnchorPlugin)
   .use(sourceLinePlugin);
 
@@ -75,7 +79,10 @@ md.renderer.rules.table_close = (tokens, idx, options, _env, self) =>
 
 /** 渲染成 HTML。注意：**调用方仍须自行 sanitize**（浏览器端用 DOMPurify）。 */
 export function renderMarkdown(source: string, env: MarkdownEnv = {}): string {
-  return md.render(source ?? "", { mode: "library", ...env });
+  const mentionHandles = env.mentionHandles
+    ? new Set([...env.mentionHandles].map(h => h.toLowerCase()))
+    : undefined;
+  return md.render(source ?? "", { mode: "library", ...env, mentionHandles });
 }
 
 /** 抽目录树，供大纲面板、`[[标题#节]]` 跳转与滚动同步使用。 */

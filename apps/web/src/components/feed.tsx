@@ -1,7 +1,8 @@
-import{useEffect,useRef,useState}from'react';import{FileText,Flag,Globe2,Heart,ImagePlus,MessageSquare,MoreHorizontal,NotebookPen,Paperclip,Pencil,RefreshCw,Send,Star,Trash2,X}from'lucide-react';import{api}from'../api';import{cn}from'../lib/utils';import{openLightbox}from'../lib/lightbox';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
+import{useEffect,useMemo,useRef,useState}from'react';import{FileText,Flag,Globe2,Heart,ImagePlus,MessageSquare,MoreHorizontal,NotebookPen,Paperclip,Pencil,RefreshCw,Send,Star,Trash2,X}from'lucide-react';import{api}from'../api';import{cn}from'../lib/utils';import{openLightbox}from'../lib/lightbox';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
 import{FeedComments}from'./feed-comments';
 import{MentionField}from'./mention-field';
-import{MentionText,type MentionAgent}from'./mention-text';
+import{type MentionAgent}from'./mention-text';
+import{MarkdownView}from'../MarkdownView';
 import{FEED_REFRESH_EVENT,formatFeedUpdateLabel,updatesPath,writeFeedSeen,type FeedUpdateCounts}from'./feed-updates';
 
 export type PostAsset={id:string;filename:string;mime:string;bytes:number;kind:"image"|"video"|"file";url:string};
@@ -58,6 +59,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
   const[fresh,setFresh]=useState<{newIds:Set<string>;repliedIds:Set<string>}|null>(null);
   const[assets,setAssets]=useState<PostAsset[]>([]);const[uploading,setUploading]=useState(false);
   const[agents,setAgents]=useState<MentionAgent[]>([]);
+  const mentionHandles=useMemo(()=>agents.map(a=>a.handle),[agents]);
   const fileRef=useRef<HTMLInputElement>(null);
   const path=scope==="public"?"/api/v1/feed/public":`/api/v1/feed/workspaces/${workspaceId}`;
   /** 单条动态的点赞、编辑、删除就地改这一条：整条时间线重拉会闪一下、丢滚动位置，点个赞不该付这个代价。
@@ -204,7 +206,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
           </DropdownMenuContent></DropdownMenu>}
         </div>
       </div>
-      {p.body&&<MentionText text={p.body} agents={agents} className="mt-3 text-sm leading-7"/>}
+      {p.body&&<MarkdownView source={p.body} mode={scope==="public"?"public":"library"} mentionHandles={mentionHandles} className="feed-md mt-3"/>}
       <PostAssetGrid assets={p.assets??[]}/>
       <HeldNote post={p} onAppeal={x=>{setDlgErr("");setAppealNote("");setAppealing(x)}}/>
       {p.note&&<button className="mt-3 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs hover:bg-muted" onClick={()=>p.workspaceId&&onOpenNote?.(p.workspaceId,p.note!.id)}><NotebookPen className="size-3.5"/>{p.note.title}</button>}

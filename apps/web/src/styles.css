@@ -170,6 +170,15 @@ button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
 .markdown .wiki.plain { cursor: text; border: 0; color: inherit; font-weight: inherit; }
 .markdown .wiki.missing { border-bottom-style: dashed; color: var(--muted-foreground); }
 .markdown .wiki:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 3px; }
+.markdown .mention { font-weight: 500; color: var(--primary); }
+
+/* 动态卡片：同一套解析器，字号和段距按短文收一档，避免标题把时间线撑开。 */
+.markdown.feed-md { font-size: .875rem; line-height: 1.75; }
+.markdown.feed-md > :last-child { margin-bottom: 0; }
+.markdown.feed-md :is(h1, h2, h3) { margin: 1em 0 .4em; }
+.markdown.feed-md h1 { font-size: 1.25em; }
+.markdown.feed-md h2 { font-size: 1.12em; }
+.markdown.feed-md h3 { font-size: 1.05em; }
 
 /* 代码块着色板。编辑器（CodeMirror）与预览共用，主题包可覆盖。 */
 :root {
