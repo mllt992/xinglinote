@@ -102,7 +102,8 @@ OAuth 签发的钥匙在设置页和手工建的并排显示（`source='oauth'`�
 
 ### 3.4 审计页
 
-Owner/Admin 看本区：时间、token 名、user、tool、target note、结果码。本人看自己的。保留 90 天。
+Owner/Admin 看本区：时间、token 名、user、tool、target note、结果码。本人看自己的。保留 90 天。  
+接口 `GET /api/v1/workspaces/:id/mcp-audit`，可按 `tokenId` / `tool` / `result` 筛；工作区总审计页同样能按「仅 MCP」过滤。
 
 ---
 
@@ -118,8 +119,10 @@ Owner/Admin 看本区：时间、token 名、user、tool、target note、结果�
 7. 日写入字节按 UTC 日加总 body。未设上限则只记账不设卡；设了上限，超限 QUOTA。
 8. 每把钥匙 60 次/分钟。超限 429。
 9. 用户被移出工作区、封禁、注销、钥匙吊销：立即失败。缓存 TTL ≤ 30s，吊销走主动失效。
-10. 动态工具仅当 feed_* 打开才注册，默认清单里没有。
+10. 动态工具仅当 feed_* 打开才注册，默认清单里没有。`tools/list` 必须按钥匙 rw / `allow_delete` / feed 减工具，不要列出再 403。
 11. 对外文档站、分享页不跑 MCP。
+12. 写工具可带 HTTP 头 `Idempotency-Key` 或参数 `client_request_id`。同一把钥匙、同一个键在 10 分钟内只执行第一次成功写入，之后原样返回那次结果——MCP 是 POST，断线重试不能再落一篇。
+13. `last_used_at` 最多 30 秒写一次，避免每次工具调用都抢钥匙行。
 
 ---
 
@@ -147,13 +150,15 @@ target notes:
 更新 last_used_at、日写入
 ```
 
-`get_note` 对「存在但 ai_index 关或无权」返回 `NOT_FOUND`，避免 Agent 用 id 扫私密。  
-例外：`update_note` 对无权 NOT_FOUND/FORBIDDEN 同 02；对仅 ai_index 关但 can_edit 且在范围内：允许（规则 4）。
+读工具（`get_note` / `get_backlinks` / `search_notes` / `ask_knowledge` / `list_recent`）对「存在但 ai_index 关、不在范围、或无权」一律 `NOT_FOUND`（search / list_recent 则省略），避免 Agent 用 id 扫私密。  
+例外：`update_note` / `append_to_note` / `replace_in_note` 对无权 NOT_FOUND/FORBIDDEN 同 02；对仅 ai_index 关但 can_edit 且在范围内：允许（规则 4）。
+
+握手：`initialize` 必须带 `instructions`（先 `get_me`、搜不要扫库、改正文先拿 version）。每个工具带 MCP 注解：`readOnlyHint` / `destructiveHint` / `idempotentHint`。
 
 ### 5.2 工具
 
 **`get_me`**  
-出：user handle、workspace id/name、rw、notebook_mode、notebooks[{id,title}]（inherit 则列当前能读且过 private/ai 过滤的本）、expires_at。
+出：user handle、workspace id/name、rw、notebook_mode、notebooks[{id,title,slug,visibility}]（inherit 则列当前能读且过 private 过滤的本）、expires_at、require_ai_index、allow_private_notebooks、allow_delete、image_max_bytes（实例当前的 MCP 单张图上限）。
 
 **`list_notebooks`**  
 出：过范围过滤的本。
@@ -162,10 +167,10 @@ target notes:
 出：子目录与笔记标题、id。不含正文。
 
 **`search_notes(query, notebook_id?, tag?, mode=keyword|semantic|hybrid)`**  
-limit≤20。出：id、title、path、snippet≤240。hybrid 调 10 的融合但不跑问答模型。
+limit≤20。出：`{ hits: [{ id, title, path, snippet }] }`，snippet≤240。keyword 走转义后的 ILIKE；semantic / hybrid 复用 10 的 `retrieve()`，但仍要过钥匙范围，不得绕开 `require_ai_index`。查询里的 `%` `_` 当字面量，不当通配符。
 
 **`get_note(id)`**  
-出：id、title、path、body_md、version、tags、ai_index、published、links[]。
+出：id、title、path（笔记本 → 目录 → 标题）、body_md、version、tags、ai_index、published、links[{raw,target_id,state}]。
 
 **`get_backlinks(id)`**  
 出：from id/title/snippet，仅 can_read 的 from。
@@ -180,7 +185,23 @@ limit≤20。出：id、title、path、snippet≤240。hybrid 调 10 的融合�
 缺 expected_version → VALIDATION。冲突 → CONFLICT_VERSION + 当前 version。
 
 **`append_to_note(id, content)`**  
-内部读 version 再 update 追加，乐观重试 2 次。
+内部读 version 再 update 追加，乐观重试 2 次。传了 `expected_version` 则不重试，冲突直接 `CONFLICT_VERSION`。
+
+**`replace_in_note(id, expected_version, old, new, replace_all?)`**  
+须 write。只替换一段正文，避免 Agent 整篇重写把后半截吃掉。`old` 找不到 → VALIDATION；出现多次且未 `replace_all` → VALIDATION，让调用方补更长上下文。
+
+**`list_recent(since?, limit?)`**  
+读档位。按 `updated_at` 倒序，默认 20、上限 50。只回 id / title / path / version / updated_at，不回正文。
+
+**`today`**  
+读档位。复用日历「今天」：今日条目、逾期未完成、今天改过的笔记（仍过钥匙范围）。给「我今天该干什么」一次拿齐。
+
+**`list_attachments(note_id)`**  
+读档位。列出这篇的附件：id、filename、mime、bytes、markdown。不回文件字节。
+
+**`upload_image(note_id, filename, mime, data_base64)`**  
+须 write。只收 png / jpeg / webp / gif，过魔数。单张不超过实例设置 `mcp_image_max_bytes`（默认 5MB，管理员可改，硬顶 25MB）。计入钥匙日写入与用户存储。  
+**只存附件，不改正文。** 返回 `{ id, filename, mime, bytes, markdown }`，Agent 再用 `append_to_note` / `replace_in_note` 把 `markdown` 插到该放的位置。禁止去抓外链当图。
 
 **`move_note(id, notebook_id, folder_id?)`**  
 须 manage。两端都要在范围内且 can_edit。

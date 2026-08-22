@@ -26,6 +26,8 @@ export const instanceSettings = pgTable("instance_settings", {
   allowUserInstallThemes: boolean("allow_user_install_themes").notNull().default(true),
   allowUserAccent: boolean("allow_user_accent").notNull().default(true),
   defaultUserStorageBytes: bigint("default_user_storage_bytes", { mode: "number" }).notNull().default(1073741824),
+  /** MCP upload_image 单张上限。默认 5MB，管理员可在实例后台改，硬顶 25MB。 */
+  mcpImageMaxBytes: bigint("mcp_image_max_bytes", { mode: "number" }).notNull().default(5242880),
   smtpHost: text("smtp_host"), smtpPort: integer("smtp_port"), smtpUser: text("smtp_user"), smtpPassword: text("smtp_password"), smtpFrom: text("smtp_from"), smtpSecure: boolean("smtp_secure").notNull().default(false),
   moderationEnabled: boolean("moderation_enabled").notNull().default(false),
   moderationSquare: boolean("moderation_square").notNull().default(true),

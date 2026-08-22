@@ -43,6 +43,8 @@ try {
 
   // 档位与范围
   const ro = await create({ name: '只读', rw: 'read' });
+  const listTools = async secret => (await fetch(base + '/mcp', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${secret}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) }).then(r => r.json())).result.tools.map(t => t.name);
+  result.readonlyHidesWriteTools = !(await listTools(ro.secret)).includes('create_note');
   let readonlyBlocked = false;
   try { await tool(ro.secret, 'create_note', { notebook_id: nbA.id, title: '只读不该能写' }); } catch { readonlyBlocked = true; }
   result.readonlyBlocksWrite = readonlyBlocked;

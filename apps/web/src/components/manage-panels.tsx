@@ -62,16 +62,35 @@ export function BackupPanel({workspaceId}:{workspaceId:string}){
   </div>;
 }
 
-/** 工作区审计流水：成员变更、备份、MCP 写入都落在这里。 */
+/** 工作区审计流水：成员变更、备份、MCP 写入都落在这里。MCP 可按钥匙 / 工具 / 成败筛。 */
 export function AuditPanel({workspaceId}:{workspaceId:string}){
-  type Log={id:string;actorType:string;action:string;result:string;targetType:string|null;details:unknown;createdAt:string};
-  const[logs,setLogs]=useState<Log[]>([]);useEffect(()=>{api<{logs:Log[]}>(`/api/v1/workspaces/${workspaceId}/audit`).then(d=>setLogs(d.logs))},[workspaceId]);
-  if(!logs.length)return <div className={box}><Hollow icon={<FileClock/>} text="还没有审计记录。成员变更、备份、MCP 写入都会记在这里。"/></div>;
-  return <div className={box}><div className="divide-y">{logs.map(l=><div key={l.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
-    <Badge>{l.actorType==="mcp"?"MCP":l.actorType==="system"?"系统":"用户"}</Badge>
-    <div className="min-w-0 flex-1"><p className="font-mono text-sm">{l.action}</p><p className="truncate text-xs text-muted-foreground">{new Date(l.createdAt).toLocaleString()}{l.targetType?` · ${l.targetType}`:""}{l.details?` · ${JSON.stringify(l.details)}`:""}</p></div>
-    {l.result!=="ok"&&<Badge>{l.result}</Badge>}
-  </div>)}</div><p className="border-t px-4 py-2.5 text-xs text-muted-foreground">只显示最近 200 条。</p></div>;
+  type Log={id:string;actorType?:string;action:string;result:string;targetType?:string|null;details:unknown;createdAt:string;tokenName?:string|null};
+  const[logs,setLogs]=useState<Log[]>([]);
+  const[scope,setScope]=useState<"all"|"mcp">("all");
+  const[tool,setTool]=useState("");
+  const[result,setResult]=useState<""|"ok"|"error">("");
+  useEffect(()=>{
+    const q=new URLSearchParams();
+    if(tool.trim())q.set("tool",tool.trim().replace(/^mcp\./,""));
+    if(result)q.set("result",result);
+    const path=scope==="mcp"?`/api/v1/workspaces/${workspaceId}/mcp-audit?${q}`:`/api/v1/workspaces/${workspaceId}/audit`;
+    api<{logs:Log[]}>(path).then(d=>setLogs(d.logs)).catch(()=>setLogs([]));
+  },[workspaceId,scope,tool,result]);
+  return <div className="space-y-3">
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="flex gap-1">{(["all","mcp"] as const).map(s=><button key={s} type="button" onClick={()=>setScope(s)} className={`rounded-lg border px-3 py-1.5 text-xs font-medium ${scope===s?"border-foreground bg-muted":"text-muted-foreground hover:bg-muted/50"}`}>{s==="all"?"全部":"仅 MCP"}</button>)}</div>
+      {scope==="mcp"&&<>
+        <Input className="h-8 w-40" placeholder="工具名，如 search_notes" value={tool} onChange={e=>setTool(e.target.value)}/>
+        <select className="h-8 rounded-lg border bg-background px-2 text-xs" value={result} onChange={e=>setResult(e.target.value as ""|"ok"|"error")}><option value="">全部结果</option><option value="ok">成功</option><option value="error">失败</option></select>
+      </>}
+    </div>
+    {!logs.length?<div className={box}><Hollow icon={<FileClock/>} text="还没有审计记录。成员变更、备份、MCP 写入都会记在这里。"/></div>
+    :<div className={box}><div className="divide-y">{logs.map(l=><div key={l.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+      <Badge>{l.actorType==="mcp"||scope==="mcp"?"MCP":l.actorType==="system"?"系统":"用户"}</Badge>
+      <div className="min-w-0 flex-1"><p className="font-mono text-sm">{l.action}</p><p className="truncate text-xs text-muted-foreground">{new Date(l.createdAt).toLocaleString()}{l.tokenName?` · ${l.tokenName}`:""}{l.targetType?` · ${l.targetType}`:""}{l.details?` · ${JSON.stringify(l.details)}`:""}</p></div>
+      {l.result!=="ok"&&<Badge>{l.result}</Badge>}
+    </div>)}</div><p className="border-t px-4 py-2.5 text-xs text-muted-foreground">只显示最近 {scope==="mcp"?50:200} 条。</p></div>}
+  </div>;
 }
 
 /** 明文导出 / 导入：给「我想自己拿走数据」用；加密备份走上面的备份目标。 */

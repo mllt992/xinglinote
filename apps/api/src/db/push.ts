@@ -456,6 +456,7 @@ const statements = [
 
 
   // —— 协同编辑（设计 17 §3.4）。state 是 base64 的 Y 更新，存 text 省得为一张缓存表引入 bytea 的处理分支 ——
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS mcp_image_max_bytes bigint NOT NULL DEFAULT 5242880`,
   `CREATE TABLE IF NOT EXISTS note_collab (
     note_id uuid PRIMARY KEY REFERENCES notes(id),
     state text NOT NULL,

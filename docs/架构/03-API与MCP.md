@@ -123,7 +123,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | GET/PATCH | `/api/v1/workspaces/:id/ai` | |
 | CRUD | `/api/v1/mcp-tokens` | POST 响应含一次性 secret 与配置 JSON |
 | POST | `/api/v1/mcp-tokens/:id/rotate` | |
-| GET | `/api/v1/workspaces/:id/mcp-audit` | |
+| GET | `/api/v1/workspaces/:id/mcp-audit` | `tokenId` / `tool` / `result` / `limit`；Admin 看本区，本人看自己的 |
 | GET | `/api/v1/workspaces/:id/trash` | |
 | POST | `/api/v1/trash/:type/:id/restore` | |
 | DELETE | `/api/v1/trash/:type/:id` | purge |
@@ -250,8 +250,10 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
   唯一的例外是**不带 `Authorization` 的 GET**，仍回 401 + `WWW-Authenticate`，
   否则发现授权服务器那条路（RFC 9728）会被一起堵死。
 - 备选：同镜像提供 `knowledge-mcp-stdio`，从 stdin 读，把请求转到该端点，给只支持 stdio 的客户端。
-- 初始化后 `tools/list` 按钥匙 rw/feed/delete **动态减工具**，不要列出再 403（减少 Agent 胡调）。
-- 错误：MCP `isError` + 正文 `{ code, message }`，code 同 HTTP。
+- 初始化后 `tools/list` 按钥匙 rw/feed/delete **动态减工具**，不要列出再 403（减少 Agent 胡调）。每个工具带 `annotations`（`readOnlyHint` / `destructiveHint` / `idempotentHint`）。
+- `initialize.result.instructions` 写清用法：先 `get_me`，搜用 `search_notes`，改正文先 `get_note` 拿 version。
+- 写工具认 HTTP 头 `Idempotency-Key` 或参数 `client_request_id`，10 分钟内同一把钥匙同一键只落一次。
+- 错误：JSON-RPC `error.data` 为 `{ code, message, ...fields }`，`code` 同 HTTP。`CONFLICT_VERSION` 带当前 `version`。
 
 鉴权链严格按 [设计 11 §5.1](../设计/11-MCP.md)。
 
@@ -292,7 +294,7 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 
 ### get_me
 
-无参。返回用户、工作区、rw、notebookMode、notebooks[]、expiresAt。
+无参。返回用户、工作区、rw、notebookMode、notebooks[{id,title,slug,visibility}]、expiresAt、require_ai_index、allow_private_notebooks、allow_delete。
 
 ### list_notebooks
 
@@ -357,9 +359,48 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 ### append_to_note
 
 ```
-{ id: string, content: string }
+{ id: string, content: string, expected_version?: number }
 → { id, version }
 ```
+
+内部读 version 再追加，冲突时乐观重试 2 次；传了 `expected_version` 则不重试。
+
+### replace_in_note
+
+```
+{ id: string, expected_version: number, old: string, new: string, replace_all?: boolean }
+→ { id, version, replacements }
+```
+
+只替换正文片段。`old` 找不到或出现多次（未 `replace_all`）→ `VALIDATION`。
+
+### list_recent
+
+```
+{ since?: string, limit?: number }   // 默认 20，上限 50
+→ { notes: [{ id, title, path, version, updated_at }] }
+```
+
+### today
+
+无参。`{ date, timezone, items, overdue, notes }`。条目形状同 `list_tasks` / `list_events`；`notes` 是今天改过的笔记，不含正文。
+
+### list_attachments
+
+```
+{ note_id: string }
+→ { attachments: [{ id, filename, mime, bytes, markdown }] }
+```
+
+### upload_image
+
+```
+{ note_id: string, filename: string, mime: "image/png"|"image/jpeg"|"image/webp"|"image/gif",
+  data_base64: string }
+→ { id, filename, mime, bytes, markdown }
+```
+
+只存附件，不改正文。超过实例 `mcp_image_max_bytes` → `QUOTA`。`data_base64` 可带 `data:image/…;base64,` 前缀。
 
 ### move_note / add_tags / trash_note
 

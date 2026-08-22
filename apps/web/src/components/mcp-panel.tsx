@@ -19,11 +19,18 @@ const fromToken=(t:McpToken):Draft=>({name:t.name,workspaceId:t.workspaceId,rw:t
 /** 设置 → MCP 钥匙。一把钥匙绑一个工作区，范围、档位、过期、写入额度都在这里定。 */
 export function McpPanel({workspaces,defaultWorkspaceId}:{workspaces:Array<{id:string;name:string}>;defaultWorkspaceId?:string}){
   const askConfirm=useConfirm();const toast=useToast();
+  type AuditRow={id:string;tokenName:string|null;action:string;result:string;createdAt:string};
   const[tokens,setTokens]=useState<McpToken[]>([]);const[err,setErr]=useState("");const[busy,setBusy]=useState(false);
+  const[audit,setAudit]=useState<AuditRow[]>([]);
   const[draft,setDraft]=useState<Draft|null>(null);const[editing,setEditing]=useState<McpToken|null>(null);
   const[notebooks,setNotebooks]=useState<Nb[]>([]);const[issued,setIssued]=useState<Issued|null>(null);const[guide,setGuide]=useState(false);
   const load=()=>api<{tokens:McpToken[]}>("/api/v1/mcp/tokens").then(d=>setTokens(d.tokens));
   useEffect(()=>{void load()},[]);
+  const auditWs=defaultWorkspaceId??workspaces[0]?.id;
+  useEffect(()=>{
+    if(!auditWs)return;
+    api<{logs:AuditRow[]}>(`/api/v1/workspaces/${auditWs}/mcp-audit?limit=12`).then(d=>setAudit(d.logs)).catch(()=>setAudit([]));
+  },[auditWs]);
   useEffect(()=>{if(!draft?.workspaceId)return setNotebooks([]);api<{notebooks:Nb[]}>(`/api/v1/workspaces/${draft.workspaceId}/notebooks`).then(d=>setNotebooks(d.notebooks)).catch(()=>setNotebooks([]))},[draft?.workspaceId]);
 
   const wsName=(id:string)=>workspaces.find(w=>w.id===id)?.name??"已退出的工作区";
@@ -62,6 +69,8 @@ export function McpPanel({workspaces,defaultWorkspaceId}:{workspaces:Array<{id:s
       <Button variant="outline" size="sm" onClick={()=>void rotate(t)}><RotateCcw/>轮换</Button>
       <Button variant="ghost" size="icon" aria-label="吊销" onClick={()=>void revoke(t)}><Trash2/></Button>
     </div>)}</div>}
+
+    {audit.length>0&&<div className={box}><p className="border-b px-4 py-2.5 text-xs font-medium text-muted-foreground">最近 MCP 调用</p><div className="divide-y">{audit.map(l=><div key={l.id} className="flex flex-wrap items-center gap-2 px-4 py-2"><span className="font-mono text-xs">{l.action.replace(/^mcp\./,"")}</span><span className="text-[11px] text-muted-foreground">{l.tokenName??"钥匙"} · {new Date(l.createdAt).toLocaleString()}</span>{l.result!=="ok"&&<Badge>{l.result}</Badge>}</div>)}</div></div>}
 
     <Dialog open={!!draft} onOpenChange={v=>{if(!v){setDraft(null);setEditing(null)}}}><DialogContent className="max-h-[86vh] max-w-2xl overflow-auto">
       <DialogHeader><DialogTitle className="flex items-center gap-2"><KeyRound className="size-5"/>{editing?"编辑钥匙":"新建 MCP 钥匙"}</DialogTitle><DialogDescription>{editing?"改权限即时生效，明文不变；换绑工作区请新建一把。":"明文只在创建后显示一次，关掉就看不到了。"}</DialogDescription></DialogHeader>

@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode, type SelectHTMLAttributes } from "
 import { useNavigate, useSearchParams } from "react-router-dom";
 import * as Avatar from "@radix-ui/react-avatar";
 import {
-  Ban, BellRing, Check, ChevronRight, Copy, Download, HardDrive, KeyRound, LayoutGrid, MoreHorizontal,
+  Ban, BellRing, Check, ChevronRight, Copy, Download, HardDrive, Image, KeyRound, LayoutGrid, MoreHorizontal,
   Plus, Search, Shield, ShieldCheck, Sparkles, Ticket, Trash2, UserCog, Users, X,
 } from "lucide-react";
 import { api } from "../api";
@@ -63,6 +63,7 @@ const STORAGE_OPTIONS = [
   { value: 5368709120, label: "5 GB" },
   { value: 10737418240, label: "10 GB" },
 ];
+const MCP_IMAGE_OPTIONS = [1, 2, 3, 5, 8, 10, 15, 25].map(mb => ({ value: mb * 1048576, label: `${mb} MB` }));
 
 const STATUS_LABEL: Record<string, string> = {
   active: "正常", banned: "已封禁", pending_deletion: "注销中", pending_verification: "待验证",
@@ -387,6 +388,17 @@ export function AdminPage() {
             <Select className="w-full sm:w-36" disabled={pending === "storage"} value={Number(overview?.settings?.defaultUserStorageBytes ?? 1073741824)}
               onChange={e => void patchSetting({ defaultUserStorageBytes: Number(e.target.value) }, "storage", "默认容量已更新")}>
               {STORAGE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </Select>
+          </section>
+          <section className="flex flex-col gap-4 rounded-xl border bg-background p-5 sm:flex-row sm:items-center">
+            <span className="grid size-10 place-items-center rounded-lg bg-muted text-muted-foreground"><Image className="size-4"/></span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">MCP 单张图片上限</p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">Agent 用 upload_image 传图时的体积顶。默认 5 MB；不要开太大，MCP 走 JSON base64，体积大约会再涨三分之一。</p>
+            </div>
+            <Select className="w-full sm:w-36" disabled={pending === "mcpImage"} value={Number(overview?.settings?.mcpImageMaxBytes ?? 5242880)}
+              onChange={e => void patchSetting({ mcpImageMaxBytes: Number(e.target.value) }, "mcpImage", "MCP 图片上限已更新")}>
+              {MCP_IMAGE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </Select>
           </section>
         </div>}
