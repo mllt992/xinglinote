@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { BookOpen, LayoutGrid, Users } from "lucide-react";
 import { api } from "../api";
 import { cn } from "../lib/utils";
+import { askFeedRefresh, feedUpdateTotal, formatFeedUpdateLabel, useFeedBadges } from "./feed-updates";
 
 /** 顶栏认的三个「地方」。问知识库不在其中：它是一个动作（开对话框），不是一个能停留的页面。 */
 export type NavPlace = "notes" | "circle" | "square";
@@ -27,17 +28,22 @@ export function useSquareEnabled() {
 export function AppNav({ wsId, active, className }: { wsId?: string; active: NavPlace; className?: string }) {
   const nav = useNavigate();
   const squareOn = useSquareEnabled();
-  const items: Array<{ id: NavPlace; label: string; icon: typeof BookOpen; to: string }> = [];
-  if (wsId) items.push({ id: "notes", label: "笔记", icon: BookOpen, to: `/w/${wsId}` }, { id: "circle", label: "圈子", icon: Users, to: `/w/${wsId}/feed` });
-  if (squareOn) items.push({ id: "square", label: "广场", icon: LayoutGrid, to: "/" });
+  const badges = useFeedBadges({ workspaceId: wsId, square: squareOn });
+  const items: Array<{ id: NavPlace; label: string; icon: typeof BookOpen; to: string; count: number; hint?: string }> = [];
+  if (wsId) items.push({ id: "notes", label: "笔记", icon: BookOpen, to: `/w/${wsId}`, count: 0 }, { id: "circle", label: "圈子", icon: Users, to: `/w/${wsId}/feed`, count: feedUpdateTotal(badges.circle), hint: formatFeedUpdateLabel(badges.circle) });
+  if (squareOn) items.push({ id: "square", label: "广场", icon: LayoutGrid, to: "/", count: feedUpdateTotal(badges.square), hint: formatFeedUpdateLabel(badges.square) });
   if (items.length < 2) return null;
   return <nav aria-label="主导航" className={cn("inline-flex shrink-0 items-center gap-0.5 rounded-lg bg-muted p-1", className)}>
     {items.map(i => {
       const Icon = i.icon; const current = i.id === active;
-      return <button key={i.id} onClick={() => nav(i.to)} aria-current={current ? "page" : undefined}
+      return <button key={i.id} title={i.hint || undefined} onClick={() => {
+        if (current && (i.id === "circle" || i.id === "square")) askFeedRefresh(i.id === "square" ? "public" : "workspace");
+        nav(i.to);
+      }} aria-current={current ? "page" : undefined}
         className={cn("inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors",
           current ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
         <Icon className="size-4 shrink-0" /><span className="hidden sm:inline">{i.label}</span>
+        {i.count > 0 && <span className="grid min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] font-semibold leading-4 text-primary-foreground">{i.count > 99 ? "99+" : i.count}</span>}
       </button>;
     })}
   </nav>;

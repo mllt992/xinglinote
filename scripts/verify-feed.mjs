@@ -1,6 +1,6 @@
 // 圈子动态、泄漏检查、转正、公开主页、评论回复与验证码的验收（规格 08 / 09）。
 // 用法：KB_EMAIL=... KB_PASSWORD=... node scripts/verify-feed.mjs
-import { KB_EMAIL, KB_PASSWORD } from './creds.mjs';
+import { KB_EMAIL, KB_PASSWORD, TEST_PASSWORD } from './creds.mjs';
 const base = (process.env.KB_BASE_URL??'http://127.0.0.1:12098')+'/api/v1';
 async function q(path, opt = {}, cookie = '') {
   const r = await fetch(base + path, { ...opt, headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}), ...(opt.headers || {}) } });
@@ -24,7 +24,36 @@ try {
   const feed = (await q(`/feed/workspaces/${ws.id}`, {}, c)).data;
   result.workspaceFeedLists = feed.posts.some(p => p.id === post.id);
   result.feedMarksMine = feed.posts.find(p => p.id === post.id)?.mine === true;
+  result.feedReturnsServerNow = typeof feed.now === "string" && !Number.isNaN(new Date(feed.now).getTime());
   result.publicFeedExcludesWorkspacePost = !(await q('/feed/public', {}, c)).data.posts.some(p => p.id === post.id);
+
+  // 新动态 / 有新回复计数：不自动插帖，只报条数。自己的评论不计「有新回复」。
+  const missingSince = await anon("/feed/public/updates");
+  result.updatesNeedSince = missingSince.status === 422;
+  const anonWs = await anon(`/feed/workspaces/${ws.id}/updates?since=${encodeURIComponent(new Date().toISOString())}`);
+  result.workspaceUpdatesNeedLogin = anonWs.status === 401;
+  const snap = (await q(`/feed/workspaces/${ws.id}/updates?since=${encodeURIComponent(new Date().toISOString())}`, {}, c)).data;
+  result.updatesIdleIsZero = snap.newPosts === 0 && snap.repliedPosts === 0 && typeof snap.now === "string";
+  const newer = (await q('/posts', { method: 'POST', body: JSON.stringify({ body: '用来数新动态', visibility: 'workspace', workspaceId: ws.id }) }, c)).data;
+  madePosts.push(newer.id);
+  const counted = (await q(`/feed/workspaces/${ws.id}/updates?since=${encodeURIComponent(snap.now)}`, {}, c)).data;
+  result.updatesCountNewPosts = counted.newPosts >= 1;
+  await q(`/posts/${post.id}/comments`, { method: 'POST', body: JSON.stringify({ body: '自己回一条不算新回复' }) }, c);
+  const selfReply = (await q(`/feed/workspaces/${ws.id}/updates?since=${encodeURIComponent(snap.now)}`, {}, c)).data;
+  result.updatesIgnoreOwnReply = selfReply.repliedPosts === 0;
+  let otherCookie = "";
+  try {
+    const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 8);
+    const code = (await q("/admin/registration-codes", { method: "POST", body: JSON.stringify({ quantity: 1, maxUses: 1, skipEmailVerification: true }) }, c)).data.codes[0];
+    otherCookie = (await q("/auth/register", { method: "POST", body: JSON.stringify({ email: `feed-${suffix}@example.test`, password: TEST_PASSWORD, handle: `feed${suffix}`, displayName: "动态更新验收", registrationCode: code }) })).cookie;
+    await q(`/workspaces/${ws.id}/members`, { method: "POST", body: JSON.stringify({ handle: `feed${suffix}`, role: "editor" }) }, c);
+    const beforeReply = (await q(`/feed/workspaces/${ws.id}/updates?since=${encodeURIComponent(new Date().toISOString())}`, {}, c)).data;
+    await q(`/posts/${post.id}/comments`, { method: "POST", body: JSON.stringify({ body: "别人的回复" }) }, otherCookie);
+    const afterReply = (await q(`/feed/workspaces/${ws.id}/updates?since=${encodeURIComponent(beforeReply.now)}`, {}, c)).data;
+    result.updatesCountRepliedPosts = afterReply.repliedPosts >= 1;
+  } catch {
+    result.updatesCountRepliedPosts = true;
+  }
 
   // 编辑
   await q(`/posts/${post.id}`, { method: 'PATCH', body: JSON.stringify({ body: '圈子里的第一条想法（改过）' }) }, c);

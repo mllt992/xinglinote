@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, count, desc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, count, countDistinct, desc, eq, gt, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import { z } from "zod";
 import { fail, normalizeTitle } from "@kb/shared";
 import { db } from "../db/client.ts";
@@ -40,8 +40,43 @@ async function hydrate(rows:typeof posts.$inferSelect[], viewer?:string){
     viewer?pickIds(postIds,ids=>db.select({postId:postFavorites.postId}).from(postFavorites).where(and(eq(postFavorites.userId,viewer),inArray(postFavorites.postId,ids)))):Promise.resolve([] as Array<{postId:string}>),
   ]);
   const held=rows.filter(p=>p.status!=="visible").map(p=>p.id);const reviews=held.length?await db.select().from(moderationReviews).where(and(eq(moderationReviews.targetType,"post"),inArray(moderationReviews.targetId,held))).orderBy(desc(moderationReviews.createdAt)):[];return rows.map(p=>({id:p.id,status:p.status,moderationQueued:(()=>{const r=reviews.find(r=>r.targetId===p.id);return r?r.status==="queued"||r.aiVerdict==="queued"||r.aiVerdict==="running":false;})(),moderationReason:p.status==="visible"?null:(()=>{const r=reviews.find(r=>r.targetId===p.id);if(!r)return null;if(r.status==="queued"||r.aiVerdict==="queued"||r.aiVerdict==="running")return "正在审核，通过后会公开显示。";return r.reviewNote??r.aiReason??null;})(),body:p.body,visibility:p.visibility,workspaceId:p.workspaceId,createdAt:p.createdAt,author:(()=>{const a=authors.find(u=>u.id===p.authorUserId);return a?{handle:a.handle,displayName:a.displayName}:null;})(),note:p.noteId?(()=>{const n=ns.find(n=>n.id===p.noteId);return n?{id:n.id,title:n.title}:null})():null,likes:reactions.filter(r=>r.postId===p.id&&r.kind==="like").length,liked:!!viewer&&reactions.some(r=>r.postId===p.id&&r.userId===viewer&&r.kind==="like"),comments:commentRows.find(r=>r.targetId===p.id)?.n??0,favorited:favs.some(f=>f.postId===p.id),editedAt:p.editedAt,mine:!!viewer&&p.authorUserId===viewer,appealable:(()=>{if(!viewer||p.authorUserId!==viewer||p.status!=="rejected")return false;const r=reviews.find(x=>x.targetId===p.id);return !!r&&r.status==="rejected"&&!r.reviewerId;})(),appealing:(()=>{const r=reviews.find(x=>x.targetId===p.id);return r?.kind==="appeal"&&r.status==="pending";})()}));}
-feedRoutes.get("/feed/public",async c=>{const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");const viewer=await currentUser(c);const rows=await db.select().from(posts).where(and(eq(posts.visibility,"public"),readable(viewer?.id))).orderBy(desc(posts.createdAt)).limit(50);return ok(c,{posts:await hydrate(rows,viewer?.id)});});
-feedRoutes.get("/feed/workspaces/:id",async c=>{const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");const rows=await db.select().from(posts).where(and(eq(posts.workspaceId,wsId),readable(u.id))).orderBy(desc(posts.createdAt)).limit(50);return ok(c,{posts:await hydrate(rows,u.id)});});
+/** 增量计数用客户端上次看到的水位。缺了或写歪了直接 422；太老按 7 天截，避免一次扫全表。 */
+function parseSince(raw:string|undefined){
+  if(!raw)throw fail("VALIDATION","缺少 since");
+  const t=new Date(raw);
+  if(Number.isNaN(t.getTime()))throw fail("VALIDATION","since 不是有效时间");
+  const oldest=new Date(Date.now()-7*86_400_000);
+  return t<oldest?oldest:t;
+}
+function asCount(n:unknown){const x=Number(n??0);return Number.isFinite(x)&&x>0?Math.trunc(x):0;}
+/**
+ * 新动态 = since 之后出现的可见帖；有新回复 = since 之前就在的帖，之后有别人的可见评论。
+ * 自己刚回的那条不计入「有新回复」，否则发完评论横幅立刻跳一下。
+ */
+async function feedUpdates(scope:ReturnType<typeof and>,since:Date,viewer?:string){
+  const notMine=viewer?or(isNull(comments.authorUserId),ne(comments.authorUserId,viewer)):undefined;
+  const [fresh,replied]=await Promise.all([
+    db.select({n:count()}).from(posts).where(and(scope,gt(posts.createdAt,since))),
+    db.select({n:countDistinct(comments.targetId)}).from(comments).innerJoin(posts,eq(posts.id,comments.targetId)).where(and(
+      scope,eq(comments.targetType,"post"),eq(comments.status,"visible"),
+      gt(comments.createdAt,since),lte(posts.createdAt,since),...(notMine?[notMine]:[]),
+    )),
+  ]);
+  return {newPosts:asCount(fresh[0]?.n),repliedPosts:asCount(replied[0]?.n),now:new Date().toISOString()};
+}
+feedRoutes.get("/feed/public",async c=>{const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");const viewer=await currentUser(c);const rows=await db.select().from(posts).where(and(eq(posts.visibility,"public"),readable(viewer?.id))).orderBy(desc(posts.createdAt)).limit(50);return ok(c,{posts:await hydrate(rows,viewer?.id),now:new Date().toISOString()});});
+feedRoutes.get("/feed/public/updates",async c=>{
+  limit(`feed-updates:${clientIp(c)}`,60,60_000);
+  const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");
+  const viewer=await currentUser(c);
+  return ok(c,await feedUpdates(and(eq(posts.visibility,"public"),readable(viewer?.id)),parseSince(c.req.query("since")),viewer?.id));
+});
+feedRoutes.get("/feed/workspaces/:id",async c=>{const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");const rows=await db.select().from(posts).where(and(eq(posts.workspaceId,wsId),readable(u.id))).orderBy(desc(posts.createdAt)).limit(50);return ok(c,{posts:await hydrate(rows,u.id),now:new Date().toISOString()});});
+feedRoutes.get("/feed/workspaces/:id/updates",async c=>{
+  limit(`feed-updates:${clientIp(c)}`,60,60_000);
+  const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");
+  return ok(c,await feedUpdates(and(eq(posts.workspaceId,wsId),readable(u.id)),parseSince(c.req.query("since")),u.id));
+});
 feedRoutes.post("/posts",async c=>{const u=await user(c);const body=z.object({body:z.string().min(1).max(5000),visibility:z.enum(["public","workspace"]),workspaceId:z.string().uuid().nullable().optional(),noteId:z.string().uuid().nullable().optional()}).parse(await c.req.json());if(body.visibility==="workspace"){if(!body.workspaceId)throw fail("VALIDATION","缺少工作区");const role=await memberRole(body.workspaceId,u.id);if(!role||role==="viewer")throw fail("FORBIDDEN","无权发布工作区动态");const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,body.workspaceId));if(ws?.frozen)throw fail("FORBIDDEN","工作区已冻结，暂时只读");}if(body.visibility==="public"&&body.workspaceId)throw fail("VALIDATION","公开动态不能指定工作区");if(body.noteId){const [n]=await db.select().from(notes).where(eq(notes.id,body.noteId));if(!n||n.trashedAt||!noteIsPublic(n))throw fail("VALIDATION","只能附加已发布笔记");if(body.visibility==="workspace"&&n.workspaceId!==body.workspaceId)throw fail("FORBIDDEN","不能附加其他工作区的笔记");if(body.visibility==="public"&&!(await memberRole(n.workspaceId,u.id)))throw fail("FORBIDDEN","不能附加无权访问的笔记");}const scope=body.visibility==="public"?"square":"circle";const settings=await instanceConfig();const held=moderationOn(settings,scope);const [p]=await db.insert(posts).values({authorUserId:u.id,workspaceId:body.workspaceId,visibility:body.visibility,body:body.body,noteId:body.noteId,status:held?"pending_review":"visible"}).returning();const mod=held?await queueReview({targetType:"post",targetId:p.id,scope,workspaceId:p.workspaceId,authorUserId:u.id,snapshot:body.body}):{held:false,queued:false,message:null};return ok(c,{...p,moderation:{held:mod.held,queued:mod.queued,message:mod.message}},201);});
 feedRoutes.delete("/posts/:id",async c=>{
   const u=await user(c);const [p]=await db.select().from(posts).where(eq(posts.id,c.req.param("id")));

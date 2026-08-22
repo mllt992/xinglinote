@@ -1,5 +1,6 @@
-import{useEffect,useRef,useState}from'react';import{Flag,Globe2,Heart,MessageSquare,MoreHorizontal,NotebookPen,Pencil,Send,Star,Trash2}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
+import{useEffect,useRef,useState}from'react';import{Flag,Globe2,Heart,MessageSquare,MoreHorizontal,NotebookPen,Pencil,RefreshCw,Send,Star,Trash2}from'lucide-react';import{api}from'../api';import{cn}from'../lib/utils';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
 import{FeedComments}from'./feed-comments';
+import{FEED_REFRESH_EVENT,formatFeedUpdateLabel,updatesPath,writeFeedSeen,type FeedUpdateCounts}from'./feed-updates';
 
 export type FeedPost={id:string;body:string;visibility:string;workspaceId:string|null;createdAt:string;editedAt:string|null;mine:boolean;author:{handle:string;displayName:string}|null;note:{id:string;title:string}|null;likes:number;liked:boolean;comments?:number;favorited?:boolean;status?:string;moderationQueued?:boolean;moderationReason?:string|null;appealable?:boolean;appealing?:boolean};
 const REPORT_REASONS:Array<[string,string]>=[["spam","垃圾广告与引流"],["abuse","辱骂人身攻击"],["illegal","违法违禁"],["porn","色情低俗"],["other","其他"]];
@@ -26,18 +27,51 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
   const[posts,setPosts]=useState<FeedPost[]>([]);const[body,setBody]=useState("");const[err,setErr]=useState("");const[dlgErr,setDlgErr]=useState("");const[busy,setBusy]=useState(false);
   const[editing,setEditing]=useState<FeedPost|null>(null);const[draft,setDraft]=useState("");
   const[promote,setPromote]=useState<FeedPost|null>(null);const[target,setTarget]=useState({workspaceId:"",notebookId:"",title:""});const[books,setBooks]=useState<Nb[]>([]);
-  const[openComments,setOpenComments]=useState<string|null>(null);
+  const[openComments,setOpenComments]=useState<string|null>(null);const[commentTick,setCommentTick]=useState<Record<string,number>>({});
   const[reporting,setReporting]=useState<FeedPost|null>(null);const[reportReason,setReportReason]=useState("spam");const[reportNote,setReportNote]=useState("");
   const[appealing,setAppealing]=useState<FeedPost|null>(null);const[appealNote,setAppealNote]=useState("");
+  const[updates,setUpdates]=useState<FeedUpdateCounts>({newPosts:0,repliedPosts:0});
+  const[refreshing,setRefreshing]=useState(false);
+  const[fresh,setFresh]=useState<{newIds:Set<string>;repliedIds:Set<string>}|null>(null);
   const path=scope==="public"?"/api/v1/feed/public":`/api/v1/feed/workspaces/${workspaceId}`;
   /** 单条动态的点赞、编辑、删除就地改这一条：整条时间线重拉会闪一下、丢滚动位置，点个赞不该付这个代价。
       listRef 只经 apply 写入，所以连点两下也不会拿到上一次渲染的旧列表。 */
   const listRef=useRef<FeedPost[]>([]);
+  const sinceRef=useRef(new Date().toISOString());
   const apply=(next:FeedPost[])=>{listRef.current=next;setPosts(next);onLoaded?.(next)};
   const patchOne=(id:string,fn:(p:FeedPost)=>FeedPost)=>apply(listRef.current.map(p=>p.id===id?fn(p):p));
   const dropOne=(id:string)=>apply(listRef.current.filter(p=>p.id!==id));
-  const load=()=>api<{posts:FeedPost[]}>(path).then(d=>apply(d.posts)).catch(e=>toast.error("加载动态失败",(e as Error).message));
+  const rememberSeen=(at:string)=>{sinceRef.current=at;writeFeedSeen(scope,workspaceId,at);setUpdates({newPosts:0,repliedPosts:0});};
+  const load=()=>api<{posts:FeedPost[];now?:string}>(path).then(d=>{apply(d.posts);rememberSeen(d.now??new Date().toISOString());setFresh(null);}).catch(e=>toast.error("加载动态失败",(e as Error).message));
+  async function refreshUpdates(){
+    if(refreshing)return;setRefreshing(true);
+    try{
+      const d=await api<{posts:FeedPost[];now?:string}>(path);
+      const prev=new Map(listRef.current.map(p=>[p.id,p]));
+      const newIds=new Set(d.posts.filter(p=>!prev.has(p.id)).map(p=>p.id));
+      const repliedIds=new Set(d.posts.filter(p=>{const old=prev.get(p.id);return!!old&&(p.comments??0)>(old.comments??0);}).map(p=>p.id));
+      apply(d.posts);
+      rememberSeen(d.now??new Date().toISOString());
+      setFresh(newIds.size||repliedIds.size?{newIds,repliedIds}:null);
+      if(repliedIds.size)setCommentTick(t=>{const next={...t};for(const id of repliedIds)next[id]=(next[id]??0)+1;return next;});
+    }catch(e){toast.error("刷新动态失败",(e as Error).message);}
+    finally{setRefreshing(false);}
+  }
   useEffect(()=>{void load()},[path]);
+  useEffect(()=>{
+    const tick=()=>{
+      if(document.visibilityState!=="visible")return;
+      api<FeedUpdateCounts>(`${updatesPath(scope,workspaceId)}?since=${encodeURIComponent(sinceRef.current)}`)
+        .then(setUpdates).catch(()=>{});
+    };
+    const timer=window.setInterval(tick,30_000);
+    const onVis=()=>{if(document.visibilityState==="visible")tick();};
+    const onRefresh=(e:Event)=>{const want=(e as CustomEvent<{scope?:string}>).detail?.scope;if(!want||want===scope)void refreshUpdates();};
+    document.addEventListener("visibilitychange",onVis);
+    window.addEventListener(FEED_REFRESH_EVENT,onRefresh);
+    return()=>{window.clearInterval(timer);document.removeEventListener("visibilitychange",onVis);window.removeEventListener(FEED_REFRESH_EVENT,onRefresh);};
+  },[path,scope,workspaceId]);
+  useEffect(()=>{if(!fresh)return;const t=window.setTimeout(()=>setFresh(null),12_000);return()=>window.clearTimeout(t);},[fresh]);
   useEffect(()=>{if(!target.workspaceId)return setBooks([]);api<{notebooks:Nb[]}>(`/api/v1/workspaces/${target.workspaceId}/notebooks`).then(d=>{setBooks(d.notebooks);setTarget(t=>({...t,notebookId:d.notebooks[0]?.id??""}))}).catch(()=>setBooks([]))},[target.workspaceId]);
 
   async function submit(){
@@ -82,12 +116,20 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
       <FormError className="mt-3">{err}</FormError>
       <div className="mt-3 flex items-center gap-3"><Button disabled={busy||!body.trim()} onClick={submit}><Send/>{busy?"发布中…":"发布"}</Button><span className="text-xs text-muted-foreground">{body.length}/5000</span></div>
     </div>}
+    {(updates.newPosts>0||updates.repliedPosts>0)&&<button type="button" onClick={()=>void refreshUpdates()} disabled={refreshing}
+      className="sticky top-2 z-10 flex w-full items-center justify-center gap-2 rounded-xl border bg-background px-3 py-2 text-sm font-medium shadow-sm hover:bg-muted disabled:opacity-70">
+      <RefreshCw className={cn("size-4",refreshing&&"animate-spin")}/>
+      <span>{formatFeedUpdateLabel(updates)}</span>
+      <span className="text-xs font-normal text-muted-foreground">{refreshing?"更新中…":"点击查看"}</span>
+    </button>}
     {posts.length===0?<div className="rounded-2xl border border-dashed py-14 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground"><Globe2 className="size-5"/></span><p className="mt-3 text-sm font-medium">还没有动态</p><p className="mt-1 text-xs text-muted-foreground">{scope==="public"?"第一条公开动态还没出现。":"圈子里的碎片想法可以先发这里，之后再转正为笔记。"}</p></div>
-    :posts.map(p=><article key={p.id} className="rounded-2xl border bg-background p-4">
+    :posts.map(p=><article key={p.id} className={cn("rounded-2xl border bg-background p-4", (fresh?.newIds.has(p.id)||fresh?.repliedIds.has(p.id))&&"border-primary/40")}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <b className="text-sm text-foreground">{p.author?.displayName??"已注销用户"}</b>
         {p.author&&<a className="hover:underline" href={`/u/${p.author.handle}`}>@{p.author.handle}</a>}
         <span>{new Date(p.createdAt).toLocaleString()}</span>{p.editedAt&&<Badge>已编辑</Badge>}
+        {fresh?.newIds.has(p.id)&&<Badge>新</Badge>}
+        {fresh?.repliedIds.has(p.id)&&<Badge>有新回复</Badge>}
         <div className="ml-auto flex items-center gap-1">
           <Button variant="ghost" size="sm" onClick={()=>void like(p)}><Heart className={p.liked?"fill-current":""}/>{p.likes||""}</Button>
           <Button variant="ghost" size="sm" onClick={()=>setOpenComments(id=>id===p.id?null:p.id)}><MessageSquare/>{p.comments||""}</Button>
@@ -104,7 +146,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
       <p className="mt-3 whitespace-pre-wrap text-sm leading-7">{p.body}</p>
       <HeldNote post={p} onAppeal={x=>{setDlgErr("");setAppealNote("");setAppealing(x)}}/>
       {p.note&&<button className="mt-3 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs hover:bg-muted" onClick={()=>p.workspaceId&&onOpenNote?.(p.workspaceId,p.note!.id)}><NotebookPen className="size-3.5"/>{p.note.title}</button>}
-      {openComments===p.id&&<FeedComments postId={p.id} signedIn={!!signedIn} onCount={n=>patchOne(p.id,x=>({...x,comments:n}))}/>}
+      {openComments===p.id&&<FeedComments key={`${p.id}:${commentTick[p.id]??0}`} postId={p.id} signedIn={!!signedIn} onCount={n=>patchOne(p.id,x=>({...x,comments:n}))}/>}
     </article>)}
 
     <Dialog open={!!editing} onOpenChange={v=>{if(!v)setEditing(null);setDlgErr("")}}><DialogContent>
