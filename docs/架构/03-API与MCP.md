@@ -105,6 +105,12 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | GET | `/api/v1/notebooks/:id/site` | 本站状态：已上线 / 待审 / 谁能发 |
 | PATCH | `/api/v1/notebooks/:id/site` | Admin 当场上下线；Editor 申请或撤回；Admin 带 `action=approve\|reject` 审申请 |
 | GET | `/api/v1/workspaces/:id/site-requests` | 本区待审的文档站申请，仅 Admin / Owner |
+| GET | `/api/v1/me/saved-shares` | 我收下的（仅 `active`）；不含 token、不含正文 |
+| POST | `/api/v1/me/saved-shares` | 手工保存 / 重新保存；`shareToken` 或 `site`（ws slug + nb slug） |
+| DELETE | `/api/v1/me/saved-shares/:id` | 移出（`dismissed`，不撤销原链接） |
+| GET | `/api/v1/me/saved-shares/:id` | 元数据 + 是否仍有效 |
+| GET | `/api/v1/me/saved-shares/:id/content` | 与公开投影同一套；`?noteId=`；已失效统一 NOT_FOUND |
+| GET | `/api/v1/me/saved-shares/:id/open` | 302 到当前 `/p/{token}` 或 `/s/{ws}/{nb}` |
 
 ### 2.5 评论、动态、AI、MCP、回收站、备份
 
