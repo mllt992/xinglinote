@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Bot, FilePlus2, Notebook, Search, Sparkles, Trash2, X } from "lucide-react";
+import { MarkdownView } from "../MarkdownView";
 import { api } from "../api";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
@@ -259,7 +260,9 @@ export function AskSidebar({
           {turns.map(turn => (
             <article key={turn.id} className="space-y-2">
               <div className="ml-6 rounded-xl bg-primary px-3 py-2 text-sm text-primary-foreground">{turn.question}</div>
-              <div className="rounded-xl bg-muted/50 px-3 py-2.5 text-sm leading-6 whitespace-pre-wrap">{turn.answer}</div>
+              <div className="rounded-xl bg-muted/50 px-3 py-2.5">
+                <MarkdownView source={turn.answer} className="feed-md" />
+              </div>
               {turn.citations.length > 0 && (
                 <div className="space-y-1.5">
                   {turn.citations.map((c, i) => (

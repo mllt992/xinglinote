@@ -39,7 +39,7 @@ export type MarkdownEnv = {
 };
 
 /**
- * 全站唯一的 Markdown 解析器（架构 05 §5）。App 预览、文档站、分享页、广场帖、MCP 返回
+ * 全站唯一的 Markdown 解析器（架构 05 §5）。App 预览、文档站、分享页、广场帖、问知识库回答、MCP 返回
  * 必须都走这里，禁止任何地方再 new 一个 markdown-it，否则 wikilink 行为会漂。
  *
  * 语法闭集见规格 §9.2：CommonMark + GFM（表格 / 删除线 / 任务列表）+ `$公式$` + `[[双链]]`

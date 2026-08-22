@@ -174,8 +174,8 @@ button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
 .markdown .hashtag { font-weight: 500; color: var(--primary); text-decoration: none; }
 .markdown .hashtag:hover { text-decoration: underline; }
 
-/* 动态卡片：同一套解析器，字号和段距按短文收一档，避免标题把时间线撑开。 */
-.markdown.feed-md { font-size: .875rem; line-height: 1.75; }
+/* 动态卡片 / 问答气泡：同一套解析器，字号和段距按短文收一档，避免标题把窄栏撑开。 */
+.markdown.feed-md { font-size: .875rem; line-height: 1.75; overflow-wrap: anywhere; }
 .markdown.feed-md > :last-child { margin-bottom: 0; }
 .markdown.feed-md :is(h1, h2, h3) { margin: 1em 0 .4em; }
 .markdown.feed-md h1 { font-size: 1.25em; }
