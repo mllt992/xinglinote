@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { parseMentions } from "@kb/shared";
 import { Check, MoreHorizontal, Reply, Send, X } from "lucide-react";
 import { api } from "../api";
@@ -55,7 +55,7 @@ function PendingRow({ item }: { item: PendingReply }) {
 }
 
 /** 动态底下的一层评论。登录直发；广场访客要过验证码，先待审。 */
-export function FeedComments({ postId, signedIn, agents = [], onCount }: { postId: string; signedIn: boolean; agents?: MentionAgent[]; onCount?: (n: number) => void }) {
+export function FeedComments({ postId, signedIn, agents = [], reloadToken, onCount }: { postId: string; signedIn: boolean; agents?: MentionAgent[]; reloadToken?: number; onCount?: (n: number) => void }) {
   const toast = useToast();
   const askConfirm = useConfirm();
   const [comments, setComments] = useState<Comment[]>([]);
@@ -68,6 +68,8 @@ export function FeedComments({ postId, signedIn, agents = [], onCount }: { postI
   const [challenge, setChallenge] = useState<Challenge | null>(null);
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
+  const knownRef = useRef(new Set<string>());
+  const [freshIds, setFreshIds] = useState<Set<string>>(new Set());
 
   const load = () => api<{ comments: Comment[]; canModerate: boolean; pendingReplies?: PendingReply[] }>(`/api/v1/posts/${postId}/comments`)
     .then(d => {
@@ -75,18 +77,31 @@ export function FeedComments({ postId, signedIn, agents = [], onCount }: { postI
       setCanModerate(d.canModerate);
       setPendingReplies(d.pendingReplies ?? []);
       onCount?.(d.comments.filter(c => c.status === "visible").length);
+      if (knownRef.current.size) {
+        const fresh = new Set(d.comments.filter(c => !knownRef.current.has(c.id)).map(c => c.id));
+        if (fresh.size) setFreshIds(fresh);
+      }
+      for (const c of d.comments) knownRef.current.add(c.id);
     })
     .catch(() => { setComments([]); setPendingReplies([]); });
   const newChallenge = () => api<Challenge>("/api/v1/public/captcha").then(c => { setChallenge(c); setAnswer(""); }).catch(() => setChallenge(null));
 
-  useEffect(() => { void load(); if (!signedIn) void newChallenge(); }, [postId, signedIn]);
+  useEffect(() => { knownRef.current = new Set(); setFreshIds(new Set()); void load(); if (!signedIn) void newChallenge(); }, [postId, signedIn]);
+  useEffect(() => { if (reloadToken) void load(); }, [reloadToken]);
 
   const waiting = pendingReplies.some(p => p.status === "pending" || p.status === "running");
   useEffect(() => {
-    if (!waiting) return;
-    const t = window.setInterval(() => void load(), 3000);
-    return () => window.clearInterval(t);
+    const tick = () => { if (document.visibilityState === "visible") void load(); };
+    const timer = window.setInterval(tick, waiting ? 3000 : 12_000);
+    const onVis = () => { if (document.visibilityState === "visible") tick(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", onVis); };
   }, [waiting, postId]);
+  useEffect(() => {
+    if (!freshIds.size) return;
+    const t = window.setTimeout(() => setFreshIds(new Set()), 12_000);
+    return () => window.clearTimeout(t);
+  }, [freshIds]);
 
   const roots = comments.filter(c => !c.parentId);
   const repliesOf = (id: string) => comments.filter(c => c.parentId === id).sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt));
@@ -153,7 +168,7 @@ export function FeedComments({ postId, signedIn, agents = [], onCount }: { postI
   return <div id={`feed-comments-${postId}`} className="mt-4 border-t pt-3">
     <div className="space-y-3">
       {roots.length === 0 && pendingReplies.length === 0 && <p className="text-xs text-muted-foreground">还没有评论。</p>}
-      {roots.map(c => <div key={c.id} className={cn("rounded-lg bg-muted/40 px-3 py-2.5", c.status === "hidden" && "opacity-70")}>
+      {roots.map(c => <div key={c.id} className={cn("rounded-lg bg-muted/40 px-3 py-2.5", c.status === "hidden" && "opacity-70", freshIds.has(c.id) && "ring-1 ring-primary/40")}>
         <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
           <AuthorLabel c={c} />
           <span>{new Date(c.createdAt).toLocaleString()}</span>

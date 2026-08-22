@@ -62,6 +62,7 @@ import { QuickOpen, useQuickOpenHotkey } from "./components/quick-open";
 import { AppNav, loadLastWorkspace, saveLastWorkspace, useSquareEnabled, type NavPlace } from "./components/app-nav";
 import { CircleRail, SquareRail } from "./components/feed-rail";
 import { feedUpdateTotal, formatFeedUpdateLabel, useFeedBadges } from "./components/feed-updates";
+import { SquareCatalog } from "./components/square-catalog";
 
 /** 字号在档位里挪一格，到头就停住。 */
 function stepScale(current: number, delta: number): number {
@@ -980,12 +981,12 @@ function PublicShare() {
 function PublicFrame({ children, chip }: { children: ReactNode; chip?: ReactNode }) { return <div className="min-h-full bg-background"><header className="flex h-14 items-center border-b border-border px-5"><Brand /><Badge className="ml-3">公开阅读</Badge>{chip}</header><main className="px-5 py-10 md:py-16">{children}</main></div>; }
 
 function PublicSite() {
-  const { wsSlug, nbSlug } = useParams(); const me = useMe(); const [data, setData] = useState<{ workspace: string; notebook: string; notebookId: string; accent: string | null; notes: Array<{ id: string; title: string; bodyMd: string; updatedAt: string }>; savedShare?: { id: string; status: string } | null } | null>(null); const [active, setActive] = useState<string>(); const [err, setErr] = useState("");
-  useEffect(() => { api<typeof data>(`/api/v1/public/sites/${wsSlug}/${nbSlug}`).then(d => { setData(d); setActive(d?.notes[0]?.id); }).catch(e => setErr((e as Error).message)); }, [wsSlug, nbSlug]);
+  const { wsSlug, nbSlug, noteId } = useParams(); const nav = useNavigate(); const me = useMe(); const [data, setData] = useState<{ workspace: string; notebook: string; notebookId: string; accent: string | null; notes: Array<{ id: string; title: string; bodyMd: string; updatedAt: string }>; savedShare?: { id: string; status: string } | null } | null>(null); const [active, setActive] = useState<string>(); const [err, setErr] = useState("");
+  useEffect(() => { api<typeof data>(`/api/v1/public/sites/${wsSlug}/${nbSlug}`).then(d => { setData(d); setActive(noteId && d?.notes.some(n => n.id === noteId) ? noteId : d?.notes[0]?.id); }).catch(e => setErr((e as Error).message)); }, [wsSlug, nbSlug, noteId]);
   if (err) return <PublicFrame><Empty icon={<Globe2 />} title="文档站尚未发布" text="此站点不存在，或者管理员已将其下线。" /></PublicFrame>;
   if (!data) return <div className="grid h-full place-items-center"><Circle className="size-5 animate-pulse fill-current" /></div>;
   const current = data.notes.find(n => n.id === active);
-  return <div className="flex h-full flex-col" style={data.accent ? ({ "--primary": data.accent } as React.CSSProperties) : undefined}><header className="flex h-14 items-center border-b border-border px-4"><Brand /><Separator orientation="vertical" className="mx-4 h-5" /><span className="font-medium">{data.notebook}</span><span className="ml-3 text-xs text-muted-foreground">{data.workspace}</span>{me && wsSlug && nbSlug && <SavedShareChip saved={data.savedShare ?? null} site={{ wsSlug, nbSlug }} lastNoteId={active} homeWsId={me.personalWorkspaceId ?? undefined} />}</header><div className="grid min-h-0 flex-1 md:grid-cols-[260px_1fr]"><aside className="hidden min-h-0 border-r border-border bg-muted/30 md:block"><ScrollArea className="h-full"><div className="p-4"><p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">目录</p>{data.notes.map(n => <button key={n.id} onClick={() => setActive(n.id)} className={cn("mb-1 w-full rounded-lg px-3 py-2.5 text-left text-sm", n.id === active ? "bg-primary text-primary-foreground" : "hover:bg-muted")}>{n.title}</button>)}</div></ScrollArea></aside><ScrollArea className="h-full"><main className="mx-auto max-w-3xl px-6 py-12"><h1 className="mb-10 text-4xl font-semibold tracking-[-.055em]">{current?.title ?? "暂无公开页面"}</h1>{current && <MarkdownView source={current.bodyMd} />}{current && <PublicInteractions noteId={current.id} siteNotebookId={data.notebookId} commentsEnabled correctionsEnabled bodyMd={current.bodyMd} />}</main></ScrollArea></div></div>;
+  return <div className="flex h-full flex-col" style={data.accent ? ({ "--primary": data.accent } as React.CSSProperties) : undefined}><header className="flex h-14 items-center border-b border-border px-4"><Brand /><Separator orientation="vertical" className="mx-4 h-5" /><span className="font-medium">{data.notebook}</span><span className="ml-3 text-xs text-muted-foreground">{data.workspace}</span>{me && wsSlug && nbSlug && <SavedShareChip saved={data.savedShare ?? null} site={{ wsSlug, nbSlug }} lastNoteId={active} homeWsId={me.personalWorkspaceId ?? undefined} />}</header><div className="grid min-h-0 flex-1 md:grid-cols-[260px_1fr]"><aside className="hidden min-h-0 border-r border-border bg-muted/30 md:block"><ScrollArea className="h-full"><div className="p-4"><p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">目录</p>{data.notes.map(n => <button key={n.id} onClick={() => nav(`/s/${wsSlug}/${nbSlug}/${n.id}`)} className={cn("mb-1 w-full rounded-lg px-3 py-2.5 text-left text-sm", n.id === active ? "bg-primary text-primary-foreground" : "hover:bg-muted")}>{n.title}</button>)}</div></ScrollArea></aside><ScrollArea className="h-full"><main className="mx-auto max-w-3xl px-6 py-12"><h1 className="mb-10 text-4xl font-semibold tracking-[-.055em]">{current?.title ?? "暂无公开页面"}</h1>{current && <MarkdownView source={current.bodyMd} />}{current && <PublicInteractions noteId={current.id} siteNotebookId={data.notebookId} commentsEnabled correctionsEnabled bodyMd={current.bodyMd} />}</main></ScrollArea></div></div>;
 }
 
 function InvitePage() { const { token } = useParams(); const nav = useNavigate(); const me = useMe(); const [data, setData] = useState<{ workspace: string; role: string; expiresAt: string } | null>(null); const [err, setErr] = useState(""); useEffect(() => { api<typeof data>(`/api/v1/invites/${token}`).then(setData).catch(e => setErr((e as Error).message)); }, [token]); return <PublicFrame>{err ? <Empty icon={<Link2 />} title="邀请已失效" text={err} /> : !data ? <div className="grid place-items-center py-20"><Circle className="animate-pulse fill-current" /></div> : <div className="mx-auto max-w-md rounded-2xl border p-8 text-center"><Users className="mx-auto size-10 text-muted-foreground" /><h1 className="mt-5 text-2xl font-semibold">加入 {data.workspace}</h1><p className="mt-2 text-sm text-muted-foreground">你将以 {data.role} 身份加入此工作区。</p>{me === null ? <Button className="mt-6" onClick={() => location.assign(`/login?redirect=/invite/${token}`)}>登录后加入</Button> : <Button className="mt-6" onClick={async () => { const d = await api<{ workspaceId: string }>(`/api/v1/invites/${token}/accept`, { method: "POST" }); nav(`/w/${d.workspaceId}`); }}>确认加入</Button>}</div>}</PublicFrame>; }
@@ -1034,6 +1035,18 @@ function FeedShell({ identity, active, wsId, me, title, subtitle, notice, rail, 
   </div>;
 }
 
+function squareTab(raw: string | null): "feed" | "notebooks" | "articles" {
+  return raw === "notebooks" || raw === "articles" ? raw : "feed";
+}
+
+function SquareTabs({ tab, onPick }: { tab: "feed" | "notebooks" | "articles"; onPick: (id: "feed" | "notebooks" | "articles") => void }) {
+  return <div className="mb-4 inline-flex rounded-lg bg-muted p-1" role="tablist" aria-label="广场板块">
+    {([["feed", "动态"], ["notebooks", "笔记本"], ["articles", "文章"]] as const).map(([id, label]) =>
+      <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => onPick(id)}
+        className={cn("h-7 rounded-md px-3 text-sm", tab === id ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>{label}</button>)}
+  </div>;
+}
+
 function Square() {
   const me = useMe(); const nav = useNavigate(); const [params] = useSearchParams();
   const [spaces, setSpaces] = useState<Ws[]>([]); const [posts, setPosts] = useState<FeedPost[]>([]);
@@ -1042,13 +1055,43 @@ function Square() {
   const last = loadLastWorkspace();
   const home = spaces.find(w => w.id === last)?.id ?? me?.personalWorkspaceId ?? spaces[0]?.id;
   const openNote = (ws: string, note: string) => nav(`/w/${ws}/n/${note}`);
+  const deep = params.get("post");
+  if (deep) return <Navigate to={`/posts/${deep}`} replace />;
+  const tab = squareTab(params.get("tab"));
+  const pickTab = (id: "feed" | "notebooks" | "articles") => {
+    const next = new URLSearchParams(params);
+    if (id === "feed") next.delete("tab"); else next.set("tab", id);
+    next.delete("post");
+    nav({ pathname: "/", search: next.toString() });
+  };
   return <FeedShell
     identity={home ? <button className="-mx-1 flex items-center gap-2.5 rounded-lg px-1.5 py-1.5 hover:bg-muted" aria-label="回到我的知识库" onClick={() => nav(`/w/${home}`)}><Brand /></button> : <Brand />}
     active="square" wsId={home} me={me}
     title="广场" subtitle="整个实例的公开时间线。这里发的东西谁都看得到，写给自己人的用圈子。"
-    rail={<SquareRail posts={posts} me={me} homeWsId={home} activeTag={params.get("tag") ?? undefined} onOpenNote={openNote} onNav={to => nav(to)} onTag={tag => nav(`/?tag=${encodeURIComponent(tag)}`)} />}
+    rail={<SquareRail posts={posts} me={me} homeWsId={home} tab={tab} activeTag={params.get("tag") ?? undefined} onOpenNote={openNote} onNav={to => nav(to)} onTag={tag => nav(`/?tag=${encodeURIComponent(tag)}`)} />}
   >
-    <FeedView scope="public" workspaces={spaces} canPost={!!me} signedIn={!!me} canModerate={me?.instanceRole==="admin"} onOpenNote={openNote} onLoaded={setPosts} />
+    <SquareTabs tab={tab} onPick={pickTab} />
+    {tab === "notebooks" ? <SquareCatalog kind="notebooks" />
+      : tab === "articles" ? <SquareCatalog kind="articles" />
+      : <FeedView scope="public" workspaces={spaces} canPost={!!me} signedIn={!!me} canModerate={me?.instanceRole==="admin"} onOpenNote={openNote} onOpenPost={p => nav(`/posts/${p.id}`)} onLoaded={setPosts} />}
+  </FeedShell>;
+}
+
+function PostDetail() {
+  const { postId } = useParams(); const me = useMe(); const nav = useNavigate();
+  const [spaces, setSpaces] = useState<Ws[]>([]); const [posts, setPosts] = useState<FeedPost[]>([]);
+  useEffect(() => { if (me) api<{ workspaces: Ws[] }>("/api/v1/workspaces").then(d => setSpaces(d.workspaces)).catch(() => setSpaces([])); }, [me]);
+  const last = loadLastWorkspace();
+  const home = spaces.find(w => w.id === last)?.id ?? me?.personalWorkspaceId ?? spaces[0]?.id;
+  const openNote = (ws: string, note: string) => nav(`/w/${ws}/n/${note}`);
+  if (!postId) return null;
+  return <FeedShell
+    identity={home ? <button className="-mx-1 flex items-center gap-2.5 rounded-lg px-1.5 py-1.5 hover:bg-muted" aria-label="回到我的知识库" onClick={() => nav(`/w/${home}`)}><Brand /></button> : <Brand />}
+    active="square" wsId={home} me={me}
+    title="动态" subtitle="广场上的一条公开动态。"
+    rail={<SquareRail posts={posts} me={me} homeWsId={home} onOpenNote={openNote} onNav={to => nav(to)} />}
+  >
+    <FeedView scope="public" workspaces={spaces} canPost={false} signedIn={!!me} canModerate={me?.instanceRole==="admin"} onlyPostId={postId} onOpenNote={openNote} onBack={() => nav("/")} onLoaded={setPosts} />
   </FeedShell>;
 }
 
@@ -1059,6 +1102,8 @@ function WorkspaceFeed() {
   useEffect(() => { if (wsId) saveLastWorkspace(wsId); }, [wsId]);
   const here = spaces.find(w => w.id === wsId);
   if (!wsId) return null;
+  const deep = params.get("post");
+  if (deep) return <Navigate to={`/w/${wsId}/feed/${deep}`} replace />;
   /** 只读的两种理由要分开说：冻结是工作区的状态，Viewer 是自己的角色，混成一句「不能发」用户不知道该找谁。 */
   const readOnly = here ? here.role === "viewer" || !!here.frozen : false;
   const openNote = (ws: string, note: string) => nav(`/w/${ws}/n/${note}`);
@@ -1069,7 +1114,26 @@ function WorkspaceFeed() {
     notice={readOnly ? <p className="mt-4 rounded-xl border border-dashed px-3 py-2 text-xs text-muted-foreground">{here?.frozen ? "工作区已冻结，圈子现在只能看。" : "你在这个工作区是 Viewer，可以看动态但不能发。"}</p> : undefined}
     rail={<CircleRail wsId={wsId} wsName={here?.name ?? "这个工作区"} wsKind={here?.kind ?? ""} canInvite={here?.kind !== "personal" && (here?.role === "owner" || here?.role === "admin")} posts={posts} squareEnabled={squareOn} activeTag={params.get("tag") ?? undefined} onOpenNote={openNote} onNav={to => nav(to)} onTag={tag => nav(`/w/${wsId}/feed?tag=${encodeURIComponent(tag)}`)} />}
   >
-    <FeedView scope="workspace" workspaceId={wsId} workspaces={spaces} canPost={!!me && !readOnly} signedIn={!!me} canModerate={me?.instanceRole==="admin"||here?.role==="owner"||here?.role==="admin"} onOpenNote={openNote} onLoaded={setPosts} />
+    <FeedView scope="workspace" workspaceId={wsId} workspaces={spaces} canPost={!!me && !readOnly} signedIn={!!me} canModerate={me?.instanceRole==="admin"||here?.role==="owner"||here?.role==="admin"} onOpenNote={openNote} onOpenPost={p => nav(`/w/${wsId}/feed/${p.id}`)} onLoaded={setPosts} />
+    <CreateDialog kind={create} onOpenChange={v => !v && setCreate(null)} onSubmit={async name => { const d = await api<{ workspace: Ws }>("/api/v1/workspaces", { method: "POST", body: JSON.stringify({ name }) }); nav(`/w/${d.workspace.id}/feed`); }} />
+  </FeedShell>;
+}
+
+function WorkspacePostDetail() {
+  const { wsId, postId } = useParams(); const nav = useNavigate(); const me = useMe(); const squareOn = useSquareEnabled();
+  const [spaces, setSpaces] = useState<Ws[]>([]); const [posts, setPosts] = useState<FeedPost[]>([]); const [create, setCreate] = useState<CreateKind>(null);
+  useEffect(() => { api<{ workspaces: Ws[] }>("/api/v1/workspaces").then(d => setSpaces(d.workspaces)).catch(() => setSpaces([])); }, []);
+  useEffect(() => { if (wsId) saveLastWorkspace(wsId); }, [wsId]);
+  const here = spaces.find(w => w.id === wsId);
+  if (!wsId || !postId) return null;
+  const openNote = (ws: string, note: string) => nav(`/w/${ws}/n/${note}`);
+  return <FeedShell
+    identity={<WorkspaceSwitcher spaces={spaces} wsId={wsId} onPick={id => nav(`/w/${id}/feed`)} onCreate={() => setCreate("workspace")} />}
+    active="circle" wsId={wsId} me={me}
+    title="圈子动态" subtitle={<>只有 <b className="font-medium text-foreground">{here?.name ?? "这个工作区"}</b> 的成员看得到。</>}
+    rail={<CircleRail wsId={wsId} wsName={here?.name ?? "这个工作区"} wsKind={here?.kind ?? ""} canInvite={here?.kind !== "personal" && (here?.role === "owner" || here?.role === "admin")} posts={posts} squareEnabled={squareOn} onOpenNote={openNote} onNav={to => nav(to)} />}
+  >
+    <FeedView scope="workspace" workspaceId={wsId} workspaces={spaces} canPost={false} signedIn={!!me} canModerate={me?.instanceRole==="admin"||here?.role==="owner"||here?.role==="admin"} onlyPostId={postId} onOpenNote={openNote} onBack={() => nav(`/w/${wsId}/feed`)} onLoaded={setPosts} />
     <CreateDialog kind={create} onOpenChange={v => !v && setCreate(null)} onSubmit={async name => { const d = await api<{ workspace: Ws }>("/api/v1/workspaces", { method: "POST", body: JSON.stringify({ name }) }); nav(`/w/${d.workspace.id}/feed`); }} />
   </FeedShell>;
 }
@@ -1086,12 +1150,12 @@ function PublicProfile() { const { handle } = useParams(); const nav = useNaviga
     {data.sites.length>0&&<section className="mt-8"><h2 className="mb-3 text-sm font-semibold">公开的文档站</h2><div className="space-y-2">{data.sites.map(s=><a key={s.url} href={s.url} className="flex items-center gap-2.5 rounded-xl border p-3 text-sm hover:bg-muted"><Globe2 className="size-4 text-muted-foreground"/>{s.title}</a>)}</div></section>}
     <section className="mt-8"><h2 className="mb-3 text-sm font-semibold">广场动态</h2>
       {data.posts.length===0?<p className="py-10 text-center text-sm text-muted-foreground">还没有公开动态。</p>
-      :<div className="space-y-3">{data.posts.map(p=><article key={p.id} className="rounded-2xl border bg-background p-4"><p className="text-xs text-muted-foreground">{new Date(p.createdAt).toLocaleString()}{p.editedAt?" · 已编辑":""}</p>{p.body&&<MarkdownView source={p.body} mode="public" hashtags onHashtag={tag=>nav(`/?tag=${encodeURIComponent(tag)}`)} className="feed-md mt-2"/>}<PostAssetGrid assets={p.assets??[]}/><p className="mt-2 text-xs text-muted-foreground">{p.likes} 次喜欢</p></article>)}</div>}
+      :<div className="space-y-3">{data.posts.map(p=><article key={p.id} className="rounded-2xl border bg-background p-4"><p className="text-xs text-muted-foreground"><a className="hover:underline" href={`/posts/${p.id}`}>{new Date(p.createdAt).toLocaleString()}</a>{p.editedAt?" · 已编辑":""}</p>{p.body&&<div className="cursor-pointer" onClick={e=>{if((e.target as HTMLElement).closest("a,button"))return;nav(`/posts/${p.id}`);}}><MarkdownView source={p.body} mode="public" hashtags onHashtag={tag=>nav(`/?tag=${encodeURIComponent(tag)}`)} className="feed-md mt-2"/></div>}<PostAssetGrid assets={p.assets??[]}/><p className="mt-2 text-xs text-muted-foreground">{p.likes} 次喜欢</p></article>)}</div>}
     </section>
   </div></PublicFrame>;
 }
 
-export function App() { const me = useMe(); return <><ImageLightbox /><Routes><Route path="/" element={<Square />} /><Route path="/nav" element={<NavPage />} /><Route path="/login" element={<Login />} /><Route path="/register" element={<Register />} /><Route path="/forgot-password" element={<ForgotPassword />} /><Route path="/reset-password" element={<ResetPassword />} /><Route path="/verify-email" element={<VerifyEmail />} /><Route path="/app" element={me === undefined ? null : me === null ? <Navigate to="/login" replace /> : me.personalWorkspaceId ? <Navigate to={`/w/${me.personalWorkspaceId}`} replace /> : <Navigate to="/login" />} /><Route path="/w/:wsId" element={<Workspace />} /><Route path="/w/:wsId/n/:noteId" element={<Workspace />} /><Route path="/w/:wsId/received" element={<Workspace />} /><Route path="/w/:wsId/received/:savedId" element={<Workspace />} /><Route path="/w/:wsId/calendar" element={<CalendarPage />} /><Route path="/w/:wsId/today" element={<TodayPage />} /><Route path="/w/:wsId/trash" element={<TrashPage />} /><Route path="/w/:wsId/settings" element={<WorkspaceSettings />} /><Route path="/w/:wsId/settings/integrations" element={<IntegrationsPage />} /><Route path="/w/:wsId/members" element={<LegacyRedirect tab="members" />} /><Route path="/w/:wsId/manage" element={<LegacyRedirect tab="backup" />} /><Route path="/w/:wsId/feed" element={<WorkspaceFeed />} /><Route path="/u/:handle" element={<PublicProfile />} /><Route path="/invite/:token" element={<InvitePage />} /><Route path="/admin" element={<AdminPage />} /><Route path="/p/:token" element={<PublicShare />} /><Route path="/s/:wsSlug/:nbSlug" element={<PublicSite />} /><Route path="/oauth/consent" element={<OauthConsent />} /><Route path="/settings/integrations" element={<LegacyIntegrations />} /><Route path="/settings/appearance" element={<AppearancePage />} /><Route path="/settings/notifications" element={<NotificationsPage />} /></Routes></>; }
+export function App() { const me = useMe(); return <><ImageLightbox /><Routes><Route path="/" element={<Square />} /><Route path="/posts/:postId" element={<PostDetail />} /><Route path="/nav" element={<NavPage />} /><Route path="/login" element={<Login />} /><Route path="/register" element={<Register />} /><Route path="/forgot-password" element={<ForgotPassword />} /><Route path="/reset-password" element={<ResetPassword />} /><Route path="/verify-email" element={<VerifyEmail />} /><Route path="/app" element={me === undefined ? null : me === null ? <Navigate to="/login" replace /> : me.personalWorkspaceId ? <Navigate to={`/w/${me.personalWorkspaceId}`} replace /> : <Navigate to="/login" />} /><Route path="/w/:wsId" element={<Workspace />} /><Route path="/w/:wsId/n/:noteId" element={<Workspace />} /><Route path="/w/:wsId/received" element={<Workspace />} /><Route path="/w/:wsId/received/:savedId" element={<Workspace />} /><Route path="/w/:wsId/calendar" element={<CalendarPage />} /><Route path="/w/:wsId/today" element={<TodayPage />} /><Route path="/w/:wsId/trash" element={<TrashPage />} /><Route path="/w/:wsId/settings" element={<WorkspaceSettings />} /><Route path="/w/:wsId/settings/integrations" element={<IntegrationsPage />} /><Route path="/w/:wsId/members" element={<LegacyRedirect tab="members" />} /><Route path="/w/:wsId/manage" element={<LegacyRedirect tab="backup" />} /><Route path="/w/:wsId/feed" element={<WorkspaceFeed />} /><Route path="/w/:wsId/feed/:postId" element={<WorkspacePostDetail />} /><Route path="/u/:handle" element={<PublicProfile />} /><Route path="/invite/:token" element={<InvitePage />} /><Route path="/admin" element={<AdminPage />} /><Route path="/p/:token" element={<PublicShare />} /><Route path="/s/:wsSlug/:nbSlug" element={<PublicSite />} /><Route path="/s/:wsSlug/:nbSlug/:noteId" element={<PublicSite />} /><Route path="/oauth/consent" element={<OauthConsent />} /><Route path="/settings/integrations" element={<LegacyIntegrations />} /><Route path="/settings/appearance" element={<AppearancePage />} /><Route path="/settings/notifications" element={<NotificationsPage />} /></Routes></>; }
 
 /**
  * 底栏的协同角标（设计 17 §3.4）。连着就摆头像组，正在编辑的人加一圈同色描边；

@@ -29,6 +29,6 @@ test("已拒绝的不进楼", () => {
 });
 
 test("通知深链带上帖 id", () => {
-  assert.equal(feedPostHref({ id: "p1", workspaceId: null }), "/?post=p1");
-  assert.equal(feedPostHref({ id: "p1", workspaceId: "w1" }), "/w/w1/feed?post=p1");
+  assert.equal(feedPostHref({ id: "p1", workspaceId: null }), "/posts/p1");
+  assert.equal(feedPostHref({ id: "p1", workspaceId: "w1" }), "/w/w1/feed/p1");
 });

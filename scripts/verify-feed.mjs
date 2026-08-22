@@ -130,6 +130,28 @@ try {
   result.promoteCreatesNote = promotedNote.title.includes('圈子里的第一条想法');
   result.promoteKeepsSource = promotedNote.bodyMd.startsWith('> 来自圈子动态');
 
+  // 模糊搜索、单条详情、公开目录
+  const searchable = (await q('/posts', { method: 'POST', body: JSON.stringify({ body: '广场上搜得到的账本碎片', visibility: 'public' }) }, c)).data;
+  madePosts.push(searchable.id);
+  const hit = (await q(`/feed/public?q=${encodeURIComponent('账本')}`, {}, c)).data;
+  result.publicFeedFuzzySearch = hit.posts.some(p => p.id === searchable.id);
+  const miss = (await q(`/feed/public?q=${encodeURIComponent('完全无关的火星文xyzzy')}`, {}, c)).data;
+  result.publicFeedSearchMiss = !miss.posts.some(p => p.id === searchable.id);
+  const one = (await q(`/posts/${searchable.id}`, {}, c)).data;
+  result.postDetailReturnsSelf = one.post?.id === searchable.id;
+  const anonOne = await anon(`/posts/${copied.id}`);
+  result.postDetailReadableAnonymously = anonOne.status === 200 && anonOne.json?.data?.post?.id === copied.id;
+  const anonWsPost = await anon(`/posts/${post.id}`);
+  result.workspacePostHiddenFromAnon = anonWsPost.status === 401 || anonWsPost.status === 403 || anonWsPost.status === 404;
+
+  await q(`/notebooks/${nb.id}/site`, { method: 'PATCH', body: JSON.stringify({ published: true }) }, c);
+  const article = (await q('/notes', { method: 'POST', body: JSON.stringify({ notebookId: nb.id, title: '广场上的公开文章' }) }, c)).data;
+  const published = (await q(`/notes/${article.id}`, { method: 'PATCH', body: JSON.stringify({ expectedVersion: article.version, published: true, bodyMd: '这篇会出现在广场文章板块。' }) }, c)).data;
+  const catalog = (await anon('/feed/public/catalog')).json.data;
+  result.catalogListsPublishedNotebook = Array.isArray(catalog?.notebooks) && catalog.notebooks.some(x => x.id === nb.id);
+  const articlePublic = published?.published && (published.moderationStatus ?? 'none') === 'none';
+  result.catalogListsPublishedArticle = !articlePublic || (Array.isArray(catalog?.articles) && catalog.articles.some(x => x.id === article.id));
+
   // 公开主页
   const profile = (await anon(`/public/users/${me.handle}`)).json.data;
   result.profileReadableAnonymously = profile.handle === me.handle && Array.isArray(profile.posts);

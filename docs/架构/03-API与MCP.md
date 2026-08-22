@@ -120,12 +120,14 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | PATCH | `/api/v1/comments/:id/review` | `{ status: visible\|rejected\|hidden }`；作者可隐藏/取消隐藏自己的评论 |
 | GET/POST | `/api/v1/corrections` | |
 | POST | `/api/v1/corrections/:id/review` | accept/reject |
-| GET | `/api/v1/feed/public` | 广场时间线；`?tag=` 按标签筛；回 `posts` + `now` |
+| GET | `/api/v1/feed/public` | 广场时间线；`?tag=` 按标签筛；`?q=` 模糊搜正文 / 作者 / 标签；回 `posts` + `now` |
 | GET | `/api/v1/feed/public/tags` | 广场最近可见帖里出现次数最多的标签 |
 | GET | `/api/v1/feed/public/updates?since=` | 广场自 `since` 起的新帖数、有新回复的帖数；回 `newPosts` `repliedPosts` `now` |
-| GET | `/api/v1/feed/workspaces/:id` | 圈子时间线；成员；`?tag=` 同上 |
+| GET | `/api/v1/feed/public/catalog` | 广场公开目录；回已发布笔记本 + 公开文章（标题、摘录、文档站 URL），不含正文 |
+| GET | `/api/v1/feed/workspaces/:id` | 圈子时间线；成员；`?tag=` / `?q=` 同上 |
 | GET | `/api/v1/feed/workspaces/:id/tags` | 圈子热门标签 |
 | GET | `/api/v1/feed/workspaces/:id/updates?since=` | 圈子同上的增量计数；成员 |
+| GET | `/api/v1/posts/:id` | 单条动态；广场未登录可读，圈子要成员。广场关闭时公开帖对外 404 |
 | GET/POST | `/api/v1/posts` | scope, workspaceId；POST 可带 `attachmentIds` |
 | POST | `/api/v1/posts/attachments` | 发帖前暂存附件（multipart `file`） |
 | GET/DELETE | `/api/v1/posts/attachments/:id` | 看 / 删；广场未登录可读 |

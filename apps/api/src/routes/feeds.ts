@@ -1,6 +1,7 @@
 import { Hono } from "hono";
-import { and, count, countDistinct, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, count, countDistinct, desc, eq, gt, inArray, isNull, lte, max, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
+import { recencyBoost, scoreNote, tokenize } from "@kb/core";
 import { fail, isHashtag, normalizeHashtag, normalizeTitle, parseHashtags } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { agents, auditLogs, comments, contentReports, instanceSettings, moderationReviews, notebooks, notes, noteVersions, notifications, postFavorites, postReactions, posts, users, workspaceMembers, workspaces } from "../db/schema.ts";
@@ -91,7 +92,35 @@ async function feedUpdates(scope:ReturnType<typeof and>,since:Date,viewer?:strin
   ]);
   return {newPosts:asCount(fresh[0]?.n),repliedPosts:asCount(replied[0]?.n),now:new Date().toISOString()};
 }
-feedRoutes.get("/feed/public",async c=>{const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");const viewer=await currentUser(c);const tag=parseFeedTag(c.req.query("tag"));const rows=await db.select().from(posts).where(withTag(and(eq(posts.visibility,"public"),readable(viewer?.id)),tag)).orderBy(desc(posts.createdAt)).limit(50);const listed=tag?rows.filter(p=>postTagList(p).includes(tag)):rows;return ok(c,{posts:await hydrate(listed,viewer?.id),now:new Date().toISOString()});});
+function parseFeedQuery(raw:string|undefined){return (raw??"").trim().slice(0,200);}
+/** 空查询按时间倒序；有 q 时用和库内搜索同一套 2-gram 打正文 / 作者 / 标签。 */
+async function listFeed(scope:ReturnType<typeof and>,viewer:string|undefined,tag:string,q:string){
+  const rows=await db.select().from(posts).where(withTag(scope,tag)).orderBy(desc(posts.createdAt)).limit(q?200:50);
+  const listed=tag?rows.filter(p=>postTagList(p).includes(tag)):rows;
+  const hydrated=await hydrate(listed,viewer);
+  if(!q)return hydrated;
+  const parts=tokenize(q);
+  if(!parts.length)return hydrated.slice(0,50);
+  const scored:Array<{p:(typeof hydrated)[number];score:number}>=[];
+  for(const p of hydrated){
+    const base=scoreNote(parts,{title:[p.author?.displayName,p.author?.handle].filter(Boolean).join(" "),tags:p.tags??[],body:p.body});
+    if(!base)continue;
+    scored.push({p,score:base+recencyBoost(p.createdAt)});
+  }
+  scored.sort((a,b)=>b.score-a.score);
+  return scored.slice(0,20).map(x=>x.p);
+}
+function publicSnippet(md:string){
+  const text=md.replace(/[#>*_`[\]()!-]/g," ").replace(/\s+/g," ").trim();
+  return text.slice(0,120);
+}
+feedRoutes.get("/feed/public",async c=>{
+  const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");
+  const viewer=await currentUser(c);
+  const tag=parseFeedTag(c.req.query("tag"));
+  const q=parseFeedQuery(c.req.query("q"));
+  return ok(c,{posts:await listFeed(and(eq(posts.visibility,"public"),readable(viewer?.id)),viewer?.id,tag,q),now:new Date().toISOString()});
+});
 feedRoutes.get("/feed/public/tags",async c=>{const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");const viewer=await currentUser(c);return ok(c,{tags:await popularTags(and(eq(posts.visibility,"public"),readable(viewer?.id)))});});
 feedRoutes.get("/feed/public/updates",async c=>{
   limit(`feed-updates:${clientIp(c)}`,60,60_000);
@@ -99,7 +128,25 @@ feedRoutes.get("/feed/public/updates",async c=>{
   const viewer=await currentUser(c);
   return ok(c,await feedUpdates(and(eq(posts.visibility,"public"),readable(viewer?.id)),parseSince(c.req.query("since")),viewer?.id));
 });
-feedRoutes.get("/feed/workspaces/:id",async c=>{const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");const tag=parseFeedTag(c.req.query("tag"));const rows=await db.select().from(posts).where(withTag(and(eq(posts.workspaceId,wsId),readable(u.id)),tag)).orderBy(desc(posts.createdAt)).limit(50);const listed=tag?rows.filter(p=>postTagList(p).includes(tag)):rows;return ok(c,{posts:await hydrate(listed,u.id),now:new Date().toISOString()});});
+feedRoutes.get("/feed/public/catalog",async c=>{
+  limit(`feed-catalog:${clientIp(c)}`,60,60_000);
+  const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");
+  const books=await db.select({id:notebooks.id,title:notebooks.title,slug:notebooks.slug,workspaceId:notebooks.workspaceId,accent:notebooks.siteAccent,createdAt:notebooks.createdAt}).from(notebooks).where(and(eq(notebooks.sitePublished,true),isNull(notebooks.trashedAt))).orderBy(desc(notebooks.createdAt)).limit(40);
+  const bookIds=books.map(b=>b.id);
+  const spaceIds=[...new Set(books.map(b=>b.workspaceId))];
+  const spaces=spaceIds.length?await db.select({id:workspaces.id,slug:workspaces.slug,name:workspaces.name}).from(workspaces).where(inArray(workspaces.id,spaceIds)):[];
+  const counts=bookIds.length?await db.select({notebookId:notes.notebookId,n:count(),last:max(notes.updatedAt)}).from(notes).where(and(inArray(notes.notebookId,bookIds),eq(notes.published,true),eq(notes.moderationStatus,"none"),isNull(notes.trashedAt))).groupBy(notes.notebookId):[];
+  const articles=await db.select({id:notes.id,title:notes.title,bodyMd:notes.bodyMd,updatedAt:notes.updatedAt,notebookTitle:notebooks.title,notebookSlug:notebooks.slug,workspaceSlug:workspaces.slug,workspaceName:workspaces.name}).from(notes).innerJoin(notebooks,eq(notebooks.id,notes.notebookId)).innerJoin(workspaces,eq(workspaces.id,notebooks.workspaceId)).where(and(eq(notes.published,true),eq(notes.moderationStatus,"none"),isNull(notes.trashedAt),eq(notebooks.sitePublished,true),isNull(notebooks.trashedAt))).orderBy(desc(notes.updatedAt)).limit(40);
+  return ok(c,{
+    notebooks:books.map(b=>{
+      const ws=spaces.find(s=>s.id===b.workspaceId);
+      const stat=counts.find(x=>x.notebookId===b.id);
+      return {id:b.id,title:b.title,workspace:ws?.name??"",url:ws?`/s/${ws.slug}/${b.slug}`:"",noteCount:asCount(stat?.n),updatedAt:stat?.last??b.createdAt,accent:b.accent};
+    }),
+    articles:articles.map(a=>({id:a.id,title:a.title,notebook:a.notebookTitle,workspace:a.workspaceName,url:`/s/${a.workspaceSlug}/${a.notebookSlug}/${a.id}`,snippet:publicSnippet(a.bodyMd),updatedAt:a.updatedAt})),
+  });
+});
+feedRoutes.get("/feed/workspaces/:id",async c=>{const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");const tag=parseFeedTag(c.req.query("tag"));const q=parseFeedQuery(c.req.query("q"));return ok(c,{posts:await listFeed(and(eq(posts.workspaceId,wsId),readable(u.id)),u.id,tag,q),now:new Date().toISOString()});});
 feedRoutes.get("/feed/workspaces/:id/tags",async c=>{const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");return ok(c,{tags:await popularTags(and(eq(posts.workspaceId,wsId),readable(u.id)))});});
 feedRoutes.get("/feed/workspaces/:id/updates",async c=>{
   limit(`feed-updates:${clientIp(c)}`,60,60_000);
@@ -128,6 +175,17 @@ feedRoutes.delete("/posts/attachments/:id",async c=>{
   const u=await user(c);
   await removeStagedAsset(c.req.param("id"),u.id);
   return ok(c,{});
+});
+feedRoutes.get("/posts/:id",async c=>{
+  const viewer=await currentUser(c);
+  const [p]=await db.select().from(posts).where(eq(posts.id,c.req.param("id")));
+  await assertCanSeePost(p,viewer?.id);
+  if(p!.visibility==="public"){
+    const [settings]=await db.select().from(instanceSettings);
+    if(!settings?.squareEnabled&&p!.authorUserId!==viewer?.id)throw fail("NOT_FOUND","广场已关闭");
+  }
+  const [hydrated]=await hydrate([p!],viewer?.id);
+  return ok(c,{post:hydrated,now:new Date().toISOString()});
 });
 feedRoutes.delete("/posts/:id",async c=>{
   const u=await user(c);const [p]=await db.select().from(posts).where(eq(posts.id,c.req.param("id")));

@@ -1,4 +1,4 @@
-import{useEffect,useMemo,useRef,useState}from'react';import{useSearchParams}from'react-router-dom';import{parseMentions}from'@kb/shared';import{FileText,Flag,Globe2,Heart,ImagePlus,MessageSquare,MoreHorizontal,NotebookPen,Paperclip,Pencil,RefreshCw,Send,Star,Trash2,X}from'lucide-react';import{api}from'../api';import{cn}from'../lib/utils';import{openLightbox}from'../lib/lightbox';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
+import{useEffect,useMemo,useRef,useState}from'react';import{useSearchParams}from'react-router-dom';import{parseMentions}from'@kb/shared';import{ArrowLeft,FileText,Flag,Globe2,Heart,ImagePlus,MessageSquare,MoreHorizontal,NotebookPen,Paperclip,Pencil,RefreshCw,Search,Send,Star,Trash2,X}from'lucide-react';import{api}from'../api';import{cn}from'../lib/utils';import{useDebounced}from'../lib/use-debounced';import{openLightbox}from'../lib/lightbox';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
 import{FeedComments}from'./feed-comments';
 import{MentionField}from'./mention-field';
 import{type MentionAgent}from'./mention-text';
@@ -45,14 +45,20 @@ function HeldNote({post,onAppeal}:{post:FeedPost;onAppeal?:(p:FeedPost)=>void}){
 }
 type Nb={id:string;title:string};
 
+function detailHref(p:FeedPost){return p.visibility==="workspace"&&p.workspaceId?`/w/${p.workspaceId}/feed/${p.id}`:`/posts/${p.id}`;}
+function scrollParent(el:HTMLElement|null){
+  let n=el?.parentElement??null;
+  while(n){const s=getComputedStyle(n);if(/(auto|scroll)/.test(s.overflowY))return n;n=n.parentElement;}
+  return document.scrollingElement;
+}
 /** 广场与圈子共用一套时间线。scope=workspace 时发的是圈子动态。 */
-export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModerate,onOpenNote,onLoaded}:{scope:"public"|"workspace";workspaceId?:string;workspaces:Array<{id:string;name:string}>;canPost:boolean;signedIn?:boolean;canModerate?:boolean;onOpenNote?:(workspaceId:string,noteId:string)=>void;onLoaded?:(posts:FeedPost[])=>void}){
+export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModerate,onlyPostId,onOpenNote,onOpenPost,onBack,onLoaded}:{scope:"public"|"workspace";workspaceId?:string;workspaces:Array<{id:string;name:string}>;canPost:boolean;signedIn?:boolean;canModerate?:boolean;onlyPostId?:string;onOpenNote?:(workspaceId:string,noteId:string)=>void;onOpenPost?:(p:FeedPost)=>void;onBack?:()=>void;onLoaded?:(posts:FeedPost[])=>void}){
   const askConfirm=useConfirm();const toast=useToast();
   const[searchParams,setSearchParams]=useSearchParams();
   const[posts,setPosts]=useState<FeedPost[]>([]);const[body,setBody]=useState("");const[err,setErr]=useState("");const[dlgErr,setDlgErr]=useState("");const[busy,setBusy]=useState(false);
   const[editing,setEditing]=useState<FeedPost|null>(null);const[draft,setDraft]=useState("");
   const[promote,setPromote]=useState<FeedPost|null>(null);const[target,setTarget]=useState({workspaceId:"",notebookId:"",title:""});const[books,setBooks]=useState<Nb[]>([]);
-  const[openComments,setOpenCommentsState]=useState<string|null>(()=>searchParams.get("post")||readOpenComments(scope,workspaceId));const[commentTick,setCommentTick]=useState<Record<string,number>>({});
+  const[openComments,setOpenCommentsState]=useState<string|null>(()=>onlyPostId||searchParams.get("post")||readOpenComments(scope,workspaceId));const[commentTick,setCommentTick]=useState<Record<string,number>>({});
   const setOpenComments=(id:string|null)=>{setOpenCommentsState(id);writeOpenComments(scope,workspaceId,id);};
   const[reporting,setReporting]=useState<FeedPost|null>(null);const[reportReason,setReportReason]=useState("spam");const[reportNote,setReportNote]=useState("");
   const[appealing,setAppealing]=useState<FeedPost|null>(null);const[appealNote,setAppealNote]=useState("");
@@ -64,6 +70,9 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
   const[popularTags,setPopularTags]=useState<string[]>([]);
   const mentionHandles=useMemo(()=>agents.map(a=>a.handle),[agents]);
   const activeTag=searchParams.get("tag")?.trim()??"";
+  const qParam=searchParams.get("q")?.trim()??"";
+  const[qDraft,setQDraft]=useState(qParam);
+  const qDebounced=useDebounced(qDraft,300);
   const pickTag=(tag:string|null)=>{
     const next=new URLSearchParams(searchParams);
     if(tag)next.set("tag",tag);else next.delete("tag");
@@ -72,7 +81,10 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
   };
   const fileRef=useRef<HTMLInputElement>(null);
   const path=scope==="public"?"/api/v1/feed/public":`/api/v1/feed/workspaces/${workspaceId}`;
-  const listPath=activeTag?`${path}?tag=${encodeURIComponent(activeTag)}`:path;
+  const listQuery=new URLSearchParams();
+  if(activeTag)listQuery.set("tag",activeTag);
+  if(qParam)listQuery.set("q",qParam);
+  const listPath=listQuery.size?`${path}?${listQuery}`:path;
   const tagsPath=scope==="public"?"/api/v1/feed/public/tags":`/api/v1/feed/workspaces/${workspaceId}/tags`;
   /** 单条动态的点赞、编辑、删除就地改这一条：整条时间线重拉会闪一下、丢滚动位置，点个赞不该付这个代价。
       listRef 只经 apply 写入，所以连点两下也不会拿到上一次渲染的旧列表。 */
@@ -82,27 +94,57 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
   const patchOne=(id:string,fn:(p:FeedPost)=>FeedPost)=>apply(listRef.current.map(p=>p.id===id?fn(p):p));
   const dropOne=(id:string)=>apply(listRef.current.filter(p=>p.id!==id));
   const rememberSeen=(at:string)=>{sinceRef.current=at;writeFeedSeen(scope,workspaceId,at);setUpdates({newPosts:0,repliedPosts:0});};
-  const load=()=>api<{posts:FeedPost[];now?:string}>(listPath).then(d=>{apply(d.posts);rememberSeen(d.now??new Date().toISOString());setFresh(null);}).catch(e=>toast.error("加载动态失败",(e as Error).message));
+  const load=()=>{
+    if(onlyPostId){
+      return api<{post:FeedPost;now?:string}>(`/api/v1/posts/${onlyPostId}`).then(d=>{apply([d.post]);rememberSeen(d.now??new Date().toISOString());setFresh(null);setOpenComments(d.post.id);}).catch(e=>toast.error("加载动态失败",(e as Error).message));
+    }
+    return api<{posts:FeedPost[];now?:string}>(listPath).then(d=>{apply(d.posts);rememberSeen(d.now??new Date().toISOString());setFresh(null);}).catch(e=>toast.error("加载动态失败",(e as Error).message));
+  };
   async function refreshUpdates(){
     if(refreshing)return;setRefreshing(true);
     try{
-      const d=await api<{posts:FeedPost[];now?:string}>(listPath);
-      const prev=new Map(listRef.current.map(p=>[p.id,p]));
-      const newIds=new Set(d.posts.filter(p=>!prev.has(p.id)).map(p=>p.id));
-      const repliedIds=new Set(d.posts.filter(p=>{const old=prev.get(p.id);return!!old&&(p.comments??0)>(old.comments??0);}).map(p=>p.id));
-      apply(d.posts);
-      rememberSeen(d.now??new Date().toISOString());
-      setFresh(newIds.size||repliedIds.size?{newIds,repliedIds}:null);
-      if(repliedIds.size)setCommentTick(t=>{const next={...t};for(const id of repliedIds)next[id]=(next[id]??0)+1;return next;});
+      const firstId=listRef.current[0]?.id;
+      const firstEl=firstId?document.getElementById(`feed-post-${firstId}`):null;
+      const box=scrollParent(firstEl);
+      const offset=firstEl?firstEl.getBoundingClientRect().top:0;
+      if(onlyPostId){
+        const d=await api<{post:FeedPost;now?:string}>(`/api/v1/posts/${onlyPostId}`);
+        const prev=listRef.current[0];
+        apply([d.post]);
+        rememberSeen(d.now??new Date().toISOString());
+        if(prev&&(d.post.comments??0)>(prev.comments??0))setCommentTick(t=>({...t,[d.post.id]:(t[d.post.id]??0)+1}));
+      }else{
+        const d=await api<{posts:FeedPost[];now?:string}>(listPath);
+        const prev=new Map(listRef.current.map(p=>[p.id,p]));
+        const newIds=new Set(d.posts.filter(p=>!prev.has(p.id)).map(p=>p.id));
+        const repliedIds=new Set(d.posts.filter(p=>{const old=prev.get(p.id);return!!old&&(p.comments??0)>(old.comments??0);}).map(p=>p.id));
+        apply(d.posts);
+        rememberSeen(d.now??new Date().toISOString());
+        setFresh(newIds.size||repliedIds.size?{newIds,repliedIds}:null);
+        if(repliedIds.size)setCommentTick(t=>{const next={...t};for(const id of repliedIds)next[id]=(next[id]??0)+1;return next;});
+        requestAnimationFrame(()=>{
+          const again=firstId?document.getElementById(`feed-post-${firstId}`):null;
+          if(again&&box){const delta=again.getBoundingClientRect().top-offset;if(Math.abs(delta)>1)box.scrollTop+=delta;}
+        });
+      }
     }catch(e){toast.error("刷新动态失败",(e as Error).message);}
     finally{setRefreshing(false);}
   }
-  useEffect(()=>{void load()},[listPath]);
+  useEffect(()=>{void load()},[onlyPostId?`post:${onlyPostId}`:listPath]);
+  useEffect(()=>{setQDraft(qParam);},[qParam]);
+  useEffect(()=>{
+    if(onlyPostId)return;
+    const next=new URLSearchParams(searchParams);
+    const q=qDebounced.trim();
+    if(q)next.set("q",q);else next.delete("q");
+    if(next.toString()===searchParams.toString())return;
+    setSearchParams(next,{replace:true});
+  },[qDebounced,onlyPostId]);
   useEffect(()=>{api<{tags:Array<{name:string}>}>(tagsPath).then(d=>setPopularTags(d.tags.map(t=>t.name))).catch(()=>setPopularTags([]));},[tagsPath]);
   const deepPost=searchParams.get("post");
   useEffect(()=>{
-    setOpenCommentsState(deepPost||readOpenComments(scope,workspaceId));
-  },[path,scope,workspaceId,deepPost]);
+    setOpenCommentsState(onlyPostId||deepPost||readOpenComments(scope,workspaceId));
+  },[path,scope,workspaceId,deepPost,onlyPostId]);
   useEffect(()=>{
     if(!deepPost)return;
     const el=document.getElementById(`feed-post-${deepPost}`);
@@ -115,13 +157,14 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
       api<FeedUpdateCounts>(`${updatesPath(scope,workspaceId)}?since=${encodeURIComponent(sinceRef.current)}`)
         .then(setUpdates).catch(()=>{});
     };
+    tick();
     const timer=window.setInterval(tick,30_000);
     const onVis=()=>{if(document.visibilityState==="visible")tick();};
     const onRefresh=(e:Event)=>{const want=(e as CustomEvent<{scope?:string}>).detail?.scope;if(!want||want===scope)void refreshUpdates();};
     document.addEventListener("visibilitychange",onVis);
     window.addEventListener(FEED_REFRESH_EVENT,onRefresh);
     return()=>{window.clearInterval(timer);document.removeEventListener("visibilitychange",onVis);window.removeEventListener(FEED_REFRESH_EVENT,onRefresh);};
-  },[path,scope,workspaceId]);
+  },[path,scope,workspaceId,onlyPostId]);
   useEffect(()=>{if(!fresh)return;const t=window.setTimeout(()=>setFresh(null),12_000);return()=>window.clearTimeout(t);},[fresh]);
   useEffect(()=>{if(!target.workspaceId)return setBooks([]);api<{notebooks:Nb[]}>(`/api/v1/workspaces/${target.workspaceId}/notebooks`).then(d=>{setBooks(d.notebooks);setTarget(t=>({...t,notebookId:d.notebooks[0]?.id??""}))}).catch(()=>setBooks([]))},[target.workspaceId]);
 
@@ -184,11 +227,16 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
   }
 
   return <div className="space-y-4">
+    {onlyPostId&&onBack&&<button type="button" onClick={onBack} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="size-4"/>返回时间线</button>}
+    {!onlyPostId&&<div className="relative">
+      <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"/>
+      <Input value={qDraft} onChange={e=>setQDraft(e.target.value)} placeholder="搜索动态、作者、标签…" className="pl-9" maxLength={200} aria-label="搜索动态"/>
+    </div>}
     {activeTag&&<div className="flex items-center gap-2 rounded-xl border bg-background px-3 py-2 text-sm">
       <span>正在看 <b className="text-primary">#{activeTag}</b></span>
       <Button variant="ghost" size="sm" className="ml-auto h-7" onClick={()=>pickTag(null)}>看全部</Button>
     </div>}
-    {canPost&&<div className="rounded-2xl border bg-background p-4">
+    {canPost&&!onlyPostId&&<div className="rounded-2xl border bg-background p-4">
       <MentionField value={body} onChange={setBody} agents={agents} tags={popularTags} maxLength={5000} placeholder={scope==="public"?"发到广场，实例里所有人可见。可以用 [[双链]] 引用已公开的笔记，也可以 @ 智能体、#标签。":"发到本工作区的圈子，只有成员看得到。输入 @ 可叫智能体，# 可加标签。"} className="min-h-24"/>
       {assets.length>0&&<div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
         {assets.map(a=><div key={a.id} className="relative overflow-hidden rounded-xl border bg-muted">
@@ -208,18 +256,23 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
         <span className="text-xs text-muted-foreground">{body.length}/5000{assets.length?` · ${assets.length}/9 附件`:""}</span>
       </div>
     </div>}
-    {(updates.newPosts>0||updates.repliedPosts>0)&&<button type="button" onClick={()=>void refreshUpdates()} disabled={refreshing}
-      className="sticky top-2 z-10 flex w-full items-center justify-center gap-2 rounded-xl border bg-background px-3 py-2 text-sm font-medium shadow-sm hover:bg-muted disabled:opacity-70">
-      <RefreshCw className={cn("size-4",refreshing&&"animate-spin")}/>
-      <span>{formatFeedUpdateLabel(updates)}</span>
-      <span className="text-xs font-normal text-muted-foreground">{refreshing?"更新中…":"点击查看"}</span>
-    </button>}
-    {posts.length===0?<div className="rounded-2xl border border-dashed py-14 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground"><Globe2 className="size-5"/></span><p className="mt-3 text-sm font-medium">{activeTag?`还没有 #${activeTag}`:"还没有动态"}</p><p className="mt-1 text-xs text-muted-foreground">{activeTag?"换个标签，或发一条带这个标签的动态。":scope==="public"?"第一条公开动态还没出现。":"圈子里的碎片想法可以先发这里，之后再转正为笔记。"}</p></div>
+    {!onlyPostId&&(updates.newPosts>0||updates.repliedPosts>0)&&<div className="pointer-events-none sticky top-3 z-10 flex justify-center">
+      <button type="button" onClick={()=>void refreshUpdates()} disabled={refreshing}
+        className="pointer-events-auto inline-flex items-center gap-2 rounded-full border bg-background/95 px-4 py-1.5 text-sm font-medium shadow-md backdrop-blur hover:bg-muted disabled:opacity-70">
+        <RefreshCw className={cn("size-4",refreshing&&"animate-spin")}/>
+        <span>{formatFeedUpdateLabel(updates)}</span>
+        <span className="text-xs font-normal text-muted-foreground">{refreshing?"更新中…":"点击查看"}</span>
+      </button>
+    </div>}
+    {posts.length===0?<div className="rounded-2xl border border-dashed py-14 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground"><Globe2 className="size-5"/></span><p className="mt-3 text-sm font-medium">{onlyPostId?"这条动态不存在或已删除":activeTag?`还没有 #${activeTag}`:qParam?"没有匹配的动态":"还没有动态"}</p><p className="mt-1 text-xs text-muted-foreground">{onlyPostId?"它可能被作者删了，或者广场已关闭。":activeTag?"换个标签，或发一条带这个标签的动态。":qParam?"换个词试试，也可以搜作者名或 #标签。":scope==="public"?"第一条公开动态还没出现。":"圈子里的碎片想法可以先发这里，之后再转正为笔记。"}</p></div>
     :posts.map(p=><article key={p.id} id={`feed-post-${p.id}`} className={cn("rounded-2xl border bg-background p-4", (fresh?.newIds.has(p.id)||fresh?.repliedIds.has(p.id))&&"border-primary/40")}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <b className="text-sm text-foreground">{p.author?.displayName??"已注销用户"}</b>
         {p.author&&<a className="hover:underline" href={`/u/${p.author.handle}`}>@{p.author.handle}</a>}
-        <span>{new Date(p.createdAt).toLocaleString()}</span>{p.editedAt&&<Badge>已编辑</Badge>}
+        {onOpenPost&&!onlyPostId
+          ?<a className="hover:underline" href={detailHref(p)} onClick={e=>{e.preventDefault();onOpenPost(p);}}>{new Date(p.createdAt).toLocaleString()}</a>
+          :<span>{new Date(p.createdAt).toLocaleString()}</span>}
+        {p.editedAt&&<Badge>已编辑</Badge>}
         {fresh?.newIds.has(p.id)&&<Badge>新</Badge>}
         {fresh?.repliedIds.has(p.id)&&<Badge>有新回复</Badge>}
         <div className="ml-auto flex items-center gap-1">
@@ -235,12 +288,14 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
           </DropdownMenuContent></DropdownMenu>}
         </div>
       </div>
-      {p.body&&<MarkdownView source={p.body} mode={scope==="public"?"public":"library"} mentionHandles={mentionHandles} hashtags onHashtag={pickTag} className="feed-md mt-3"/>}
+      {p.body&&<div className={cn(onOpenPost&&!onlyPostId&&"cursor-pointer")} onClick={e=>{if(onlyPostId||!onOpenPost)return;if((e.target as HTMLElement).closest("a,button"))return;onOpenPost(p);}}>
+        <MarkdownView source={p.body} mode={scope==="public"?"public":"library"} mentionHandles={mentionHandles} hashtags onHashtag={pickTag} className="feed-md mt-3"/>
+      </div>}
       <PostAssetGrid assets={p.assets??[]}/>
       <HeldNote post={p} onAppeal={x=>{setDlgErr("");setAppealNote("");setAppealing(x)}}/>
       {p.note&&<button className="mt-3 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs hover:bg-muted" onClick={()=>p.workspaceId&&onOpenNote?.(p.workspaceId,p.note!.id)}><NotebookPen className="size-3.5"/>{p.note.title}</button>}
       {openComments!==p.id&&(p.comments??0)>0&&<button type="button" className="mt-3 text-left text-xs text-muted-foreground hover:text-foreground" onClick={()=>setOpenComments(p.id)}>查看 {p.comments} 条评论</button>}
-      {openComments===p.id&&<FeedComments key={`${p.id}:${commentTick[p.id]??0}`} postId={p.id} signedIn={!!signedIn} agents={agents} onCount={n=>patchOne(p.id,x=>({...x,comments:n}))}/>}
+      {openComments===p.id&&<FeedComments postId={p.id} signedIn={!!signedIn} agents={agents} reloadToken={commentTick[p.id]??0} onCount={n=>patchOne(p.id,x=>({...x,comments:n}))}/>}
     </article>)}
 
     <Dialog open={!!editing} onOpenChange={v=>{if(!v)setEditing(null);setDlgErr("")}}><DialogContent>

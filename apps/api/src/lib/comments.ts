@@ -12,5 +12,5 @@ export function commentListedTo(
 }
 
 export function feedPostHref(post: { id: string; workspaceId: string | null }) {
-  return post.workspaceId ? `/w/${post.workspaceId}/feed?post=${post.id}` : `/?post=${post.id}`;
+  return post.workspaceId ? `/w/${post.workspaceId}/feed/${post.id}` : `/posts/${post.id}`;
 }

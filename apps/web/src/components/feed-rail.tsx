@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Globe2, Link2, LayoutGrid, NotebookPen, Users, UserPlus, Lock } from "lucide-react";
+import { FileText, Globe2, Link2, LayoutGrid, NotebookPen, Users, UserPlus, Lock } from "lucide-react";
 import { api, type Me } from "../api";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import type { FeedPost } from "./feed";
+import { usePublicCatalog } from "./square-catalog";
 
 type Member = { userId: string; handle: string; displayName: string; role: string };
 
@@ -63,12 +64,29 @@ function useFeedDigest(posts: FeedPost[]) {
 const rail = "space-y-4 lg:sticky lg:top-4";
 
 /** 广场右栏。 */
-export function SquareRail({ posts, me, homeWsId, activeTag, onOpenNote, onNav, onTag }: { posts: FeedPost[]; me: Me | null | undefined; homeWsId?: string; activeTag?: string; onOpenNote: (workspaceId: string, noteId: string) => void; onNav: (to: string) => void; onTag?: (tag: string) => void }) {
+export function SquareRail({ posts, me, homeWsId, activeTag, tab, onOpenNote, onNav, onTag }: { posts: FeedPost[]; me: Me | null | undefined; homeWsId?: string; activeTag?: string; tab?: "feed" | "notebooks" | "articles"; onOpenNote: (workspaceId: string, noteId: string) => void; onNav: (to: string) => void; onTag?: (tag: string) => void }) {
   const { authors, cited, tags } = useFeedDigest(posts);
+  const catalog = usePublicCatalog();
+  const books = (catalog?.notebooks ?? []).slice(0, 5);
+  const articles = (catalog?.articles ?? []).slice(0, 5);
   return <div className={rail}>
     {me === null && <RailCard title="加入这个实例">
       <p className="text-xs leading-5 text-muted-foreground">登录后可以发动态、评论、收藏，也能把值得留下的想法转正成笔记。</p>
       <div className="mt-3 flex gap-2"><Button size="sm" onClick={() => onNav("/login")}>登录</Button><Button size="sm" variant="ghost" onClick={() => onNav("/register")}>注册</Button></div>
+    </RailCard>}
+    {tab !== "notebooks" && books.length > 0 && <RailCard title="公开笔记本" action={<button type="button" className="text-xs text-muted-foreground hover:underline" onClick={() => onNav("/?tab=notebooks")}>全部</button>}>
+      <ul className="space-y-1">{books.map(nb => <li key={nb.id}>
+        <a href={nb.url} className="-mx-1.5 flex items-center gap-2 rounded-lg px-1.5 py-1.5 text-sm hover:bg-muted">
+          <Globe2 className="size-3.5 shrink-0 text-muted-foreground" /><span className="truncate">{nb.title}</span>
+        </a>
+      </li>)}</ul>
+    </RailCard>}
+    {tab !== "articles" && articles.length > 0 && <RailCard title="公开文章" action={<button type="button" className="text-xs text-muted-foreground hover:underline" onClick={() => onNav("/?tab=articles")}>全部</button>}>
+      <ul className="space-y-1">{articles.map(a => <li key={a.id}>
+        <a href={a.url} className="-mx-1.5 flex items-center gap-2 rounded-lg px-1.5 py-1.5 text-sm hover:bg-muted">
+          <FileText className="size-3.5 shrink-0 text-muted-foreground" /><span className="truncate">{a.title}</span>
+        </a>
+      </li>)}</ul>
     </RailCard>}
     {authors.length > 0 && <RailCard title="最近活跃">
       <ul className="space-y-1">{authors.map(a => <li key={a.handle}><PersonRow name={a.displayName} handle={a.handle} right={`${a.count} 条`} /></li>)}</ul>
