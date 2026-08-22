@@ -3,6 +3,7 @@ import { and, count, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { hashPassword, validPassword, verifyPassword } from "@kb/core";
 import { HANDLE_RE, fail } from "@kb/shared";
+import { handleOccupied } from "../lib/agents.ts";
 import { env } from "../env.ts";
 import { db } from "../db/client.ts";
 import { authTokens, backgroundJobs, instanceSettings, mcpTokens, registrationCodes, registrationCodeUsages, sessions, users, workspaceMembers, workspaces } from "../db/schema.ts";
@@ -60,8 +61,7 @@ auth.post("/auth/register", async (c) => {
   const email = body.email.toLowerCase();
   const exists = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
   if (exists.length) throw fail("VALIDATION", "邮箱已被使用", { email: "已被使用" });
-  const handleTaken = await db.select({ id: users.id }).from(users).where(eq(users.handle, body.handle));
-  if (handleTaken.length) throw fail("VALIDATION", "该用户名已被使用", { handle: "已被使用" });
+  if (await handleOccupied(body.handle)) throw fail("VALIDATION", "该用户名已被使用", { handle: "已被使用" });
 
   const isFirst = userCount === 0;
   const verifiedNow = isFirst || !settings?.requireEmailVerification || !!code?.skipEmailVerification;

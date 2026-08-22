@@ -2,6 +2,7 @@ export * from "./errors.js";
 export * from "./theme.js";
 export * from "./note-sort.js";
 export * from "./diff.js";
+export * from "./mentions.js";
 
 export const HANDLE_RE = /^[a-z][a-z0-9_]{2,31}$/;
 

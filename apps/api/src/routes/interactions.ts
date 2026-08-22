@@ -18,6 +18,7 @@ import { rebuildLinks } from "../lib/links.ts";
 import { assertUserStorage, textBytes } from "../lib/quota.ts";
 import { noteAccess } from "../lib/note-access.ts";
 import { assertCanModeratePost } from "../lib/post-access.ts";
+import { enqueueAgentMentions } from "../lib/agents.ts";
 import { shareCoversNote } from "../lib/share-target.ts";
 
 export const interactionRoutes = new Hono();
@@ -92,6 +93,10 @@ interactionRoutes.patch("/comments/:id/review", async c => {
     }
   }
   await db.update(comments).set({status:body.status}).where(eq(comments.id,comment.id));
+  if(body.status==="visible"&&comment.targetType==="post"&&!comment.authorAgentId){
+    const [p]=await db.select().from(posts).where(eq(posts.id,comment.targetId));
+    if(p)await enqueueAgentMentions({text:comment.body,post:p,sourceType:"comment",sourceId:comment.id,parentCommentId:comment.parentId??comment.id,authorAgentId:comment.authorAgentId});
+  }
   return ok(c,{});
 });
 interactionRoutes.patch("/corrections/:id/review", async c => { const [fix]=await db.select().from(corrections).where(eq(corrections.id,c.req.param("id"))); if(!fix)throw fail("NOT_FOUND","纠错不存在"); const {u,n}=await editor(c,fix.noteId); const body=z.object({action:z.enum(["accept","reject"]),suggested:z.string().max(20000).optional()}).parse(await c.req.json());const applied=body.suggested??fix.suggested; if(body.action==="reject"){await db.update(corrections).set({status:"rejected",reviewedAt:new Date(),reviewedBy:u.id}).where(eq(corrections.id,fix.id));return ok(c,{status:"rejected"});} const idx=n.bodyMd.indexOf(fix.originalExcerpt); if(idx<0||hash(n.bodyMd.slice(idx,idx+fix.originalExcerpt.length))!==fix.originalHash){await db.update(corrections).set({status:"stale",reviewedAt:new Date(),reviewedBy:u.id}).where(eq(corrections.id,fix.id));return ok(c,{status:"stale"});} const bodyMd=n.bodyMd.slice(0,idx)+applied+n.bodyMd.slice(idx+fix.originalExcerpt.length); await assertUserStorage(n.createdBy,textBytes(n.title,bodyMd)-textBytes(n.title,n.bodyMd)); const [saved]=await db.update(notes).set({bodyMd,version:n.version+1,updatedBy:u.id,updatedAt:new Date()}).where(and(eq(notes.id,n.id),eq(notes.version,n.version))).returning();if(!saved)throw fail("CONFLICT_VERSION","笔记刚刚被其他人修改，请重新审核"); await db.insert(noteVersions).values({noteId:n.id,version:saved.version,title:saved.title,bodyMd:saved.bodyMd,editorId:u.id,source:"correction"}); await db.update(corrections).set({status:"accepted",reviewedAt:new Date(),reviewedBy:u.id}).where(eq(corrections.id,fix.id)); await writeNoteFile({...saved,noteId:saved.id}); await rebuildLinks(saved.id,saved.workspaceId,saved.bodyMd); return ok(c,{status:"accepted",version:saved.version}); });
@@ -104,6 +109,10 @@ interactionRoutes.patch("/public/comments/:id", async c => {
   if (Date.now() - new Date(comment.createdAt).getTime() > 300000) throw fail("EXPIRED", "超过 5 分钟就不能再改了，只能隐藏");
   const body = z.object({ body: z.string().min(1).max(2000) }).parse(await c.req.json());
   const [saved] = await db.update(comments).set({ body: body.body, editedAt: new Date() }).where(eq(comments.id, comment.id)).returning();
+  if (comment.targetType === "post" && !comment.authorAgentId) {
+    const [p] = await db.select().from(posts).where(eq(posts.id, comment.targetId));
+    if (p) await enqueueAgentMentions({ text: saved.body, post: p, sourceType: "comment", sourceId: saved.id, parentCommentId: saved.parentId ?? saved.id, authorAgentId: saved.authorAgentId });
+  }
   return ok(c, { id: saved.id, body: saved.body, editedAt: saved.editedAt });
 });
 interactionRoutes.get("/notifications", async c => { const u=await currentUser(c);if(!u)throw fail("UNAUTHENTICATED","未登录"); const rows=await db.select().from(notifications).where(eq(notifications.userId,u.id)).orderBy(desc(notifications.createdAt)).limit(50);return ok(c,{notifications:rows}); });

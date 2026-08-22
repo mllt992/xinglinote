@@ -15,6 +15,7 @@ import { purgeNotes } from "../../api/src/lib/trash.ts";
 import { extractPdfText } from "../../api/src/lib/pdf-text.ts";
 import { readStoredFile, releaseStoredFile } from "../../api/src/lib/blobs.ts";
 import { applyModeration } from "../../api/src/lib/moderation.ts";
+import { executeAgentReply } from "../../api/src/lib/agents.ts";
 const interval=Number(process.env.WORKER_INTERVAL_MS??5000); // durable worker cadence
 async function claim(){return db.transaction(async tx=>{const[job]=await tx.select().from(backgroundJobs).where(and(or(eq(backgroundJobs.status,"pending"),and(eq(backgroundJobs.status,"running"),lt(backgroundJobs.lockedAt,new Date(Date.now()-300000)))),lte(backgroundJobs.runAfter,new Date()))).orderBy(asc(backgroundJobs.createdAt)).limit(1).for("update",{skipLocked:true});if(!job)return null;const[claimed]=await tx.update(backgroundJobs).set({status:"running",lockedAt:new Date(),attempts:job.attempts+1}).where(eq(backgroundJobs.id,job.id)).returning();return claimed;});}
 async function execute(job:typeof backgroundJobs.$inferSelect){
@@ -130,6 +131,10 @@ ${env.publicUrl}/w/${item.workspaceId}/calendar?item=${item.id}`);}
     await applyModeration(reviewId,{lastAttempt:job.attempts>=5});
     return;
   }
+ if(job.type==="agent_reply"){
+   await executeAgentReply(job.payload as {agentId:string;sourceType:"post"|"comment";sourceId:string;postId:string;parentCommentId:string|null});
+   return;
+ }
  throw new Error(`unknown job type: ${job.type}`);
 }
 const BATCH=10;                                        // 队列一堆积，一轮只干一件事会等好几小时，所以一轮抽一小批

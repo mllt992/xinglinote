@@ -6,6 +6,7 @@ import { safeFetch } from "./net-guard.ts";
 import { open } from "./secrets.ts";
 
 export type Provider = typeof aiProviders.$inferSelect;
+export type ChatProvider = { baseUrl: string; chatModel: string; apiKey: string };
 
 /** 本人的私有配置优先，其次才是工作区公用的那份。 */
 export async function aiProvider(wsId: string, userId?: string) {
@@ -36,11 +37,11 @@ export async function embed(p: Provider, input: string[]) {
 type ChatResponse = { choices?: Array<{ message?: { content?: string } }>; usage?: Record<string, number> };
 
 /** 唯一一份聊天调用。routes/ai.ts 以前自己抄了一模一样的一份，别再抄了。 */
-export async function chatAi(p: Provider, messages: Array<{ role: string; content: string }>) {
+export async function chatAi(p: ChatProvider, messages: Array<{ role: string; content: string }>, opts?: { temperature?: number }) {
   const r = await safeFetch(`${p.baseUrl}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${open(p.apiKey)}` },
-    body: JSON.stringify({ model: p.chatModel, messages, temperature: 0.2 }),
+    body: JSON.stringify({ model: p.chatModel, messages, temperature: opts?.temperature ?? 0.2 }),
   }, "AI 提供商地址");
   if (!r.ok) throw fail("AI_PROVIDER_ERROR", `模型请求失败 (${r.status})`);
   const d = (await r.json()) as ChatResponse;

@@ -136,6 +136,7 @@ prompt = system + 编号片段 + 问题
 | ← 06 | PDF 文本 |
 | → 11 | `ask_knowledge` 复用 5.2；钥匙还可 `require_ai_index`（默认 true，与篇开关一致） |
 | → 09 | 动态不进 chunk |
+| → 20 | 智能体可选用已发布且 `ai_index` 的笔记当回复上下文 |
 | → 13 | provider key 不进备份明文 |
 | → 08 | 评论不进索引 |
 

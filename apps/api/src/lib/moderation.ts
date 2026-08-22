@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { backgroundJobs, contentReports, instanceSettings, moderationReviews, notes, notifications, posts, users, workspaceMembers } from "../db/schema.ts";
+import { enqueueAgentMentions } from "./agents.ts";
 import { safeFetch } from "./net-guard.ts";
 import { open } from "./secrets.ts";
 import {
@@ -233,6 +234,7 @@ async function applyToTarget(item: typeof moderationReviews.$inferSelect, pass: 
     if (pass) {
       if (p.status === "pending_review" || p.status === "rejected") {
         await db.update(posts).set({ status: "visible", updatedAt: new Date() }).where(eq(posts.id, p.id));
+        await enqueueAgentMentions({ text: p.body, post: { ...p, status: "visible" }, sourceType: "post", sourceId: p.id });
       }
       return;
     }

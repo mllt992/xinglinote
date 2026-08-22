@@ -1,5 +1,7 @@
 import{useEffect,useRef,useState}from'react';import{Flag,Globe2,Heart,MessageSquare,MoreHorizontal,NotebookPen,Pencil,RefreshCw,Send,Star,Trash2}from'lucide-react';import{api}from'../api';import{cn}from'../lib/utils';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
 import{FeedComments}from'./feed-comments';
+import{MentionField}from'./mention-field';
+import{MentionText,type MentionAgent}from'./mention-text';
 import{FEED_REFRESH_EVENT,formatFeedUpdateLabel,updatesPath,writeFeedSeen,type FeedUpdateCounts}from'./feed-updates';
 
 export type FeedPost={id:string;body:string;visibility:string;workspaceId:string|null;createdAt:string;editedAt:string|null;mine:boolean;author:{handle:string;displayName:string}|null;note:{id:string;title:string}|null;likes:number;liked:boolean;comments?:number;favorited?:boolean;status?:string;moderationQueued?:boolean;moderationReason?:string|null;appealable?:boolean;appealing?:boolean};
@@ -33,6 +35,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
   const[updates,setUpdates]=useState<FeedUpdateCounts>({newPosts:0,repliedPosts:0});
   const[refreshing,setRefreshing]=useState(false);
   const[fresh,setFresh]=useState<{newIds:Set<string>;repliedIds:Set<string>}|null>(null);
+  const[agents,setAgents]=useState<MentionAgent[]>([]);
   const path=scope==="public"?"/api/v1/feed/public":`/api/v1/feed/workspaces/${workspaceId}`;
   /** 单条动态的点赞、编辑、删除就地改这一条：整条时间线重拉会闪一下、丢滚动位置，点个赞不该付这个代价。
       listRef 只经 apply 写入，所以连点两下也不会拿到上一次渲染的旧列表。 */
@@ -58,6 +61,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
     finally{setRefreshing(false);}
   }
   useEffect(()=>{void load()},[path]);
+  useEffect(()=>{api<{agents:MentionAgent[]}>(`/api/v1/agents?scope=${scope==="public"?"square":"circle"}`).then(d=>setAgents(d.agents)).catch(()=>setAgents([]));},[scope]);
   useEffect(()=>{
     const tick=()=>{
       if(document.visibilityState!=="visible")return;
@@ -112,7 +116,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
 
   return <div className="space-y-4">
     {canPost&&<div className="rounded-2xl border bg-background p-4">
-      <Textarea value={body} onChange={e=>setBody(e.target.value)} maxLength={5000} placeholder={scope==="public"?"发到广场，实例里所有人可见。可以用 [[双链]] 引用已公开的笔记。":"发到本工作区的圈子，只有成员看得到。"} className="min-h-24"/>
+      <MentionField value={body} onChange={setBody} agents={agents} maxLength={5000} placeholder={scope==="public"?"发到广场，实例里所有人可见。可以用 [[双链]] 引用已公开的笔记，也可以 @ 智能体。":"发到本工作区的圈子，只有成员看得到。输入 @ 可叫智能体。"} className="min-h-24"/>
       <FormError className="mt-3">{err}</FormError>
       <div className="mt-3 flex items-center gap-3"><Button disabled={busy||!body.trim()} onClick={submit}><Send/>{busy?"发布中…":"发布"}</Button><span className="text-xs text-muted-foreground">{body.length}/5000</span></div>
     </div>}
@@ -143,15 +147,15 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
           </DropdownMenuContent></DropdownMenu>}
         </div>
       </div>
-      <p className="mt-3 whitespace-pre-wrap text-sm leading-7">{p.body}</p>
+      {p.body&&<MentionText text={p.body} agents={agents} className="mt-3 text-sm leading-7"/>}
       <HeldNote post={p} onAppeal={x=>{setDlgErr("");setAppealNote("");setAppealing(x)}}/>
       {p.note&&<button className="mt-3 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs hover:bg-muted" onClick={()=>p.workspaceId&&onOpenNote?.(p.workspaceId,p.note!.id)}><NotebookPen className="size-3.5"/>{p.note.title}</button>}
-      {openComments===p.id&&<FeedComments key={`${p.id}:${commentTick[p.id]??0}`} postId={p.id} signedIn={!!signedIn} onCount={n=>patchOne(p.id,x=>({...x,comments:n}))}/>}
+      {openComments===p.id&&<FeedComments key={`${p.id}:${commentTick[p.id]??0}`} postId={p.id} signedIn={!!signedIn} agents={agents} onCount={n=>patchOne(p.id,x=>({...x,comments:n}))}/>}
     </article>)}
 
     <Dialog open={!!editing} onOpenChange={v=>{if(!v)setEditing(null);setDlgErr("")}}><DialogContent>
       <DialogHeader><DialogTitle>编辑动态</DialogTitle><DialogDescription>改完会标上「已编辑」。</DialogDescription></DialogHeader>
-      <Textarea value={draft} onChange={e=>setDraft(e.target.value)} className="min-h-32" maxLength={5000}/>
+      <MentionField value={draft} onChange={setDraft} agents={agents} className="min-h-32" maxLength={5000}/>
       <FormError>{dlgErr}</FormError>
       <div className="flex justify-end gap-2"><Button variant="ghost" onClick={()=>setEditing(null)}>取消</Button><Button disabled={busy||!draft.trim()} onClick={async()=>{if(!editing)return;setBusy(true);try{const d=await api<{editedAt?:string;status?:string;moderation?:Held}>(`/api/v1/posts/${editing.id}`,{method:"PATCH",body:JSON.stringify({body:draft})});if(d.moderation?.queued)toast.success("改动已提交",d.moderation.message??"审核通过后会公开显示。");else if(d.moderation?.held)toast.success("改动已提交，等待人工审核",d.moderation.message??undefined);patchOne(editing.id,x=>({...x,body:draft,editedAt:d.editedAt??new Date().toISOString(),status:d.status??x.status,moderationQueued:!!d.moderation?.queued,moderationReason:d.moderation?.message??null}));setEditing(null)}catch(e){setDlgErr((e as Error).message)}finally{setBusy(false)}}}>保存</Button></div>
     </DialogContent></Dialog>

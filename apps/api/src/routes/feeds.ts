@@ -3,7 +3,8 @@ import { and, count, countDistinct, desc, eq, gt, inArray, isNull, lte, ne, or }
 import { z } from "zod";
 import { fail, normalizeTitle } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { auditLogs, comments, contentReports, instanceSettings, moderationReviews, notebooks, notes, noteVersions, notifications, postFavorites, postReactions, posts, users, workspaceMembers, workspaces } from "../db/schema.ts";
+import { agents, auditLogs, comments, contentReports, instanceSettings, moderationReviews, notebooks, notes, noteVersions, notifications, postFavorites, postReactions, posts, users, workspaceMembers, workspaces } from "../db/schema.ts";
+import { enqueueAgentMentions } from "../lib/agents.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
@@ -77,7 +78,7 @@ feedRoutes.get("/feed/workspaces/:id/updates",async c=>{
   const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");
   return ok(c,await feedUpdates(and(eq(posts.workspaceId,wsId),readable(u.id)),parseSince(c.req.query("since")),u.id));
 });
-feedRoutes.post("/posts",async c=>{const u=await user(c);const body=z.object({body:z.string().min(1).max(5000),visibility:z.enum(["public","workspace"]),workspaceId:z.string().uuid().nullable().optional(),noteId:z.string().uuid().nullable().optional()}).parse(await c.req.json());if(body.visibility==="workspace"){if(!body.workspaceId)throw fail("VALIDATION","缺少工作区");const role=await memberRole(body.workspaceId,u.id);if(!role||role==="viewer")throw fail("FORBIDDEN","无权发布工作区动态");const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,body.workspaceId));if(ws?.frozen)throw fail("FORBIDDEN","工作区已冻结，暂时只读");}if(body.visibility==="public"&&body.workspaceId)throw fail("VALIDATION","公开动态不能指定工作区");if(body.noteId){const [n]=await db.select().from(notes).where(eq(notes.id,body.noteId));if(!n||n.trashedAt||!noteIsPublic(n))throw fail("VALIDATION","只能附加已发布笔记");if(body.visibility==="workspace"&&n.workspaceId!==body.workspaceId)throw fail("FORBIDDEN","不能附加其他工作区的笔记");if(body.visibility==="public"&&!(await memberRole(n.workspaceId,u.id)))throw fail("FORBIDDEN","不能附加无权访问的笔记");}const scope=body.visibility==="public"?"square":"circle";const settings=await instanceConfig();const held=moderationOn(settings,scope);const [p]=await db.insert(posts).values({authorUserId:u.id,workspaceId:body.workspaceId,visibility:body.visibility,body:body.body,noteId:body.noteId,status:held?"pending_review":"visible"}).returning();const mod=held?await queueReview({targetType:"post",targetId:p.id,scope,workspaceId:p.workspaceId,authorUserId:u.id,snapshot:body.body}):{held:false,queued:false,message:null};return ok(c,{...p,moderation:{held:mod.held,queued:mod.queued,message:mod.message}},201);});
+feedRoutes.post("/posts",async c=>{const u=await user(c);const body=z.object({body:z.string().min(1).max(5000),visibility:z.enum(["public","workspace"]),workspaceId:z.string().uuid().nullable().optional(),noteId:z.string().uuid().nullable().optional()}).parse(await c.req.json());if(body.visibility==="workspace"){if(!body.workspaceId)throw fail("VALIDATION","缺少工作区");const role=await memberRole(body.workspaceId,u.id);if(!role||role==="viewer")throw fail("FORBIDDEN","无权发布工作区动态");const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,body.workspaceId));if(ws?.frozen)throw fail("FORBIDDEN","工作区已冻结，暂时只读");}if(body.visibility==="public"&&body.workspaceId)throw fail("VALIDATION","公开动态不能指定工作区");if(body.noteId){const [n]=await db.select().from(notes).where(eq(notes.id,body.noteId));if(!n||n.trashedAt||!noteIsPublic(n))throw fail("VALIDATION","只能附加已发布笔记");if(body.visibility==="workspace"&&n.workspaceId!==body.workspaceId)throw fail("FORBIDDEN","不能附加其他工作区的笔记");if(body.visibility==="public"&&!(await memberRole(n.workspaceId,u.id)))throw fail("FORBIDDEN","不能附加无权访问的笔记");}const scope=body.visibility==="public"?"square":"circle";const settings=await instanceConfig();const held=moderationOn(settings,scope);const [p]=await db.insert(posts).values({authorUserId:u.id,workspaceId:body.workspaceId,visibility:body.visibility,body:body.body,noteId:body.noteId,status:held?"pending_review":"visible"}).returning();const mod=held?await queueReview({targetType:"post",targetId:p.id,scope,workspaceId:p.workspaceId,authorUserId:u.id,snapshot:body.body}):{held:false,queued:false,message:null};if(!held)await enqueueAgentMentions({text:p.body,post:p,sourceType:"post",sourceId:p.id});return ok(c,{...p,moderation:{held:mod.held,queued:mod.queued,message:mod.message}},201);});
 feedRoutes.delete("/posts/:id",async c=>{
   const u=await user(c);const [p]=await db.select().from(posts).where(eq(posts.id,c.req.param("id")));
   if(!p||p.status==="deleted")throw fail("NOT_FOUND","动态不存在");
@@ -104,9 +105,13 @@ feedRoutes.delete("/posts/:id/favorite",async c=>{
   return ok(c,{favorited:false});
 });
 
-function commentDto(r:typeof comments.$inferSelect,authors:Array<{id:string;displayName:string}>,viewerId?:string){
+function commentDto(r:typeof comments.$inferSelect,authors:Array<{id:string;displayName:string}>,agentRows:Array<{id:string;handle:string;displayName:string;avatarEmoji:string}>,viewerId?:string){
+  const agent=r.authorAgentId?agentRows.find(a=>a.id===r.authorAgentId):undefined;
   return {id:r.id,body:r.body,parentId:r.parentId,status:r.status,
-    author:r.authorUserId?authors.find(a=>a.id===r.authorUserId)?.displayName??"已注销用户":r.guestName,
+    author:agent?agent.displayName:r.authorUserId?authors.find(a=>a.id===r.authorUserId)?.displayName??"已注销用户":r.guestName,
+    authorKind:agent?"agent":r.authorUserId?"user":"guest",
+    authorHandle:agent?.handle??null,
+    agent:agent?{id:agent.id,handle:agent.handle,displayName:agent.displayName,avatarEmoji:agent.avatarEmoji}:null,
     createdAt:r.createdAt,editedAt:r.editedAt,mine:!!viewerId&&r.authorUserId===viewerId,
     editableUntil:new Date(new Date(r.createdAt).getTime()+300000)};
 }
@@ -120,8 +125,10 @@ feedRoutes.get("/posts/:id/comments",async c=>{
     canModerate?inArray(comments.status,["visible","pending"]):eq(comments.status,"visible"),
   )).orderBy(desc(comments.createdAt));
   const authorIds=[...new Set(rows.map(r=>r.authorUserId).filter((x):x is string=>!!x))];
+  const agentIds=[...new Set(rows.map(r=>r.authorAgentId).filter((x):x is string=>!!x))];
   const authors=authorIds.length?await db.select({id:users.id,displayName:users.displayName}).from(users).where(inArray(users.id,authorIds)):[];
-  return ok(c,{canModerate,comments:rows.map(r=>commentDto(r,authors,viewer?.id))});
+  const agentRows=agentIds.length?await db.select({id:agents.id,handle:agents.handle,displayName:agents.displayName,avatarEmoji:agents.avatarEmoji}).from(agents).where(inArray(agents.id,agentIds)):[];
+  return ok(c,{canModerate,comments:rows.map(r=>commentDto(r,authors,agentRows,viewer?.id))});
 });
 
 feedRoutes.post("/posts/:id/comments",async c=>{
@@ -160,6 +167,7 @@ feedRoutes.post("/posts/:id/comments",async c=>{
       href:post.workspaceId?`/w/${post.workspaceId}/feed`:"/",
     });
   }
+  if(status==="visible")await enqueueAgentMentions({text:body.body,post,sourceType:"comment",sourceId:row.id,parentCommentId:row.parentId??row.id});
   return ok(c,{id:row.id,status},201);
 });
 
@@ -224,6 +232,7 @@ feedRoutes.patch("/posts/:id",async c=>{
   const scope=p.visibility==="public"?"square":"circle";const settings=await instanceConfig();const held=moderationOn(settings,scope);
   const[saved]=await db.update(posts).set({body:b.body,status:held?"pending_review":"visible",editedAt:new Date(),updatedAt:new Date()}).where(eq(posts.id,p.id)).returning();
   const mod=held?await queueReview({targetType:"post",targetId:saved.id,scope,workspaceId:saved.workspaceId,authorUserId:u.id,snapshot:b.body}):{held:false,queued:false,message:null};
+  if(!held)await enqueueAgentMentions({text:saved.body,post:saved,sourceType:"post",sourceId:saved.id});
   return ok(c,{id:saved.id,editedAt:saved.editedAt,status:saved.status,moderation:{held:mod.held,queued:mod.queued,message:mod.message}});
 });
 

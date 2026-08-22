@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode, type SelectHTMLAttributes } from "
 import { useNavigate, useSearchParams } from "react-router-dom";
 import * as Avatar from "@radix-ui/react-avatar";
 import {
-  Ban, BellRing, Check, ChevronRight, Compass, Copy, Download, HardDrive, Image, KeyRound, LayoutGrid, MoreHorizontal,
+  Ban, BellRing, Bot, Check, ChevronRight, Compass, Copy, Download, HardDrive, Image, KeyRound, LayoutGrid, MoreHorizontal,
   Plus, Search, Shield, ShieldCheck, Sparkles, Ticket, Trash2, UserCog, Users, X,
 } from "lucide-react";
 import { api } from "../api";
@@ -15,12 +15,13 @@ import { FormError } from "./ui/form-error";
 import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
 import { useToast } from "./ui/toast";
+import { AgentsPanel } from "./agents-panel";
 import { ModerationConfig, ModerationQueue } from "./moderation-panel";
 import { PushConfig } from "./push-admin-panel";
 import { SmtpConfig } from "./smtp-panel";
 import { NavAdmin } from "./nav-admin";
 
-type Tab = "overview" | "registration" | "moderation" | "notifications" | "codes" | "users" | "nav";
+type Tab = "overview" | "registration" | "moderation" | "agents" | "notifications" | "codes" | "users" | "nav";
 type AdminUser = { id: string; displayName: string; email: string; handle: string; roleInstance: string; status: string; createdAt?: string };
 type AdminCode = { id: string; prefix: string; usedCount: number; maxUses: number; status: string; note?: string | null; expiresAt?: string | null; createdAt?: string; skipEmailVerification?: boolean; bindRole?: string | null };
 type Overview = {
@@ -33,6 +34,7 @@ const TABS: { id: Tab; label: string; hint: string; icon: typeof LayoutGrid }[] 
   { id: "overview", label: "概览", hint: "规模与关键开关", icon: LayoutGrid },
   { id: "registration", label: "注册策略", hint: "谁能进来、能做什么", icon: Shield },
   { id: "moderation", label: "内容审核", hint: "AI 先审，拿不准再转人工", icon: ShieldCheck },
+  { id: "agents", label: "智能体", hint: "创建可被动态 @ 的 AI 助手", icon: Bot },
   { id: "notifications", label: "通知与推送", hint: "SMTP、VAPID 密钥与推送总开关", icon: BellRing },
   { id: "nav", label: "导航", hint: "分组、站点与自动取图标", icon: Compass },
   { id: "codes", label: "注册码", hint: "批量发放一次性准入", icon: Ticket },
@@ -371,6 +373,8 @@ export function AdminPage() {
           <ModerationConfig settings={overview?.settings ?? {}} onSaved={loadOverview} />
           <ModerationQueue />
         </div>}
+
+        {!error && !loading && tab === "agents" && <AgentsPanel />}
 
         {!error && !loading && tab === "nav" && <NavAdmin settings={overview?.settings ?? {}} onSaved={loadOverview} />}
 

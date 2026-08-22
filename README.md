@@ -60,7 +60,7 @@ pnpm test
 `--remote-debugging-port=9223` 并已登录。另有两个脚本要先起本地假服务，否则会以连接被拒失败：
 
 ```bash
-node scripts/mock-ai-provider.mjs   # verify-ai-index、verify-ai-write-review 要它（:19091）
+node scripts/mock-ai-provider.mjs   # verify-ai-index、verify-ai-write-review、verify-agents 要它（:19091）
 node scripts/mock-webdav.mjs        # verify-backup 要它（:19092）
 node scripts/mock-push-gateway.mjs  # verify-push 要它（:19093）
 ```
@@ -74,7 +74,9 @@ node scripts/verify-mcp-keys.mjs    # MCP 钥匙的额度、范围、档位、�
 node scripts/verify-mcp-tools.mjs   # MCP 工具合同：动态减清单、搜索、替换、今天、幂等、审计
 node scripts/verify-gaps.mjs        # 分享类型、分享总览、回收站销毁、搜索、标签
 node scripts/verify-notebook-move.mjs    # 笔记本跨工作区搬迁：内容、附件、搜索归属、双链、权限
+node scripts/verify-site-review.mjs      # 文档站：编辑申请、管理员过审才上线
 node scripts/verify-feed.mjs        # 圈子动态、泄漏检查、转正、公开主页、评论
+node scripts/verify-agents.mjs      # 智能体 CRUD、动态 @、评论回复
 node scripts/verify-calendar-core.mjs   # 日历 CRUD、时区边界、ACL、409、今天页、日记
 node scripts/verify-calendar-sync.mjs   # 笔记 ↔ 日历双向同步、块锚、版本合并、脱链
 node scripts/verify-calendar-recur.mjs  # 重复展开、单次例外、「此后全部」

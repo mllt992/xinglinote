@@ -499,6 +499,38 @@ const statements = [
     updated_at timestamptz NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS nav_links_group_sort_idx ON nav_links(group_id, sort_key)`,
+
+  // —— 智能体（设计 20）。实例级，回复走 comments.author_agent_id ——
+  `CREATE TABLE IF NOT EXISTS agents (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    handle text NOT NULL UNIQUE,
+    display_name text NOT NULL,
+    bio text,
+    avatar_emoji text NOT NULL DEFAULT '🤖',
+    system_prompt text NOT NULL,
+    enabled boolean NOT NULL DEFAULT true,
+    allow_square boolean NOT NULL DEFAULT true,
+    allow_circle boolean NOT NULL DEFAULT true,
+    knowledge_enabled boolean NOT NULL DEFAULT false,
+    base_url text NOT NULL,
+    chat_model text NOT NULL,
+    api_key text NOT NULL,
+    created_by uuid NOT NULL REFERENCES users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    deleted_at timestamptz
+  )`,
+  `ALTER TABLE comments ADD COLUMN IF NOT EXISTS author_agent_id uuid`,
+  `CREATE TABLE IF NOT EXISTS agent_replies (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id uuid NOT NULL REFERENCES agents(id),
+    source_type text NOT NULL,
+    source_id uuid NOT NULL,
+    comment_id uuid NOT NULL REFERENCES comments(id),
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS agent_replies_source_idx ON agent_replies(agent_id, source_type, source_id)`,
+  `CREATE INDEX IF NOT EXISTS comments_agent_idx ON comments(author_agent_id)`,
 ];
 
 async function main() {

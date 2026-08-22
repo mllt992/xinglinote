@@ -8,6 +8,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
@@ -322,7 +323,7 @@ export const contentReports = pgTable("content_reports", {
 export const comments = pgTable("comments", {
   id: uuid("id").defaultRandom().primaryKey(), targetType: text("target_type").notNull(), targetId: uuid("target_id").notNull(),
   shareId: uuid("share_id"), siteNotebookId: uuid("site_notebook_id"), parentId: uuid("parent_id"),
-  authorUserId: uuid("author_user_id"), guestName: text("guest_name"), guestEmail: text("guest_email"),
+  authorUserId: uuid("author_user_id"), authorAgentId: uuid("author_agent_id"), guestName: text("guest_name"), guestEmail: text("guest_email"),
   body: text("body").notNull(), status: text("status").notNull().default("pending"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), editedAt: timestamp("edited_at", { withTimezone: true }),
 });
@@ -526,6 +527,37 @@ export const calendarTemplates = pgTable("calendar_templates", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
+
+/** 实例级智能体。不是用户，回复走 comments.author_agent_id（设计 20）。 */
+export const agents = pgTable("agents", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  handle: text("handle").notNull().unique(),
+  displayName: text("display_name").notNull(),
+  bio: text("bio"),
+  avatarEmoji: text("avatar_emoji").notNull().default("🤖"),
+  systemPrompt: text("system_prompt").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  allowSquare: boolean("allow_square").notNull().default(true),
+  allowCircle: boolean("allow_circle").notNull().default(true),
+  knowledgeEnabled: boolean("knowledge_enabled").notNull().default(false),
+  baseUrl: text("base_url").notNull(),
+  chatModel: text("chat_model").notNull(),
+  apiKey: text("api_key").notNull(),
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+});
+
+/** 同一来源同一智能体只回一次。 */
+export const agentReplies = pgTable("agent_replies", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  agentId: uuid("agent_id").notNull().references(() => agents.id),
+  sourceType: text("source_type").notNull(),
+  sourceId: uuid("source_id").notNull(),
+  commentId: uuid("comment_id").notNull().references(() => comments.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, t => [uniqueIndex("agent_replies_source_idx").on(t.agentId, t.sourceType, t.sourceId)]);
 
 /** 实例导航的分组。站点挂在组下，删组会级联删站点（设计 19）。 */
 export const navGroups = pgTable("nav_groups", {

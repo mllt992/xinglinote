@@ -5,18 +5,31 @@ import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { FormError } from "./ui/form-error";
 import { Input } from "./ui/input";
-import { Textarea } from "./ui/textarea";
 import { useToast } from "./ui/toast";
+import { MentionField } from "./mention-field";
+import { MentionText, type MentionAgent } from "./mention-text";
 
 type Comment = {
   id: string; body: string; parentId: string | null; status: string;
-  author: string | null; createdAt: string; editedAt: string | null;
+  author: string | null; authorKind?: "user" | "guest" | "agent";
+  authorHandle?: string | null;
+  agent?: { id: string; handle: string; displayName: string; avatarEmoji: string } | null;
+  createdAt: string; editedAt: string | null;
   mine: boolean; editableUntil: string;
 };
 type Challenge = { question: string; token: string };
 
 /** 动态底下的一层评论。登录直发；广场访客要过验证码，先待审。 */
-export function FeedComments({ postId, signedIn, onCount }: { postId: string; signedIn: boolean; onCount?: (n: number) => void }) {
+function AuthorLabel({ c }: { c: Comment }) {
+  return <>
+    {c.agent?.avatarEmoji && <span>{c.agent.avatarEmoji}</span>}
+    <b className="text-foreground">{c.author ?? "访客"}</b>
+    {c.authorKind === "agent" && <Badge>智能体</Badge>}
+    {c.authorHandle && <span>@{c.authorHandle}</span>}
+  </>;
+}
+
+export function FeedComments({ postId, signedIn, agents = [], onCount }: { postId: string; signedIn: boolean; agents?: MentionAgent[]; onCount?: (n: number) => void }) {
   const toast = useToast();
   const [comments, setComments] = useState<Comment[]>([]);
   const [canModerate, setCanModerate] = useState(false);
@@ -70,7 +83,7 @@ export function FeedComments({ postId, signedIn, onCount }: { postId: string; si
       {roots.length === 0 && <p className="text-xs text-muted-foreground">还没有评论。</p>}
       {roots.map(c => <div key={c.id} className="rounded-lg bg-muted/40 px-3 py-2.5">
         <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-          <b className="text-foreground">{c.author ?? "访客"}</b>
+          <AuthorLabel c={c} />
           <span>{new Date(c.createdAt).toLocaleString()}</span>
           {c.editedAt && <Badge>已编辑</Badge>}
           {c.status === "pending" && <Badge className="border-transparent bg-[color-mix(in_srgb,var(--warning)_14%,transparent)] text-[var(--warning)]">待审</Badge>}
@@ -83,10 +96,10 @@ export function FeedComments({ postId, signedIn, onCount }: { postId: string; si
             {(canModerate || c.mine) && c.status === "visible" && <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => void review(c.id, "hidden")}>隐藏</Button>}
           </span>
         </div>
-        <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6">{c.body}</p>
+        <MentionText text={c.body} agents={c.agent ? [...agents, c.agent] : agents} className="mt-1.5 text-sm leading-6" />
         {repliesOf(c.id).map(r => <div key={r.id} className="mt-2 border-l-2 border-border pl-3">
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-            <b className="text-foreground">{r.author ?? "访客"}</b>
+            <AuthorLabel c={r} />
             <span>{new Date(r.createdAt).toLocaleString()}</span>
             {r.status === "pending" && <Badge className="border-transparent bg-[color-mix(in_srgb,var(--warning)_14%,transparent)] text-[var(--warning)]">待审</Badge>}
             {(canModerate || r.mine) && r.status === "visible" && <Button variant="ghost" size="sm" className="ml-auto h-7 px-2 text-xs" onClick={() => void review(r.id, "hidden")}>隐藏</Button>}
@@ -95,7 +108,7 @@ export function FeedComments({ postId, signedIn, onCount }: { postId: string; si
               <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-destructive" onClick={() => void review(r.id, "rejected")}><X />拒绝</Button>
             </span>}
           </div>
-          <p className="mt-1 whitespace-pre-wrap text-sm leading-6">{r.body}</p>
+          <MentionText text={r.body} agents={r.agent ? [...agents, r.agent] : agents} className="mt-1 text-sm leading-6" />
         </div>)}
       </div>)}
     </div>
@@ -103,7 +116,7 @@ export function FeedComments({ postId, signedIn, onCount }: { postId: string; si
     <form className="mt-3 space-y-2" onSubmit={send}>
       {replyTo && <p className="flex items-center gap-2 text-xs text-muted-foreground"><MessageSquare className="size-3.5" />正在回复 <b>{replyTo.author}</b><Button type="button" variant="ghost" size="sm" className="h-7" onClick={() => setReplyTo(null)}>取消</Button></p>}
       {!signedIn && <Input value={name} onChange={e => setName(e.target.value)} placeholder="访客昵称" maxLength={40} />}
-      <Textarea value={body} onChange={e => setBody(e.target.value)} maxLength={2000} placeholder={replyTo ? `回复 ${replyTo.author}…` : "写下评论…"} className="min-h-16" />
+      <MentionField value={body} onChange={setBody} agents={agents} maxLength={2000} placeholder={replyTo ? `回复 ${replyTo.author}…` : "写下评论，输入 @ 可叫智能体"} className="min-h-16" />
       {!signedIn && challenge && <div className="flex items-center gap-2">
         <span className="text-xs text-muted-foreground">访客请作答：{challenge.question}</span>
         <Input className="w-24" value={answer} onChange={e => setAnswer(e.target.value)} inputMode="numeric" placeholder="答案" />
