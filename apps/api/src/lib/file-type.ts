@@ -16,6 +16,8 @@ export const ALLOWED_MIME = new Set([
   "text/plain",
   "text/markdown",
   "application/zip",
+  "video/mp4",
+  "video/webm",
 ]);
 
 const starts = (b: Uint8Array, sig: number[], at = 0) => sig.every((v, i) => b[at + i] === v);
@@ -28,6 +30,9 @@ function sniff(bytes: Uint8Array): string | null {
   if (starts(bytes, [0x52, 0x49, 0x46, 0x46]) && starts(bytes, [0x57, 0x45, 0x42, 0x50], 8)) return "image/webp";
   if (starts(bytes, [0x25, 0x50, 0x44, 0x46])) return "application/pdf";
   if (starts(bytes, [0x50, 0x4b, 0x03, 0x04]) || starts(bytes, [0x50, 0x4b, 0x05, 0x06])) return "application/zip";
+  // mp4 / mov 家族：第 5–8 字节是 ftyp。webm 跟 mkv 都是 EBML 头，声明成 webm 就认。
+  if (bytes.length > 12 && starts(bytes, [0x66, 0x74, 0x79, 0x70], 4)) return "video/mp4";
+  if (starts(bytes, [0x1a, 0x45, 0xdf, 0xa3])) return "video/webm";
   return null;
 }
 

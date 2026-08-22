@@ -36,8 +36,8 @@ const write = (title: string, extra: Partial<ToolAnnotations> = {}): ToolAnnotat
 });
 
 export const MCP_INSTRUCTIONS = [
-  "这是星璃笔记的知识库 MCP。一把钥匙只活在一个工作区，权限不会超过持有人本人。",
-  "先调 get_me，看 rw、notebooks 和到期时间，再动手。",
+  "这是星璃笔记的知识库 MCP。一把钥匙可以勾选多个工作区，权限不会超过持有人本人。",
+  "先调 get_me，看 workspaces、rw、notebooks 和到期时间，再动手。",
   "找内容用 search_notes（默认 hybrid），不要用 list_folder 扫整库，也不要猜测 UUID。",
   "读一篇用 get_note；改正文必须先拿到 version，再传 expected_version。冲突时用返回的 version 重读再写。",
   "只改一段请用 replace_in_note，日记补一行用 append_to_note，不要整篇重写。",
@@ -49,7 +49,7 @@ export const MCP_INSTRUCTIONS = [
 export const TOOL_DEFS: Record<string, ToolDef> = {
   get_me: {
     tier: "read",
-    description: "返回当前 MCP 钥匙的持有人、工作区、读写档、可见笔记本与到期时间。开始工作前先调一次。",
+    description: "返回当前 MCP 钥匙的持有人、勾选的工作区、读写档、可见笔记本与到期时间。开始工作前先调一次。",
     annotations: read("当前钥匙"),
   },
   list_notebooks: {
@@ -70,6 +70,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
     properties: {
       query: { type: "string", minLength: 1, maxLength: 200 },
       notebook_id: UUID,
+      workspace_id: UUID,
       tag: { type: "string" },
       mode: { type: "string", enum: ["keyword", "semantic", "hybrid"], default: "hybrid" },
       limit: { type: "integer", minimum: 1, maximum: 20, default: 20 },
@@ -94,7 +95,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
   ask_knowledge: {
     tier: "read",
     description: "基于知识库内容问答，返回答案与引用来源。不要用它代替 search_notes 做浏览。",
-    properties: { question: { type: "string", minLength: 1, maxLength: 2000 }, notebook_id: UUID },
+    properties: { question: { type: "string", minLength: 1, maxLength: 2000 }, notebook_id: UUID, workspace_id: UUID },
     required: ["question"],
     annotations: read("知识问答", { openWorldHint: true }),
   },
@@ -103,6 +104,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
     description: "按更新时间倒序列出最近改过的笔记，不含正文。",
     properties: {
       since: { type: "string", format: "date-time" },
+      workspace_id: UUID,
       limit: { type: "integer", minimum: 1, maximum: 50, default: 20 },
     },
     annotations: read("最近改动"),
@@ -110,6 +112,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
   today: {
     tier: "read",
     description: "今天的日程、逾期未完成任务、以及今天改过的笔记。问「我今天该做什么」时优先用这个。",
+    properties: { workspace_id: UUID },
     annotations: read("今天"),
   },
   list_attachments: {
@@ -140,6 +143,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
       status: { type: "string", enum: ["open", "done", "all"], default: "open" },
       assignee: { type: "string", maxLength: 40 },
       include_inbox: { type: "boolean", default: true },
+      workspace_id: UUID,
       limit: { type: "integer", minimum: 1, maximum: 200, default: 200 },
     },
     annotations: read("任务列表"),
@@ -153,6 +157,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
       status: { type: "string", enum: ["open", "done", "all"], default: "all" },
       assignee: { type: "string", maxLength: 40 },
       include_inbox: { type: "boolean", default: true },
+      workspace_id: UUID,
       limit: { type: "integer", minimum: 1, maximum: 200, default: 200 },
     },
     annotations: read("日程列表"),
@@ -206,6 +211,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
       all_day: { type: "boolean", default: false },
       priority: { type: "integer", minimum: 0, maximum: 3, default: 0 },
       note: { type: "string", maxLength: 2000, default: "" },
+      workspace_id: UUID,
     },
     required: ["title"],
     annotations: write("新建任务"),
@@ -249,6 +255,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
       body: { type: "string", minLength: 1, maxLength: 5000 },
       scope: { type: "string", enum: ["workspace", "public"], default: "workspace" },
       note_id: UUID,
+      workspace_id: UUID,
     },
     required: ["body"],
     annotations: write("发动态"),

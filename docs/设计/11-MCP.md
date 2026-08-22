@@ -17,7 +17,8 @@
 | secret_hash | 明文 `kbk_{id前8}_{高熵}` 只创建/轮换时显示一次 |
 | name | 用户起名 |
 | user_id | 主体，不可改为别人 |
-| workspace_id | **恰好一个** |
+| workspace_id | 主工作区，等于 `workspace_ids[0]`，给旧查询 / FK 用 |
+| workspace_ids[] | **至少一个**。只能是持有人当时的成员区 |
 | notebook_mode | `inherit` / `allowlist` |
 | notebook_ids[] | allowlist 时 |
 | rw | `read` / `write` / `manage` |
@@ -31,9 +32,9 @@
 | last_used_at | |
 | created_at | |
 
-Viewer 只能建 `rw=read`。Editor+ 可 write。manage 建议 Editor+ 都能建给自己，但仍受本人 ACL 限制。  
-`inherit`：范围随此人在本区未来 ACL 变化。  
-`allowlist`：创建时校验每个 id 当时 `can_read`；之后某本丢失读权则该本自动失效（不必改表）。新本不会进入 allowlist。
+Viewer 只能建 `rw=read`。只要勾选的区里有一个是 Viewer，这把钥匙就只能是只读。Editor+ 可 write。manage 建议 Editor+ 都能建给自己，但仍受本人在**每个**勾选区的 ACL 限制。  
+`inherit`：范围随此人在各勾选区未来 ACL 变化。  
+`allowlist`：创建时校验每个 id 当时 `can_read`，且该本必须属于某个勾选区；之后某本丢失读权则该本自动失效（不必改表）。新本不会进入 allowlist。
 
 状态：active → revoked（吊销或轮换旧钥匙）。过期不算改 status，判定时看时间。
 
@@ -43,13 +44,13 @@ Viewer 只能建 `rw=read`。Editor+ 可 write。manage 建议 Editor+ 都能建
 
 ### 3.1 设置 → MCP 钥匙
 
-「新建」：选工作区、档位（只读/写作/管理）、模式 inherit 或勾选多个笔记本、过期、高级开关。提交后弹层显示明文 + 「复制 Cursor 配置」「复制 Claude Desktop 配置」「我已保存」。关弹层后不再给明文。
+「新建」：勾选一个或多个工作区、档位（只读/写作/管理）、模式 inherit 或勾选多个笔记本、过期、高级开关。提交后弹层显示明文 + 「复制 Cursor 配置」「复制 Claude Desktop 配置」「我已保存」。关弹层后不再给明文。
 
-列表：名称、区、范围摘要、档、每日额度、最后使用、过期。**只列 active**；轮换掉的旧钥匙与吊销的钥匙不再占位，查历史用 `?includeRevoked=1`。
+列表：名称、区（多个用顿号）、范围摘要、档、每日额度、最后使用、过期。**只列 active**；轮换掉的旧钥匙与吊销的钥匙不再占位，查历史用 `?includeRevoked=1`。
 操作：编辑、轮换、吊销。
 
-编辑：改档位、笔记本范围、过期、额度与三个高级开关，校验与新建同一套（不能超过本人 ACL，allow_delete 仅 manage）。
-**不换明文**，客户端配置继续可用；**不能换绑工作区**，要换就新建一把。
+编辑：改工作区勾选、档位、笔记本范围、过期、额度与三个高级开关，校验与新建同一套（不能超过本人 ACL，allow_delete 仅 manage）。
+**不换明文**，客户端配置继续可用。工作区可以加减，至少留一个。
 
 轮换：旧 secret 立刻 401；新 secret 只显示一次，权限克隆。
 
@@ -85,7 +86,7 @@ Claude.ai 连接器、ChatGPT 的 Create app 这类**云端**客户端不给填�
 `WWW-Authenticate: Bearer resource_metadata="…"` → 顺着元数据找到授权服务器 → 注册 →
 跳授权 → 落到 `/oauth/consent` 同意页。
 
-**关键取舍：授权通过后不发 JWT。** 同意页把工作区、档位、笔记本范围、三个高级开关、
+**关键取舍：授权通过后不发 JWT。** 同意页把工作区（可多选）、档位、笔记本范围、三个高级开关、
 有效期勾定，换 token 时照常在 `mcp_tokens` 里落一行，access token 就是那把
 `kbk_` 明文。好处是第 4 节业务规则一条都不用改——鉴权、范围、额度、审计、
 **吊销即刻生效**全部复用既有那套；自证明的 JWT 恰恰做不到第 9 条。
@@ -93,9 +94,9 @@ Claude.ai 连接器、ChatGPT 的 Create app 这类**云端**客户端不给填�
 代价是不发 refresh token：access token 要么永不过期，要么按同意页选的有效期到点作废，
 到期后客户端重走一次授权。对自托管场景这个取舍是划算的。
 
-同意页给出去的权限**不会超过本人在该工作区的权限**，校验和手工建钥匙共用一套：
-Viewer 只能授权只读，`allow_delete` 只有 manage 档位能开，allowlist 里的每个笔记本都要
-逐个过 `notebookAccess`。授权码单次有效、10 分钟过期；被重放时连带吊销它换出去的钥匙。
+同意页给出去的权限**不会超过本人在每个勾选工作区的权限**，校验和手工建钥匙共用一套：
+只要有一个勾选区是 Viewer 就只能授权只读，`allow_delete` 只有 manage 档位能开，allowlist 里的每个笔记本都要
+逐个过 `notebookAccess` 且属于某个勾选区。授权码单次有效、10 分钟过期；被重放时连带吊销它换出去的钥匙。
 
 OAuth 签发的钥匙在设置页和手工建的并排显示（`source='oauth'`，记着 `client_id`），
 随时可吊销。
@@ -109,8 +110,8 @@ Owner/Admin 看本区：时间、token 名、user、tool、target note、结果�
 
 ## 4. 业务规则
 
-1. 钥匙不能大于 user 在该 workspace 的 ACL。
-2. 请求 workspace 与钥匙绑定不一致 → FORBIDDEN。
+1. 钥匙不能大于 user 在**每个**勾选 workspace 的 ACL。
+2. 请求涉及的 workspace 不在钥匙的 `workspace_ids` 里（或人已不是该区成员）→ FORBIDDEN。跨区读工具默认搜全部勾选区；写到「某个区」的工具（`create_task` / `post_to_feed`）在绑了多个区时必须带 `workspace_id`。
 3. `allow_private_notebooks=false` 时，`visibility=private` 的本对这把钥匙隐形（即使 inherit 且人能看）。
 4. `require_ai_index=true` 时 `can_ai_read` 必须成立才能 get/search/ask。`update` 已有篇：若钥匙要求 ai_index 而篇是 false，**仍允许写吗？** —— **不允许 get，允许 update/append 仅当 `can_edit` 且目标在范围内**，避免日记完全锁死无法被「按 id 补一行」；但 search/ask/get 仍不可见。若产品更硬：写也禁止。  
    **拍板：search/get/ask 遵守 require_ai_index；create 跟随本默认；update/append/move 只看 ACL+范围，不看 ai_index。** 这样「关掉 AI 读取」不会挡住人用 Agent 改一篇已知 id 的日记——若担心，用户不要把日记放进 allowlist。
@@ -118,7 +119,7 @@ Owner/Admin 看本区：时间、token 名、user、tool、target note、结果�
 6. `delete` 默认无工具暴露；仅 `allow_delete` 时注册 `trash_note`（进回收站）。
 7. 日写入字节按 UTC 日加总 body。未设上限则只记账不设卡；设了上限，超限 QUOTA。
 8. 每把钥匙 60 次/分钟。超限 429。
-9. 用户被移出工作区、封禁、注销、钥匙吊销：立即失败。缓存 TTL ≤ 30s，吊销走主动失效。
+9. 用户被移出某个勾选区：从这把钥匙的 `workspace_ids` 里拿掉该区（白名单里属于该区的本一并拿掉）；一个都不剩则整把吊销。封禁、注销、钥匙吊销：立即失败。缓存 TTL ≤ 30s，吊销走主动失效。
 10. 动态工具仅当 feed_* 打开才注册，默认清单里没有。`tools/list` 必须按钥匙 rw / `allow_delete` / feed 减工具，不要列出再 403。
 11. 对外文档站、分享页不跑 MCP。
 12. 写工具可带 HTTP 头 `Idempotency-Key` 或参数 `client_request_id`。同一把钥匙、同一个键在 10 分钟内只执行第一次成功写入，之后原样返回那次结果——MCP 是 POST，断线重试不能再落一篇。
@@ -133,7 +134,9 @@ Owner/Admin 看本区：时间、token 名、user、tool、target note、结果�
 ```
 token = resolve Bearer
 if missing/revoked/expired/banned user: UNAUTHENTICATED
-if token.workspace != 请求涉及的 workspace: FORBIDDEN
+live = token.workspace_ids ∩ 此人当前成员区
+if live 为空: FORBIDDEN
+if 请求涉及的 workspace 不在 live: FORBIDDEN
 actor = token.user
 if tool 是写且 rw==read: FORBIDDEN
 if tool 是 move/tag 且 rw not manage: FORBIDDEN
@@ -158,7 +161,7 @@ target notes:
 ### 5.2 工具
 
 **`get_me`**  
-出：user handle、workspace id/name、rw、notebook_mode、notebooks[{id,title,slug,visibility}]（inherit 则列当前能读且过 private 过滤的本）、expires_at、require_ai_index、allow_private_notebooks、allow_delete、image_max_bytes（实例当前的 MCP 单张图上限）。
+出：user handle、workspace（第一个，兼容旧客户端）、workspaces[{id,name}]、rw、notebook_mode、notebooks[{id,title,slug,visibility,workspace_id}]（inherit 则列当前能读且过 private 过滤的本）、expires_at、require_ai_index、allow_private_notebooks、allow_delete、image_max_bytes（实例当前的 MCP 单张图上限）。
 
 **`list_notebooks`**  
 出：过范围过滤的本。
@@ -166,8 +169,8 @@ target notes:
 **`list_folder(notebook_id, path?)`**  
 出：子目录与笔记标题、id。不含正文。
 
-**`search_notes(query, notebook_id?, tag?, mode=keyword|semantic|hybrid)`**  
-limit≤20。出：`{ hits: [{ id, title, path, snippet }] }`，snippet≤240。keyword 走转义后的 ILIKE；semantic / hybrid 复用 10 的 `retrieve()`，但仍要过钥匙范围，不得绕开 `require_ai_index`。查询里的 `%` `_` 当字面量，不当通配符。
+**`search_notes(query, notebook_id?, workspace_id?, tag?, mode=keyword|semantic|hybrid)`**  
+limit≤20。出：`{ hits: [{ id, title, path, snippet }] }`，snippet≤240。默认搜全部勾选区；传了 `workspace_id` 只搜那一区。keyword 走转义后的 ILIKE；semantic / hybrid 复用 10 的 `retrieve()`，但仍要过钥匙范围，不得绕开 `require_ai_index`。查询里的 `%` `_` 当字面量，不当通配符。
 
 **`get_note(id)`**  
 出：id、title、path（笔记本 → 目录 → 标题）、body_md、version、tags、ai_index、published、links[{raw,target_id,state}]。
@@ -175,8 +178,8 @@ limit≤20。出：`{ hits: [{ id, title, path, snippet }] }`，snippet≤240。
 **`get_backlinks(id)`**  
 出：from id/title/snippet，仅 can_read 的 from。
 
-**`ask_knowledge(question, notebook_id?)`**  
-复用 10 的 5.2。出：answer、citations[{note_id,title,excerpt}]。
+**`ask_knowledge(question, notebook_id?, workspace_id?)`**  
+复用 10 的 5.2。多区时默认跨勾选区检索再答；传了 `notebook_id` / `workspace_id` 则收窄。出：answer、citations[{note_id,title,excerpt}]。
 
 **`create_note(notebook_id, folder_id?, title, content, tags?)`**  
 须 write。ai_index/published 跟本默认。出：id、version。
@@ -217,8 +220,8 @@ limit≤20。出：`{ hits: [{ id, title, path, snippet }] }`，snippet≤240。
 `source=note` 的条目**完全继承来源笔记的判定**：钥匙的笔记本范围、`require_ai_index`、私密笔记本开关一并适用，不可见的直接不返回。
 `list_tasks` 默认只给 `open`，并带上收件箱里没期限的任务。
 
-**`create_task(title, due_at?, all_day?, priority?, note?)`**  
-须 write。只能建 `source=mcp` 的独立任务，**不能写笔记正文**——否则一把「只读笔记」的钥匙能靠建任务绕道改正文。
+**`create_task(title, due_at?, all_day?, priority?, note?, workspace_id?)`**  
+须 write。只能建 `source=mcp` 的独立任务，**不能写笔记正文**——否则一把「只读笔记」的钥匙能靠建任务绕道改正文。绑了多个区时 `workspace_id` 必填。
 
 **`complete_task(id, occurrence_start?, done?)`**  
 须 write。命中 `source=note` 的条目会回写正文 `- [x]`，因此额外要求对那篇笔记 `can_edit`（等于一次带审计的正文修改，走 16 §4.3 的版本合并）。
@@ -236,7 +239,7 @@ limit≤20。出：`{ hits: [{ id, title, path, snippet }] }`，snippet≤240。
 |---|---|
 | ← 02、03、04、05、10、12 | 全部复用，禁止 MCP 另写一套保存/ACL |
 | → 审计、13 | 审计可备；secret 永不备 |
-| ← 12 | 移出成员默认作废其本区钥匙 |
+| ← 12 | 移出成员默认从钥匙里拿掉本区；一个区都不剩则整把作废 |
 | → 09 | feed 工具默认不注册 |
 | ← 16 | 日历四工具复用同一把钥匙的工作区与笔记本范围；`complete_task` 的回写走 16 §5.3 |
 

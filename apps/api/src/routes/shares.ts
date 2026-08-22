@@ -3,10 +3,10 @@ import { Hono } from "hono";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
-import { hashPassword, verifyPassword } from "@kb/core";
+import { canPublishNotebook, canRequestSitePublish, hashPassword, verifyPassword } from "@kb/core";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { attachments, folders, notebooks, notes, shareLinks, workspaces } from "../db/schema.ts";
+import { attachments, folders, notebooks, notes, notifications, shareLinks, users, workspaceMembers, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { readStoredFile } from "../lib/blobs.ts";
 import { currentUser } from "../lib/session.ts";
@@ -297,25 +297,123 @@ shareRoutes.post("/public/shares/:token/unlock", async (c) => {
   return ok(c, {});
 });
 
+function sitePending(nb: { sitePublished: boolean; sitePublishRequestedBy: string | null }) {
+  return !nb.sitePublished && !!nb.sitePublishRequestedBy;
+}
+async function siteView(nb: typeof notebooks.$inferSelect, userId: string) {
+  const { workspace, role, notebookRole } = await notebookAccess(nb.id, userId, "read");
+  const canPublish = canPublishNotebook(role);
+  const canRequest = canRequestSitePublish({
+    actor: { kind: "user", userId },
+    notebook: { id: nb.id, workspaceId: workspace.id, visibility: nb.visibility as "open" | "private" | "restricted", createdBy: nb.createdBy, frozenWorkspace: workspace.frozen },
+    wsRole: role, nbMemberRole: notebookRole,
+  });
+  return {
+    published: nb.sitePublished,
+    pending: sitePending(nb),
+    requestedBy: nb.sitePublishRequestedBy,
+    requestedAt: nb.sitePublishRequestedAt,
+    canPublish, canRequest,
+    slug: `/s/${workspace.slug}/${nb.slug}`,
+    accent: nb.siteAccent,
+  };
+}
+async function notifySiteManagers(workspaceId: string, title: string, body: string, href: string) {
+  const managers = await db.select({ userId: workspaceMembers.userId }).from(workspaceMembers)
+    .where(and(eq(workspaceMembers.workspaceId, workspaceId), inArray(workspaceMembers.role, ["owner", "admin"])));
+  if (!managers.length) return;
+  await db.insert(notifications).values(managers.map(m => ({ userId: m.userId, type: "site_publish_request", title, body, href })));
+}
+
 shareRoutes.patch("/notebooks/:id/site", async (c) => {
   const user = await userRequired(c);
-  const [nb] = await db.select().from(notebooks).where(eq(notebooks.id, c.req.param("id")));
+  const id = c.req.param("id");
+  const [nb] = await db.select().from(notebooks).where(eq(notebooks.id, id));
   if (!nb || nb.trashedAt) throw fail("NOT_FOUND", "笔记本不存在");
-  const role = await memberRole(nb.workspaceId, user.id);
-  if (role !== "owner" && role !== "admin") throw fail("FORBIDDEN", "只有管理员能发布文档站");
-  const body = z.object({ published: z.boolean(), accent: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional() }).parse(await c.req.json());
-  const [saved] = await db.update(notebooks).set({ sitePublished: body.published, siteAccent: body.accent === undefined ? nb.siteAccent : body.accent }).where(eq(notebooks.id, nb.id)).returning();
-  const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, nb.workspaceId));
-  return ok(c, { published: saved.sitePublished, slug: `/s/${ws?.slug}/${saved.slug}`, accent: saved.siteAccent });
+  const { role } = await notebookAccess(id, user.id, "read");
+  const isAdmin = canPublishNotebook(role);
+  const body = z.object({
+    published: z.boolean().optional(),
+    accent: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
+    action: z.enum(["approve", "reject"]).optional(),
+  }).parse(await c.req.json());
+
+  let next = { sitePublished: nb.sitePublished, siteAccent: body.accent === undefined ? nb.siteAccent : body.accent, sitePublishRequestedBy: nb.sitePublishRequestedBy, sitePublishRequestedAt: nb.sitePublishRequestedAt };
+
+  if (body.action === "approve" || body.action === "reject") {
+    if (!isAdmin) throw fail("FORBIDDEN", "只有管理员能审文档站申请");
+    if (!sitePending(nb)) throw fail("VALIDATION", "没有待审的发布申请");
+    const requester = nb.sitePublishRequestedBy;
+    if (body.action === "approve") {
+      next = { ...next, sitePublished: true, sitePublishRequestedBy: null, sitePublishRequestedAt: null };
+    } else {
+      next = { ...next, sitePublishRequestedBy: null, sitePublishRequestedAt: null };
+    }
+    const [saved] = await db.update(notebooks).set(next).where(eq(notebooks.id, nb.id)).returning();
+    if (requester) {
+      await db.insert(notifications).values({
+        userId: requester, type: "site_publish_decided",
+        title: body.action === "approve" ? `《${nb.title}》已发布为文档站` : `《${nb.title}》的发布申请未通过`,
+        body: body.action === "approve" ? "管理员已通过，对外地址现在可以打开。" : "管理员驳回了这次申请。改好后可以再提交。",
+        href: `/w/${nb.workspaceId}`,
+      });
+    }
+    return ok(c, await siteView(saved, user.id));
+  }
+
+  if (body.published === true) {
+    if (isAdmin) {
+      next = { ...next, sitePublished: true, sitePublishRequestedBy: null, sitePublishRequestedAt: null };
+    } else {
+      await notebookAccess(id, user.id, "edit");
+      if (nb.sitePublished) return ok(c, await siteView(nb, user.id));
+      if (sitePending(nb) && nb.sitePublishRequestedBy === user.id) return ok(c, await siteView(nb, user.id));
+      if (sitePending(nb) && nb.sitePublishRequestedBy !== user.id) throw fail("VALIDATION", "已有待审的发布申请");
+      next = { ...next, sitePublishRequestedBy: user.id, sitePublishRequestedAt: new Date() };
+      const [saved] = await db.update(notebooks).set(next).where(eq(notebooks.id, nb.id)).returning();
+      await notifySiteManagers(nb.workspaceId, `《${nb.title}》申请发布为文档站`, "有编辑权的成员提交了申请，通过后才会对外上线。", `/w/${nb.workspaceId}/settings?tab=shares`);
+      return ok(c, await siteView(saved, user.id));
+    }
+  } else if (body.published === false) {
+    if (isAdmin) {
+      next = { ...next, sitePublished: false, sitePublishRequestedBy: null, sitePublishRequestedAt: null };
+    } else {
+      if (nb.sitePublished) throw fail("FORBIDDEN", "只有管理员能下线文档站");
+      if (!sitePending(nb)) return ok(c, await siteView(nb, user.id));
+      if (nb.sitePublishRequestedBy !== user.id) throw fail("FORBIDDEN", "只能撤回自己的申请");
+      next = { ...next, sitePublishRequestedBy: null, sitePublishRequestedAt: null };
+    }
+  }
+
+  const [saved] = await db.update(notebooks).set(next).where(eq(notebooks.id, nb.id)).returning();
+  return ok(c, await siteView(saved, user.id));
 });
 
 shareRoutes.get("/notebooks/:id/site", async (c) => {
   const user = await userRequired(c);
   const [nb] = await db.select().from(notebooks).where(eq(notebooks.id, c.req.param("id")));
   if (!nb) throw fail("NOT_FOUND", "笔记本不存在");
-  if (!(await memberRole(nb.workspaceId, user.id))) throw fail("FORBIDDEN", "无权查看");
-  const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, nb.workspaceId));
-  return ok(c, { published: nb.sitePublished, slug: `/s/${ws?.slug}/${nb.slug}`, accent: nb.siteAccent });
+  return ok(c, await siteView(nb, user.id));
+});
+
+shareRoutes.get("/workspaces/:id/site-requests", async (c) => {
+  const user = await userRequired(c);
+  const workspaceId = c.req.param("id");
+  const role = await memberRole(workspaceId, user.id);
+  if (!canPublishNotebook(role)) throw fail("FORBIDDEN", "只有管理员能看发布申请");
+  const [ws] = await db.select({ slug: workspaces.slug }).from(workspaces).where(eq(workspaces.id, workspaceId));
+  const rows = await db.select({
+    id: notebooks.id, title: notebooks.title, slug: notebooks.slug,
+    requestedBy: notebooks.sitePublishRequestedBy, requestedAt: notebooks.sitePublishRequestedAt,
+    requesterName: users.displayName,
+  }).from(notebooks)
+    .leftJoin(users, eq(users.id, notebooks.sitePublishRequestedBy))
+    .where(and(eq(notebooks.workspaceId, workspaceId), eq(notebooks.sitePublished, false), isNull(notebooks.trashedAt)))
+    .orderBy(desc(notebooks.sitePublishRequestedAt));
+  return ok(c, { requests: rows.filter(r => r.requestedBy).map(r => ({
+    notebookId: r.id, title: r.title, requestedBy: r.requestedBy, requestedByName: r.requesterName ?? "未知用户",
+    requestedAt: r.requestedAt, slug: `/s/${ws?.slug}/${r.slug}`,
+  })) });
 });
 
 shareRoutes.get("/public/sites/:wsSlug/:nbSlug", async (c) => {

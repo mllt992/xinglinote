@@ -23,6 +23,32 @@ try {
   madePosts.push(post.id);
   const feed = (await q(`/feed/workspaces/${ws.id}`, {}, c)).data;
   result.workspaceFeedLists = feed.posts.some(p => p.id === post.id);
+
+  // 动态附件：先暂存再挂到帖上；广场未登录也能读图。
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+  async function uploadAsset(buf, name, type, cookie) {
+    const form = new FormData();
+    form.append("file", new Blob([buf], { type }), name);
+    const r = await fetch(base + "/posts/attachments", { method: "POST", headers: { cookie, "X-Requested-With": "fetch" }, body: form });
+    const j = await r.json();
+    if (!r.ok || !j.ok) { const e = new Error(j.error?.message ?? r.status); e.status = r.status; throw e; }
+    return j.data;
+  }
+  const staged = await uploadAsset(png, "dot.png", "image/png", c);
+  result.assetUploadReturnsImage = staged.kind === "image" && staged.filename === "dot.png";
+  const withPic = (await q("/posts", { method: "POST", body: JSON.stringify({ body: "带一张图", visibility: "workspace", workspaceId: ws.id, attachmentIds: [staged.id] }) }, c)).data;
+  madePosts.push(withPic.id);
+  const listed = (await q(`/feed/workspaces/${ws.id}`, {}, c)).data.posts.find(p => p.id === withPic.id);
+  result.feedListsPostAsset = listed?.assets?.some(a => a.id === staged.id && a.kind === "image") === true;
+  const assetGet = await fetch(base + `/posts/attachments/${staged.id}`, { headers: { cookie: c } });
+  result.assetReadableByAuthor = assetGet.ok && (assetGet.headers.get("content-type") ?? "").includes("image/png");
+  const orphan = await uploadAsset(png, "orphan.png", "image/png", c);
+  await q(`/posts/attachments/${orphan.id}`, { method: "DELETE" }, c);
+  const gone = await fetch(base + `/posts/attachments/${orphan.id}`, { headers: { cookie: c } });
+  result.stagedAssetCanDelete = gone.status === 404;
+  let htmlBlocked = false;
+  try { await uploadAsset(Buffer.from("<html><script>1</script></html>"), "x.png", "image/png", c); } catch { htmlBlocked = true; }
+  result.assetRejectsFakePng = htmlBlocked;
   result.feedMarksMine = feed.posts.find(p => p.id === post.id)?.mine === true;
   result.feedReturnsServerNow = typeof feed.now === "string" && !Number.isNaN(new Date(feed.now).getTime());
   result.publicFeedExcludesWorkspacePost = !(await q('/feed/public', {}, c)).data.posts.some(p => p.id === post.id);

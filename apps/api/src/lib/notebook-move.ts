@@ -8,6 +8,7 @@ import {
   mcpTokens, notebookMembers, notebooks, notes, posts, shareLinks, workspaceMembers, workspaces,
 } from "../db/schema.ts";
 import { env } from "../env.ts";
+import { mcpTokenCoversWorkspace, tokenWorkspaceIds } from "./mcp-workspaces.ts";
 import { isBlobPath } from "./blob-path.ts";
 import { noteCandidates, rebuildLinks } from "./links.ts";
 
@@ -131,10 +132,12 @@ export async function moveNotebook(notebookId: string, targetWorkspaceId: string
         await tx.delete(notebookMembers).where(and(eq(notebookMembers.notebookId, nb.id), eq(notebookMembers.userId, m.userId)));
       }
       // 原区的 MCP 钥匙白名单里还留着这本，钥匙面板上会显示成一本点不开的幽灵笔记本。
-      const tokens = await tx.select().from(mcpTokens).where(eq(mcpTokens.workspaceId, srcWorkspaceId));
+      const tokens = await tx.select().from(mcpTokens).where(mcpTokenCoversWorkspace(srcWorkspaceId));
       for (const t of tokens) {
         const list = t.notebookIds as string[];
-        if (list.includes(nb.id)) await tx.update(mcpTokens).set({ notebookIds: list.filter(id => id !== nb.id) }).where(eq(mcpTokens.id, t.id));
+        if (!list.includes(nb.id)) continue;
+        if (tokenWorkspaceIds(t).includes(dst.id)) continue;
+        await tx.update(mcpTokens).set({ notebookIds: list.filter(id => id !== nb.id) }).where(eq(mcpTokens.id, t.id));
       }
       for (const workspaceId of [srcWorkspaceId, dst.id]) {
         await tx.insert(auditLogs).values({

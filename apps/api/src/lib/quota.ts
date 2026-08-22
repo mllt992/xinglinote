@@ -1,7 +1,7 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { attachments, instanceSettings, notes, users } from "../db/schema.ts";
+import { attachments, instanceSettings, notes, postAssets, users } from "../db/schema.ts";
 
 export function textBytes(title: string, body: string) {
   return Buffer.byteLength(title, "utf8") + Buffer.byteLength(body, "utf8");
@@ -20,10 +20,13 @@ export async function userStorage(userId: string) {
     .where(and(eq(notes.createdBy, userId), isNull(notes.trashedAt)));
   const [{ bytes: attachmentBytes }] = await db.select({ bytes: sql<number>`coalesce(sum(${attachments.bytes}), 0)::bigint` }).from(attachments)
     .where(and(eq(attachments.createdBy, userId), isNull(attachments.trashedAt)));
+  const [{ bytes: postAssetBytes }] = await db.select({ bytes: sql<number>`coalesce(sum(${postAssets.bytes}), 0)::bigint` }).from(postAssets)
+    .where(and(eq(postAssets.createdBy, userId), isNull(postAssets.trashedAt)));
   const noteBytes = Number(noteBytesRaw ?? 0);
-  const usedBytes = noteBytes + Number(attachmentBytes ?? 0);
+  const fileBytes = Number(attachmentBytes ?? 0) + Number(postAssetBytes ?? 0);
+  const usedBytes = noteBytes + fileBytes;
   const quotaBytes = user.quota ?? settings?.defaultQuota ?? 1073741824;
-  return { usedBytes, quotaBytes, remainingBytes: Math.max(0, quotaBytes - usedBytes), noteBytes, attachmentBytes: Number(attachmentBytes ?? 0) };
+  return { usedBytes, quotaBytes, remainingBytes: Math.max(0, quotaBytes - usedBytes), noteBytes, attachmentBytes: fileBytes };
 }
 
 export async function assertUserStorage(userId: string, additionalBytes: number) {

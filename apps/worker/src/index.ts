@@ -12,6 +12,7 @@ import { upload,remove } from "../../api/src/lib/backup-transfer.ts";
 import { open } from "../../api/src/lib/secrets.ts";
 import { pruneNoteVersions } from "../../api/src/lib/versions.ts";
 import { purgeNotes } from "../../api/src/lib/trash.ts";
+import { dropWorkspaceFromMcpTokens } from "../../api/src/lib/mcp-workspaces.ts";
 import { extractPdfText } from "../../api/src/lib/pdf-text.ts";
 import { readStoredFile, releaseStoredFile } from "../../api/src/lib/blobs.ts";
 import { applyModeration } from "../../api/src/lib/moderation.ts";
@@ -66,7 +67,7 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
      await tx.delete(folders).where(eq(folders.workspaceId,workspaceId));
      await tx.delete(notebooks).where(eq(notebooks.workspaceId,workspaceId));
      await tx.delete(shareLinks).where(eq(shareLinks.workspaceId,workspaceId));
-     await tx.delete(mcpTokens).where(eq(mcpTokens.workspaceId,workspaceId));
+     await dropWorkspaceFromMcpTokens(tx,{workspaceId,empty:"delete"});
      await tx.delete(aiProviders).where(eq(aiProviders.workspaceId,workspaceId));
      await tx.delete(aiUsage).where(eq(aiUsage.workspaceId,workspaceId));
      await tx.delete(workspaceInvites).where(eq(workspaceInvites.workspaceId,workspaceId));

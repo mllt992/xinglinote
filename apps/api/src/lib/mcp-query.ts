@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import { folders, notebooks, notes } from "../db/schema.ts";
 import { retrieve } from "./knowledge-ai.ts";
@@ -15,15 +15,17 @@ export function likeClause(query: string) {
 }
 
 export async function buildNotePaths(
-  workspaceId: string,
+  workspaceIds: string | string[],
   rows: Array<{ id: string; notebookId: string; folderId: string | null; title: string }>,
 ) {
   const out = new Map<string, string[]>();
   if (!rows.length) return out;
+  const ids = Array.isArray(workspaceIds) ? workspaceIds : [workspaceIds];
+  if (!ids.length) return out;
   const nbs = await db.select({ id: notebooks.id, title: notebooks.title }).from(notebooks)
-    .where(eq(notebooks.workspaceId, workspaceId));
+    .where(inArray(notebooks.workspaceId, ids));
   const fs = await db.select({ id: folders.id, title: folders.title, parentId: folders.parentId }).from(folders)
-    .where(and(eq(folders.workspaceId, workspaceId), isNull(folders.trashedAt)));
+    .where(and(inArray(folders.workspaceId, ids), isNull(folders.trashedAt)));
   const nbTitle = new Map(nbs.map(n => [n.id, n.title]));
   const byId = new Map(fs.map(f => [f.id, f]));
   for (const row of rows) {
@@ -43,7 +45,7 @@ export async function buildNotePaths(
 }
 
 export async function searchNotesInScope(input: {
-  workspaceId: string;
+  workspaceIds: string[];
   userId: string;
   query: string;
   notebookId?: string;
@@ -53,6 +55,7 @@ export async function searchNotesInScope(input: {
   accept: (noteId: string) => Promise<boolean>;
 }) {
   const hits = new Map<string, { id: string; title: string; snippet: string; notebookId: string; folderId: string | null; score: number }>();
+  if (!input.workspaceIds.length) return [];
 
   const take = async (id: string, title: string, snippet: string, notebookId: string, folderId: string | null, score: number) => {
     if (input.notebookId && notebookId !== input.notebookId) return;
@@ -63,7 +66,7 @@ export async function searchNotesInScope(input: {
 
   if (input.mode !== "semantic") {
     const rows = await db.select().from(notes).where(and(
-      eq(notes.workspaceId, input.workspaceId),
+      inArray(notes.workspaceId, input.workspaceIds),
       isNull(notes.trashedAt),
       likeClause(input.query),
     )).limit(80);
@@ -76,36 +79,39 @@ export async function searchNotesInScope(input: {
   }
 
   if (input.mode !== "keyword") {
-    const rows = await retrieve({
-      workspaceId: input.workspaceId,
-      userId: input.userId,
-      query: input.query,
-      notebookId: input.notebookId,
-      mode: input.mode === "hybrid" ? "semantic" : input.mode,
-      limit: input.limit,
-      filterNoteId: input.accept,
-    });
-    for (const r of rows) {
-      const [n] = await db.select().from(notes).where(eq(notes.id, r.noteId));
-      if (!n || n.trashedAt) continue;
-      const tags = n.tags as string[];
-      if (input.tag && !tags.includes(input.tag)) continue;
-      await take(n.id, n.title, r.excerpt, n.notebookId, n.folderId, 1 + r.score);
+    for (const workspaceId of input.workspaceIds) {
+      const rows = await retrieve({
+        workspaceId,
+        userId: input.userId,
+        query: input.query,
+        notebookId: input.notebookId,
+        mode: input.mode === "hybrid" ? "semantic" : input.mode,
+        limit: input.limit,
+        filterNoteId: input.accept,
+      });
+      for (const r of rows) {
+        const [n] = await db.select().from(notes).where(eq(notes.id, r.noteId));
+        if (!n || n.trashedAt) continue;
+        const tags = n.tags as string[];
+        if (input.tag && !tags.includes(input.tag)) continue;
+        await take(n.id, n.title, r.excerpt, n.notebookId, n.folderId, 1 + r.score);
+      }
     }
   }
 
   const sorted = [...hits.values()].sort((a, b) => b.score - a.score).slice(0, input.limit);
-  const paths = await buildNotePaths(input.workspaceId, sorted);
+  const paths = await buildNotePaths(input.workspaceIds, sorted);
   return sorted.map(h => ({ id: h.id, title: h.title, path: paths.get(h.id) ?? [h.title], snippet: h.snippet }));
 }
 
 export async function listRecentNotes(input: {
-  workspaceId: string;
+  workspaceIds: string[];
   since?: Date;
   limit: number;
   accept: (noteId: string) => Promise<boolean>;
 }) {
-  const conds = [eq(notes.workspaceId, input.workspaceId), isNull(notes.trashedAt)];
+  if (!input.workspaceIds.length) return [];
+  const conds = [inArray(notes.workspaceId, input.workspaceIds), isNull(notes.trashedAt)];
   if (input.since) conds.push(gte(notes.updatedAt, input.since));
   const rows = await db.select({
     id: notes.id, title: notes.title, notebookId: notes.notebookId, folderId: notes.folderId,
@@ -117,7 +123,7 @@ export async function listRecentNotes(input: {
     kept.push(n);
     if (kept.length >= input.limit) break;
   }
-  const paths = await buildNotePaths(input.workspaceId, kept);
+  const paths = await buildNotePaths(input.workspaceIds, kept);
   return kept.map(n => ({
     id: n.id,
     title: n.title,

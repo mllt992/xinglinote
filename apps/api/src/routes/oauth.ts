@@ -14,7 +14,7 @@ import { notebookAccess } from "../lib/notebook-access.ts";
 import { tryLimit } from "../lib/rate-limit.ts";
 import { clientIp } from "../lib/client-ip.ts";
 import { hashSecret, matchesSecret, secretHashes, secureToken } from "../lib/tokens.ts";
-import { memberRole } from "../lib/workspace.ts";
+import { assertTokenWorkspaces, resolveWorkspaceIds } from "../lib/mcp-workspaces.ts";
 
 /**
  * MCP 的 OAuth 2.1 授权码流程（强制 PKCE + RFC 7591 动态注册）。
@@ -182,7 +182,8 @@ oauthRoutes.get("/oauth/requests/:id", async (c) => {
 });
 
 const policySchema = z.object({
-  workspaceId: z.string().uuid(),
+  workspaceId: z.string().uuid().optional(),
+  workspaceIds: z.array(z.string().uuid()).min(1).max(50).optional(),
   rw: z.enum(["read", "write", "manage"]),
   notebookMode: z.enum(["inherit", "allowlist"]).default("inherit"),
   notebookIds: z.array(z.string().uuid()).default([]),
@@ -200,16 +201,19 @@ oauthRoutes.post("/oauth/requests/:id/approve", async (c) => {
   const u = await currentUser(c);
   if (!u) throw fail("UNAUTHENTICATED", "请先登录");
   const r = await pending(c.req.param("id"));
-  const p = policySchema.parse(await c.req.json());
+  const parsed = policySchema.parse(await c.req.json());
+  const workspaceIds = resolveWorkspaceIds(parsed);
+  const p = { ...parsed, workspaceIds, workspaceId: workspaceIds[0]! };
 
-  // 授权出去的权限不能超过本人在该工作区的权限——和手动建钥匙同一套校验
-  const role = await memberRole(p.workspaceId, u.id);
-  if (!role) throw fail("FORBIDDEN", "不是这个工作区的成员");
-  if (role === "viewer" && p.rw !== "read") throw fail("FORBIDDEN", "Viewer 只能授权只读");
+  // 授权出去的权限不能超过本人在每个勾选工作区的权限——和手动建钥匙同一套校验
+  await assertTokenWorkspaces(u.id, workspaceIds, p.rw);
   if (p.allowDelete && p.rw !== "manage") throw fail("VALIDATION", "只有「全部」档位可以允许删除");
   if (p.notebookMode === "allowlist") {
     if (!p.notebookIds.length) throw fail("VALIDATION", "指定笔记本时至少要选一个");
-    for (const id of p.notebookIds) await notebookAccess(id, u.id, p.rw === "read" ? "read" : "edit");
+    for (const id of p.notebookIds) {
+      const x = await notebookAccess(id, u.id, p.rw === "read" ? "read" : "edit");
+      if (!workspaceIds.includes(x.workspace.id)) throw fail("VALIDATION", "指定的笔记本不属于勾选的工作区");
+    }
   }
 
   const code = `kba_${secureToken(32)}`;
@@ -287,6 +291,7 @@ oauthRoutes.post("/oauth/token", async (c) => {
   if (!safeEqual(challenge, r.codeChallenge)) return oerr(c, 400, "invalid_grant", "PKCE 校验失败");
 
   const p = r.policy as Policy;
+  const workspaceIds = resolveWorkspaceIds(p);
   const id = crypto.randomUUID();
   const secret = `kbk_${id.slice(0, 8)}_${secureToken(24)}`;
   await db.insert(mcpTokens).values({
@@ -294,7 +299,8 @@ oauthRoutes.post("/oauth/token", async (c) => {
     secretHash: hashSecret(secret),
     name: client.clientName,
     userId: r.userId,
-    workspaceId: p.workspaceId,
+    workspaceId: workspaceIds[0]!,
+    workspaceIds,
     notebookMode: p.notebookMode,
     notebookIds: p.notebookIds,
     rw: p.rw,

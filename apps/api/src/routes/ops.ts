@@ -12,6 +12,7 @@ import { ok } from "../http.ts";
 import { readStoredFile } from "../lib/blobs.ts";
 import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
+import { mcpTokenCoversWorkspace } from "../lib/mcp-workspaces.ts";
 import { writeNoteFile } from "../lib/files.ts";
 import { rebuildLinks } from "../lib/links.ts";
 import { assertUserStorage, textBytes } from "../lib/quota.ts";
@@ -266,7 +267,7 @@ opsRoutes.get("/workspaces/:id/overview",async c=>{
   const inviteRows=canManage?await db.select({expiresAt:workspaceInvites.expiresAt,status:workspaceInvites.status}).from(workspaceInvites).where(and(eq(workspaceInvites.workspaceId,id),eq(workspaceInvites.status,"active"))):[];
   const activeInvites=inviteRows.filter(i=>i.expiresAt.getTime()>Date.now()).length;
 
-  const mcpActive=await n(db.select({value:count()}).from(mcpTokens).where(and(eq(mcpTokens.workspaceId,id),eq(mcpTokens.status,"active"))));
+  const mcpActive=await n(db.select({value:count()}).from(mcpTokens).where(and(mcpTokenCoversWorkspace(id),eq(mcpTokens.status,"active"))));
 
   let backup:{targets:number;lastRunAt:string|null;lastStatus:string|null;scheduled:number}|null=null;
   if(canManage){
@@ -284,5 +285,6 @@ opsRoutes.get("/workspaces/:id/overview",async c=>{
     roles,
     stats:{members:memberRows.length,notebooks:notebookCount,notes:noteCount,notesActive7d:activeNotes7d,attachments:attachRows.length,attachmentBytes:attachBytes,mcpActive,activeInvites,trashedNotes},
     shares,backup,recentAudit,
+    siteRequests: canManage ? await n(db.select({value:count()}).from(notebooks).where(and(eq(notebooks.workspaceId,id),eq(notebooks.sitePublished,false),isNull(notebooks.trashedAt),isNotNull(notebooks.sitePublishRequestedBy)))) : 0,
   });
 });

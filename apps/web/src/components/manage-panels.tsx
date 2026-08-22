@@ -1,4 +1,4 @@
-import{useEffect,useState}from'react';import type{ReactNode}from'react';import{Archive,CalendarDays,CloudUpload,Download,FileClock,FolderTree,Link2 as Link2Icon,Lock,Play,Plug,Plus,RotateCcw,ShieldAlert,Snowflake,Trash2 as Trash2Icon,Upload}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{useConfirm,usePrompt}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
+import{useEffect,useState}from'react';import type{ReactNode}from'react';import{Archive,CalendarDays,CloudUpload,Download,FileClock,FolderTree,Globe2,Link2 as Link2Icon,Lock,Play,Plug,Plus,RotateCcw,ShieldAlert,Snowflake,Trash2 as Trash2Icon,Upload}from'lucide-react';import{api}from'../api';import{Button}from'./ui/button';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{useConfirm,usePrompt}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
 const box="rounded-xl border bg-background";
 function Field({title,children}:{title:string;children:ReactNode}){return <label className="grid gap-1.5"><span className="text-xs font-medium text-muted-foreground">{title}</span>{children}</label>;}
 function Hollow({icon,text}:{icon:ReactNode;text:string}){return <div className="py-12 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground">{icon}</span><p className="mt-3 text-xs text-muted-foreground">{text}</p></div>;}
@@ -177,6 +177,7 @@ export function SharesPanel({workspaceId}:{workspaceId:string}){
   const live=data.shares.filter(s=>s.status==="active");
   async function patch(s:WsShare,body:Record<string,unknown>,okText:string){try{await api(`/api/v1/shares/${s.id}`,{method:"PATCH",body:JSON.stringify(body)});toast.success(okText);await load()}catch(e){toast.error("改设置失败",(e as Error).message)}}
   return <div className="space-y-3">
+    {data.canManageAll&&<SiteRequestsSection workspaceId={workspaceId}/>}
     <p className="text-sm text-muted-foreground">{data.canManageAll?"你是管理员，这里是本工作区的全部分享链接。":"这里是你自己创建的分享链接。"}</p>
     {live.length===0?<div className={box}><Hollow icon={<Link2Icon/>} text="本工作区还没有生效中的分享链接。"/></div>
     :<div className="space-y-2">{live.map(s=><div key={s.id} className={`${box} flex flex-wrap items-center gap-3 p-4`}>
@@ -189,6 +190,32 @@ export function SharesPanel({workspaceId}:{workspaceId:string}){
       <Button variant="ghost" size="icon" aria-label="撤销" className="text-destructive" onClick={async()=>{if(!await askConfirm({title:`撤销《${s.targetTitle}》的这条链接？`,description:"链接立刻失效且不可恢复，已经拿到它的人也打不开了。原内容不受影响，需要时可以重新分享。",confirmText:"撤销链接",destructive:true}))return;try{await api(`/api/v1/shares/${s.id}`,{method:"DELETE"});toast.success("已撤销这条链接");await load()}catch(e){toast.error("撤销失败",(e as Error).message)}}}><Trash2Icon/></Button>
     </div>)}</div>}
     <CalendarFeedsSection workspaceId={workspaceId}/>
+  </div>;
+}
+
+type SiteReq={notebookId:string;title:string;requestedByName:string;requestedAt:string|null;slug:string};
+function SiteRequestsSection({workspaceId}:{workspaceId:string}){
+  const toast=useToast();
+  const[rows,setRows]=useState<SiteReq[]>([]);
+  const load=()=>api<{requests:SiteReq[]}>(`/api/v1/workspaces/${workspaceId}/site-requests`).then(d=>setRows(d.requests)).catch(()=>setRows([]));
+  useEffect(()=>{void load()},[workspaceId]);
+  if(rows.length===0)return null;
+  async function decide(id:string,action:"approve"|"reject",okText:string){
+    try{await api(`/api/v1/notebooks/${id}/site`,{method:"PATCH",body:JSON.stringify({action})});toast.success(okText);await load()}
+    catch(e){toast.error("审核失败",(e as Error).message)}
+  }
+  return <div className="space-y-2">
+    <p className="text-sm font-medium">待审的文档站申请</p>
+    <p className="text-xs text-muted-foreground">有编辑权的成员想把整本对外上线。通过后 /s/ 才会打开；单篇还要自己点「在文档站发布此页」。驳回不会改笔记。</p>
+    {rows.map(r=><div key={r.notebookId} className={`${box} flex flex-wrap items-center gap-3 p-4`}>
+      <span className="grid size-10 place-items-center rounded-lg bg-muted"><Globe2 className="size-4"/></span>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium">{r.title}</p>
+        <p className="text-xs text-muted-foreground">{r.requestedByName} 申请 · {r.requestedAt?new Date(r.requestedAt).toLocaleString():""}</p>
+      </div>
+      <Button size="sm" onClick={()=>void decide(r.notebookId,"approve","已通过，文档站已上线")}>通过并上线</Button>
+      <Button size="sm" variant="ghost" onClick={()=>void decide(r.notebookId,"reject","已驳回")}>驳回</Button>
+    </div>)}
   </div>;
 }
 

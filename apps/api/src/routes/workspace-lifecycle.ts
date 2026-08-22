@@ -3,7 +3,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { auditLogs, backgroundJobs, mcpTokens, shareLinks, workspaceInvites, workspaces } from "../db/schema.ts";
+import { auditLogs, backgroundJobs, shareLinks, workspaceInvites, workspaces } from "../db/schema.ts";
+import { dropWorkspaceFromMcpTokens } from "../lib/mcp-workspaces.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 
@@ -28,7 +29,7 @@ workspaceLifecycleRoutes.delete("/workspaces/:id", async (c) => {
   await db.transaction(async (tx) => {
     await tx.update(workspaces).set({ frozen: true, deletionScheduledAt: scheduled }).where(eq(workspaces.id, ws.id));
     await tx.update(shareLinks).set({ status: "revoked", revokedAt: new Date() }).where(eq(shareLinks.workspaceId, ws.id));
-    await tx.update(mcpTokens).set({ status: "revoked" }).where(eq(mcpTokens.workspaceId, ws.id));
+    await dropWorkspaceFromMcpTokens(tx, { workspaceId: ws.id, empty: "revoke" });
     await tx.update(workspaceInvites).set({ status: "revoked" }).where(eq(workspaceInvites.workspaceId, ws.id));
     await tx.insert(backgroundJobs).values({ type: "delete_workspace", payload: { workspaceId: ws.id }, runAfter: scheduled });
     await tx.insert(auditLogs).values({ userId: u.id, workspaceId: ws.id, actorType: "user", action: "workspace.delete_scheduled", result: "ok", details: { scheduledAt: scheduled.toISOString() } });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canAiReadNote, canCreateShare, canEditNote, canReadNote } from "./acl.ts";
+import { canAiReadNote, canCreateShare, canEditNote, canPublishNotebook, canReadNote, canRequestSitePublish } from "./acl.ts";
 
 const actor = { kind: "user" as const, userId: "u1" };
 const other = { kind: "user" as const, userId: "u2" };
@@ -73,6 +73,15 @@ test("frozen workspace is read-only", () => {
   // 新建笔记 / 目录 / 分享走的是这一条，冻结时同样必须挡住
   assert.equal(canCreateShare({ actor, notebook: frozen, wsRole: "owner", nbMemberRole: null }), false);
   assert.equal(canCreateShare({ actor, notebook: openNb, wsRole: "owner", nbMemberRole: null }), true);
+});
+
+test("文档站：管理员当场发，编辑只能申请", () => {
+  assert.equal(canPublishNotebook("owner"), true);
+  assert.equal(canPublishNotebook("admin"), true);
+  assert.equal(canPublishNotebook("editor"), false);
+  assert.equal(canRequestSitePublish({ actor: other, notebook: openNb, wsRole: "editor", nbMemberRole: null }), true);
+  assert.equal(canRequestSitePublish({ actor, notebook: openNb, wsRole: "owner", nbMemberRole: null }), false);
+  assert.equal(canRequestSitePublish({ actor: other, notebook: openNb, wsRole: "viewer", nbMemberRole: null }), false);
 });
 
 test("ai_index off blocks AI even if readable", () => {

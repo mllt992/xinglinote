@@ -107,6 +107,8 @@ const statements = [
   )`,
   `ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS trashed_by uuid REFERENCES users(id)`,
   `ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS trash_batch_id uuid`,
+  `ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS site_publish_requested_by uuid REFERENCES users(id)`,
+  `ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS site_publish_requested_at timestamptz`,
   `ALTER TABLE folders ADD COLUMN IF NOT EXISTS trashed_by uuid REFERENCES users(id)`,
   `ALTER TABLE folders ADD COLUMN IF NOT EXISTS trash_batch_id uuid`,
   `ALTER TABLE notes ADD COLUMN IF NOT EXISTS trashed_by uuid REFERENCES users(id)`,
@@ -184,6 +186,17 @@ const statements = [
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), author_user_id uuid NOT NULL REFERENCES users(id), workspace_id uuid,
     visibility text NOT NULL DEFAULT 'public', body text NOT NULL, note_id uuid, status text NOT NULL DEFAULT 'visible', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
   )`,
+  `CREATE TABLE IF NOT EXISTS post_assets (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    post_id uuid REFERENCES posts(id),
+    filename text NOT NULL, stored_name text NOT NULL, mime text NOT NULL,
+    bytes bigint NOT NULL, sha256 text NOT NULL,
+    created_by uuid NOT NULL REFERENCES users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    trashed_at timestamptz
+  )`,
+  `CREATE INDEX IF NOT EXISTS post_assets_post_idx ON post_assets(post_id)`,
+  `CREATE INDEX IF NOT EXISTS post_assets_author_idx ON post_assets(created_by)`,
   `CREATE TABLE IF NOT EXISTS post_reactions (
     post_id uuid NOT NULL REFERENCES posts(id) ON DELETE CASCADE, user_id uuid NOT NULL REFERENCES users(id), kind text NOT NULL DEFAULT 'like', created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(post_id,user_id,kind)
   )`,
@@ -251,6 +264,8 @@ const statements = [
   `CREATE INDEX IF NOT EXISTS oauth_requests_expires_idx ON oauth_requests(expires_at)`,
   `ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS client_id text`,
   `ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'manual'`,
+  `ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS workspace_ids jsonb NOT NULL DEFAULT '[]'::jsonb`,
+  `UPDATE mcp_tokens SET workspace_ids = jsonb_build_array(workspace_id) WHERE workspace_ids = '[]'::jsonb AND workspace_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS mcp_daily_usage (token_id uuid NOT NULL REFERENCES mcp_tokens(id), day text NOT NULL, write_bytes bigint NOT NULL DEFAULT 0, PRIMARY KEY(token_id,day))`,
   `CREATE TABLE IF NOT EXISTS audit_logs (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid, workspace_id uuid, actor_type text NOT NULL, actor_id uuid, action text NOT NULL, target_type text, target_id uuid, result text NOT NULL DEFAULT 'ok', details jsonb, created_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS usage_accounts (owner_type text NOT NULL, owner_id uuid NOT NULL, bytes bigint NOT NULL DEFAULT 0, PRIMARY KEY(owner_type,owner_id))`,
@@ -471,6 +486,7 @@ const statements = [
     path text NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS attachments_sha256_idx ON attachments(sha256)`,
+  `CREATE INDEX IF NOT EXISTS post_assets_sha256_idx ON post_assets(sha256)`,
 
   // —— 实例导航页（设计 19）。图标走 blob_store，不进 attachments ——
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS nav_enabled boolean NOT NULL DEFAULT true`,

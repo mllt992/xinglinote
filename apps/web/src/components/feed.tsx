@@ -1,10 +1,31 @@
-import{useEffect,useRef,useState}from'react';import{Flag,Globe2,Heart,MessageSquare,MoreHorizontal,NotebookPen,Pencil,RefreshCw,Send,Star,Trash2}from'lucide-react';import{api}from'../api';import{cn}from'../lib/utils';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
+import{useEffect,useRef,useState}from'react';import{FileText,Flag,Globe2,Heart,ImagePlus,MessageSquare,MoreHorizontal,NotebookPen,Paperclip,Pencil,RefreshCw,Send,Star,Trash2,X}from'lucide-react';import{api}from'../api';import{cn}from'../lib/utils';import{openLightbox}from'../lib/lightbox';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
 import{FeedComments}from'./feed-comments';
 import{MentionField}from'./mention-field';
 import{MentionText,type MentionAgent}from'./mention-text';
 import{FEED_REFRESH_EVENT,formatFeedUpdateLabel,updatesPath,writeFeedSeen,type FeedUpdateCounts}from'./feed-updates';
 
-export type FeedPost={id:string;body:string;visibility:string;workspaceId:string|null;createdAt:string;editedAt:string|null;mine:boolean;author:{handle:string;displayName:string}|null;note:{id:string;title:string}|null;likes:number;liked:boolean;comments?:number;favorited?:boolean;status?:string;moderationQueued?:boolean;moderationReason?:string|null;appealable?:boolean;appealing?:boolean};
+export type PostAsset={id:string;filename:string;mime:string;bytes:number;kind:"image"|"video"|"file";url:string};
+export type FeedPost={id:string;body:string;visibility:string;workspaceId:string|null;createdAt:string;editedAt:string|null;mine:boolean;author:{handle:string;displayName:string}|null;note:{id:string;title:string}|null;likes:number;liked:boolean;comments?:number;favorited?:boolean;status?:string;moderationQueued?:boolean;moderationReason?:string|null;appealable?:boolean;appealing?:boolean;assets?:PostAsset[]};
+const ACCEPT="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,application/pdf,text/plain,text/markdown,application/zip";
+function formatSize(n:number){if(n<1024)return`${n} B`;if(n<1024*1024)return`${(n/1024).toFixed(1)} KB`;return`${(n/1024/1024).toFixed(1)} MB`;}
+export function PostAssetGrid({assets}:{assets:PostAsset[]}){
+  if(!assets.length)return null;
+  const images=assets.filter(a=>a.kind==="image");
+  const rest=assets.filter(a=>a.kind!=="image");
+  return <div className="mt-3 space-y-2">
+    {images.length>0&&<div className={cn("grid gap-2",images.length===1?"grid-cols-1":"grid-cols-2")}>
+      {images.map(a=><button key={a.id} type="button" onClick={()=>openLightbox(a.url,a.filename)} className="overflow-hidden rounded-xl border bg-muted">
+        <img src={a.url} alt={a.filename} className="max-h-72 w-full object-cover"/>
+      </button>)}
+    </div>}
+    {rest.map(a=>a.kind==="video"
+      ?<video key={a.id} src={a.url} controls preload="metadata" className="w-full rounded-xl border bg-black"/>
+      :<a key={a.id} href={a.url} download={a.filename} className="flex items-center gap-2 rounded-xl border px-3 py-2 text-sm hover:bg-muted">
+        <FileText className="size-4 shrink-0"/><span className="min-w-0 truncate">{a.filename}</span>
+        <span className="ml-auto text-xs text-muted-foreground">{formatSize(a.bytes)}</span>
+      </a>)}
+  </div>;
+}
 const REPORT_REASONS:Array<[string,string]>=[["spam","垃圾广告与引流"],["abuse","辱骂人身攻击"],["illegal","违法违禁"],["porn","色情低俗"],["other","其他"]];
 type Held={held:boolean;queued?:boolean;message:string|null};
 /** 审核中 / 待人工 / 被驳回的帖子只有作者自己看得到，标一下省得他以为发失败了。 */
@@ -35,7 +56,9 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
   const[updates,setUpdates]=useState<FeedUpdateCounts>({newPosts:0,repliedPosts:0});
   const[refreshing,setRefreshing]=useState(false);
   const[fresh,setFresh]=useState<{newIds:Set<string>;repliedIds:Set<string>}|null>(null);
+  const[assets,setAssets]=useState<PostAsset[]>([]);const[uploading,setUploading]=useState(false);
   const[agents,setAgents]=useState<MentionAgent[]>([]);
+  const fileRef=useRef<HTMLInputElement>(null);
   const path=scope==="public"?"/api/v1/feed/public":`/api/v1/feed/workspaces/${workspaceId}`;
   /** 单条动态的点赞、编辑、删除就地改这一条：整条时间线重拉会闪一下、丢滚动位置，点个赞不该付这个代价。
       listRef 只经 apply 写入，所以连点两下也不会拿到上一次渲染的旧列表。 */
@@ -78,19 +101,38 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
   useEffect(()=>{if(!fresh)return;const t=window.setTimeout(()=>setFresh(null),12_000);return()=>window.clearTimeout(t);},[fresh]);
   useEffect(()=>{if(!target.workspaceId)return setBooks([]);api<{notebooks:Nb[]}>(`/api/v1/workspaces/${target.workspaceId}/notebooks`).then(d=>{setBooks(d.notebooks);setTarget(t=>({...t,notebookId:d.notebooks[0]?.id??""}))}).catch(()=>setBooks([]))},[target.workspaceId]);
 
-  async function submit(){
-    if(!body.trim())return;setBusy(true);setErr("");
+  async function addFiles(list:FileList|File[]){
+    const files=[...list];if(!files.length)return;
+    if(assets.length+files.length>9){toast.error("一条动态最多 9 个附件");return;}
+    setUploading(true);
     try{
-      if(scope==="public"){
+      for(const file of files){
+        const form=new FormData();form.append("file",file);
+        const res=await fetch("/api/v1/posts/attachments",{method:"POST",body:form,credentials:"include",headers:{"X-Requested-With":"fetch"}});
+        const json=await res.json() as {ok:true;data:PostAsset}|{ok:false;error:{message:string}};
+        if(!json.ok)throw new Error(json.error.message);
+        setAssets(v=>[...v,json.data]);
+      }
+    }catch(e){toast.error("上传失败",(e as Error).message);}
+    finally{setUploading(false);if(fileRef.current)fileRef.current.value="";}
+  }
+  async function dropAsset(a:PostAsset){
+    setAssets(v=>v.filter(x=>x.id!==a.id));
+    try{await api(`/api/v1/posts/attachments/${a.id}`,{method:"DELETE"});}catch{/* 框里已经拿掉了 */}
+  }
+  async function submit(){
+    if(!body.trim()&&!assets.length)return;setBusy(true);setErr("");
+    try{
+      if(scope==="public"&&body.trim()){
         const scan=await api<{links:Array<{title:string;publiclyVisible:boolean}>}>("/api/v1/posts/leak-check",{method:"POST",body:JSON.stringify({body})});
         const leaked=scan.links.filter(l=>!l.publiclyVisible).map(l=>l.title);
         if(leaked.length&&!await askConfirm({title:"这条动态里有对外看不到的链接",description:<>发到广场后，下面这些链接会退化成纯文本，读者点不开：<span className="mt-2 block font-medium text-foreground">{leaked.join("、")}</span></>,confirmText:"仍然发布"})){setBusy(false);return;}
       }
-      const created=await api<{status?:string;moderation?:Held}>("/api/v1/posts",{method:"POST",body:JSON.stringify({body,visibility:scope,...(scope==="workspace"?{workspaceId}:{})})});
+      const created=await api<{status?:string;moderation?:Held}>("/api/v1/posts",{method:"POST",body:JSON.stringify({body,visibility:scope,attachmentIds:assets.map(a=>a.id),...(scope==="workspace"?{workspaceId}:{})})});
       if(created.moderation?.queued)toast.success("已发布",created.moderation.message??"审核通过后会公开显示。");
       else if(created.moderation?.held)toast.success("已提交，等待人工审核",created.moderation.message??undefined);
       else toast.success("已发布");
-      setBody("");await load();
+      setBody("");setAssets([]);await load();
     }catch(e){setErr((e as Error).message)}finally{setBusy(false)}
   }
   async function like(p:FeedPost){if(!signedIn){toast.error("请先登录");return;}try{const d=await api<{liked:boolean}>(`/api/v1/posts/${p.id}/like`,{method:"POST"});patchOne(p.id,x=>({...x,liked:d.liked,likes:Math.max(0,x.likes+(d.liked?1:-1))}))}catch(e){toast.error("操作失败",(e as Error).message)}}
@@ -117,8 +159,23 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
   return <div className="space-y-4">
     {canPost&&<div className="rounded-2xl border bg-background p-4">
       <MentionField value={body} onChange={setBody} agents={agents} maxLength={5000} placeholder={scope==="public"?"发到广场，实例里所有人可见。可以用 [[双链]] 引用已公开的笔记，也可以 @ 智能体。":"发到本工作区的圈子，只有成员看得到。输入 @ 可叫智能体。"} className="min-h-24"/>
+      {assets.length>0&&<div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {assets.map(a=><div key={a.id} className="relative overflow-hidden rounded-xl border bg-muted">
+          {a.kind==="image"?<img src={a.url} alt={a.filename} className="h-28 w-full object-cover"/>
+          :a.kind==="video"?<video src={a.url} className="h-28 w-full object-cover" muted/>
+          :<div className="flex h-28 flex-col justify-end p-2"><FileText className="size-5 text-muted-foreground"/><p className="mt-1 truncate text-xs">{a.filename}</p><p className="text-[11px] text-muted-foreground">{formatSize(a.bytes)}</p></div>}
+          <button type="button" aria-label={`移除 ${a.filename}`} onClick={()=>void dropAsset(a)} className="absolute right-1.5 top-1.5 grid size-6 place-items-center rounded-full bg-background/90 text-muted-foreground hover:text-foreground"><X className="size-3.5"/></button>
+        </div>)}
+      </div>}
       <FormError className="mt-3">{err}</FormError>
-      <div className="mt-3 flex items-center gap-3"><Button disabled={busy||!body.trim()} onClick={submit}><Send/>{busy?"发布中…":"发布"}</Button><span className="text-xs text-muted-foreground">{body.length}/5000</span></div>
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <input ref={fileRef} type="file" accept={ACCEPT} multiple className="hidden" onChange={e=>{if(e.target.files)void addFiles(e.target.files);e.target.accept=ACCEPT;}}/>
+        <Button type="button" variant="outline" size="sm" disabled={busy||uploading||assets.length>=9} onClick={()=>{if(fileRef.current){fileRef.current.accept="image/png,image/jpeg,image/webp,image/gif";fileRef.current.click();}}}><ImagePlus/>图片</Button>
+        <Button type="button" variant="outline" size="sm" disabled={busy||uploading||assets.length>=9} onClick={()=>{if(fileRef.current){fileRef.current.accept="video/mp4,video/webm";fileRef.current.click();}}}><Paperclip/>视频</Button>
+        <Button type="button" variant="outline" size="sm" disabled={busy||uploading||assets.length>=9} onClick={()=>{if(fileRef.current){fileRef.current.accept="application/pdf,text/plain,text/markdown,application/zip";fileRef.current.click();}}}><FileText/>文件</Button>
+        <Button disabled={busy||uploading||(!body.trim()&&!assets.length)} onClick={submit}><Send/>{busy?"发布中…":uploading?"上传中…":"发布"}</Button>
+        <span className="text-xs text-muted-foreground">{body.length}/5000{assets.length?` · ${assets.length}/9 附件`:""}</span>
+      </div>
     </div>}
     {(updates.newPosts>0||updates.repliedPosts>0)&&<button type="button" onClick={()=>void refreshUpdates()} disabled={refreshing}
       className="sticky top-2 z-10 flex w-full items-center justify-center gap-2 rounded-xl border bg-background px-3 py-2 text-sm font-medium shadow-sm hover:bg-muted disabled:opacity-70">
@@ -148,6 +205,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
         </div>
       </div>
       {p.body&&<MentionText text={p.body} agents={agents} className="mt-3 text-sm leading-7"/>}
+      <PostAssetGrid assets={p.assets??[]}/>
       <HeldNote post={p} onAppeal={x=>{setDlgErr("");setAppealNote("");setAppealing(x)}}/>
       {p.note&&<button className="mt-3 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs hover:bg-muted" onClick={()=>p.workspaceId&&onOpenNote?.(p.workspaceId,p.note!.id)}><NotebookPen className="size-3.5"/>{p.note.title}</button>}
       {openComments===p.id&&<FeedComments key={`${p.id}:${commentTick[p.id]??0}`} postId={p.id} signedIn={!!signedIn} agents={agents} onCount={n=>patchOne(p.id,x=>({...x,comments:n}))}/>}

@@ -4,7 +4,7 @@ export type NbMemberRole = "edit" | "view";
 
 export type Actor =
   | { kind: "user"; userId: string }
-  | { kind: "mcp"; userId: string; tokenId: string; workspaceId: string }
+  | { kind: "mcp"; userId: string; tokenId: string; workspaceId: string; workspaceIds?: string[] }
   | { kind: "guest" };
 
 export type NotebookAcl = {
@@ -83,6 +83,11 @@ export function canCreateShare(input: {
 
 export function canPublishNotebook(wsRole: WsRole | null): boolean {
   return wsRole === "owner" || wsRole === "admin";
+}
+
+/** 对本有编辑权、但不是当场发布的人：只能提交申请。 */
+export function canRequestSitePublish(input: Parameters<typeof canCreateShare>[0]): boolean {
+  return canCreateShare(input) && !canPublishNotebook(input.wsRole);
 }
 
 export function canAiReadNote(input: Parameters<typeof canReadNote>[0] & { aiIndex: boolean; aiEnabled: boolean }): boolean {

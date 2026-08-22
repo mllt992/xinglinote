@@ -158,6 +158,8 @@ export const notebooks = pgTable("notebooks", {
   taskAnchors: boolean("task_anchors").notNull().default(true),
   createdBy: uuid("created_by").notNull().references(() => users.id),
   sitePublished: boolean("site_published").notNull().default(false),
+  sitePublishRequestedBy: uuid("site_publish_requested_by").references(() => users.id),
+  sitePublishRequestedAt: timestamp("site_publish_requested_at", { withTimezone: true }),
   siteThemeId: text("site_theme_id"),
   siteAccent: text("site_accent"),
   trashedAt: timestamp("trashed_at", { withTimezone: true }),
@@ -300,6 +302,20 @@ export const moderationReviews = pgTable("moderation_reviews", {
 });
 
 export const postReactions = pgTable("post_reactions", { postId: uuid("post_id").notNull().references(() => posts.id), userId: uuid("user_id").notNull().references(() => users.id), kind: text("kind").notNull().default("like"), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull() }, t => [primaryKey({columns:[t.postId,t.userId,t.kind]})]);
+/** 动态附件。post_id 空 = 发帖前暂存，只有上传者能看。不进笔记 attachments 表。 */
+export const postAssets = pgTable("post_assets", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  postId: uuid("post_id").references(() => posts.id),
+  filename: text("filename").notNull(), storedName: text("stored_name").notNull(), mime: text("mime").notNull(),
+  bytes: bigint("bytes", { mode: "number" }).notNull(), sha256: text("sha256").notNull(),
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  trashedAt: timestamp("trashed_at", { withTimezone: true }),
+}, t => [
+  index("post_assets_post_idx").on(t.postId),
+  index("post_assets_author_idx").on(t.createdBy),
+  index("post_assets_sha256_idx").on(t.sha256),
+]);
 export const postFavorites = pgTable("post_favorites", {
   userId: uuid("user_id").notNull().references(() => users.id),
   postId: uuid("post_id").notNull().references(() => posts.id),
@@ -359,7 +375,7 @@ export const aiProviders = pgTable("ai_providers", {
 export const aiChunks=pgTable("ai_chunks",{id:uuid("id").defaultRandom().primaryKey(),noteId:uuid("note_id").notNull().references(()=>notes.id),workspaceId:uuid("workspace_id").notNull().references(()=>workspaces.id),notebookId:uuid("notebook_id").notNull().references(()=>notebooks.id),chunkIndex:integer("chunk_index").notNull(),content:text("content").notNull(),embedding:text("embedding"),createdAt:timestamp("created_at",{withTimezone:true}).defaultNow().notNull()});
 
 export const aiUsage = pgTable("ai_usage", { id: uuid("id").defaultRandom().primaryKey(), userId: uuid("user_id").notNull(), workspaceId: uuid("workspace_id").notNull(), action: text("action").notNull(), model: text("model"), inputTokens: integer("input_tokens").notNull().default(0), outputTokens: integer("output_tokens").notNull().default(0), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull() });
-export const mcpTokens = pgTable("mcp_tokens", { id: uuid("id").defaultRandom().primaryKey(), secretHash: text("secret_hash").notNull().unique(), name: text("name").notNull(), userId: uuid("user_id").notNull().references(() => users.id), workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id), notebookMode: text("notebook_mode").notNull().default("inherit"), notebookIds: jsonb("notebook_ids").notNull().default([]), rw: text("rw").notNull().default("read"), allowDelete: boolean("allow_delete").notNull().default(false), requireAiIndex: boolean("require_ai_index").notNull().default(true), allowPrivateNotebooks: boolean("allow_private_notebooks").notNull().default(false), feedPublic: boolean("feed_public").notNull().default(false), feedWorkspace: boolean("feed_workspace").notNull().default(false), dailyWriteLimitBytes: bigint("daily_write_limit_bytes",{mode:"number"}), expiresAt: timestamp("expires_at", {withTimezone:true}), status: text("status").notNull().default("active"), lastUsedAt: timestamp("last_used_at", {withTimezone:true}), clientId: text("client_id"), source: text("source").notNull().default("manual"), createdAt: timestamp("created_at", {withTimezone:true}).defaultNow().notNull() });
+export const mcpTokens = pgTable("mcp_tokens", { id: uuid("id").defaultRandom().primaryKey(), secretHash: text("secret_hash").notNull().unique(), name: text("name").notNull(), userId: uuid("user_id").notNull().references(() => users.id), workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id), workspaceIds: jsonb("workspace_ids").notNull().default([]), notebookMode: text("notebook_mode").notNull().default("inherit"), notebookIds: jsonb("notebook_ids").notNull().default([]), rw: text("rw").notNull().default("read"), allowDelete: boolean("allow_delete").notNull().default(false), requireAiIndex: boolean("require_ai_index").notNull().default(true), allowPrivateNotebooks: boolean("allow_private_notebooks").notNull().default(false), feedPublic: boolean("feed_public").notNull().default(false), feedWorkspace: boolean("feed_workspace").notNull().default(false), dailyWriteLimitBytes: bigint("daily_write_limit_bytes",{mode:"number"}), expiresAt: timestamp("expires_at", {withTimezone:true}), status: text("status").notNull().default("active"), lastUsedAt: timestamp("last_used_at", {withTimezone:true}), clientId: text("client_id"), source: text("source").notNull().default("manual"), createdAt: timestamp("created_at", {withTimezone:true}).defaultNow().notNull() });
 export const backupTargets=pgTable("backup_targets",{id:uuid("id").defaultRandom().primaryKey(),scope:text("scope").notNull().default("workspace"),workspaceId:uuid("workspace_id").references(()=>workspaces.id),type:text("type").notNull(),name:text("name").notNull(),endpoint:text("endpoint").notNull(),prefix:text("prefix").notNull().default("knowledge"),credentials:text("credentials").notNull(),encryptionKey:text("encryption_key"),encryptionFingerprint:text("encryption_fingerprint"),schedule:text("schedule").notNull().default("manual"),retainDaily:integer("retain_daily").notNull().default(7),retainWeekly:integer("retain_weekly").notNull().default(4),enabled:boolean("enabled").notNull().default(true),createdBy:uuid("created_by").notNull().references(()=>users.id),lastRunAt:timestamp("last_run_at",{withTimezone:true}),createdAt:timestamp("created_at",{withTimezone:true}).defaultNow().notNull()});
 export const backupRuns=pgTable("backup_runs",{id:uuid("id").defaultRandom().primaryKey(),targetId:uuid("target_id").notNull().references(()=>backupTargets.id),workspaceId:uuid("workspace_id").references(()=>workspaces.id),status:text("status").notNull().default("pending"),bytes:bigint("bytes",{mode:"number"}),checksumSha256:text("checksum_sha256"),remotePath:text("remote_path"),error:text("error"),manifest:jsonb("manifest"),startedAt:timestamp("started_at",{withTimezone:true}),finishedAt:timestamp("finished_at",{withTimezone:true}),createdAt:timestamp("created_at",{withTimezone:true}).defaultNow().notNull()});
 

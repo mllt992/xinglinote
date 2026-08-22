@@ -10,6 +10,7 @@ import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
 import { instanceConfig, moderationOn, noteIsPublic, openAppeal, openReportReview, queueReview, REPORT_REASONS } from "../lib/moderation.ts";
 import { assertCanModeratePost, assertCanSeePost } from "../lib/post-access.ts";
+import { assetDto, bindPostAssets, copyPostAssets, listPostAssets, readPostAsset, removeStagedAsset, savePostAsset, trashPostAssets } from "../lib/post-assets.ts";
 import { solveChallenge } from "../lib/challenge.ts";
 import { clientIp } from "../lib/client-ip.ts";
 import { notebookAccess } from "../lib/notebook-access.ts";
@@ -33,14 +34,15 @@ async function hydrate(rows:typeof posts.$inferSelect[], viewer?:string){
   const postIds=rows.map(p=>p.id);
   const authorIds=[...new Set(rows.map(p=>p.authorUserId).filter((x):x is string=>!!x))];
   const noteIds=[...new Set(rows.map(p=>p.noteId).filter((x):x is string=>!!x))];
-  const [authors,reactions,ns,commentRows,favs]=await Promise.all([
+  const [authors,reactions,ns,commentRows,favs,assets]=await Promise.all([
     pickIds(authorIds,ids=>db.select({id:users.id,handle:users.handle,displayName:users.displayName}).from(users).where(inArray(users.id,ids))),
     pickIds(postIds,ids=>db.select({postId:postReactions.postId,userId:postReactions.userId,kind:postReactions.kind}).from(postReactions).where(inArray(postReactions.postId,ids))),
     pickIds(noteIds,ids=>db.select({id:notes.id,title:notes.title}).from(notes).where(inArray(notes.id,ids))),
     pickIds(postIds,ids=>db.select({targetId:comments.targetId,n:count()}).from(comments).where(and(eq(comments.targetType,"post"),inArray(comments.targetId,ids),eq(comments.status,"visible"))).groupBy(comments.targetId)),
     viewer?pickIds(postIds,ids=>db.select({postId:postFavorites.postId}).from(postFavorites).where(and(eq(postFavorites.userId,viewer),inArray(postFavorites.postId,ids)))):Promise.resolve([] as Array<{postId:string}>),
+    pickIds(postIds,ids=>listPostAssets(ids)),
   ]);
-  const held=rows.filter(p=>p.status!=="visible").map(p=>p.id);const reviews=held.length?await db.select().from(moderationReviews).where(and(eq(moderationReviews.targetType,"post"),inArray(moderationReviews.targetId,held))).orderBy(desc(moderationReviews.createdAt)):[];return rows.map(p=>({id:p.id,status:p.status,moderationQueued:(()=>{const r=reviews.find(r=>r.targetId===p.id);return r?r.status==="queued"||r.aiVerdict==="queued"||r.aiVerdict==="running":false;})(),moderationReason:p.status==="visible"?null:(()=>{const r=reviews.find(r=>r.targetId===p.id);if(!r)return null;if(r.status==="queued"||r.aiVerdict==="queued"||r.aiVerdict==="running")return "正在审核，通过后会公开显示。";return r.reviewNote??r.aiReason??null;})(),body:p.body,visibility:p.visibility,workspaceId:p.workspaceId,createdAt:p.createdAt,author:(()=>{const a=authors.find(u=>u.id===p.authorUserId);return a?{handle:a.handle,displayName:a.displayName}:null;})(),note:p.noteId?(()=>{const n=ns.find(n=>n.id===p.noteId);return n?{id:n.id,title:n.title}:null})():null,likes:reactions.filter(r=>r.postId===p.id&&r.kind==="like").length,liked:!!viewer&&reactions.some(r=>r.postId===p.id&&r.userId===viewer&&r.kind==="like"),comments:commentRows.find(r=>r.targetId===p.id)?.n??0,favorited:favs.some(f=>f.postId===p.id),editedAt:p.editedAt,mine:!!viewer&&p.authorUserId===viewer,appealable:(()=>{if(!viewer||p.authorUserId!==viewer||p.status!=="rejected")return false;const r=reviews.find(x=>x.targetId===p.id);return !!r&&r.status==="rejected"&&!r.reviewerId;})(),appealing:(()=>{const r=reviews.find(x=>x.targetId===p.id);return r?.kind==="appeal"&&r.status==="pending";})()}));}
+  const held=rows.filter(p=>p.status!=="visible").map(p=>p.id);const reviews=held.length?await db.select().from(moderationReviews).where(and(eq(moderationReviews.targetType,"post"),inArray(moderationReviews.targetId,held))).orderBy(desc(moderationReviews.createdAt)):[];return rows.map(p=>({id:p.id,status:p.status,moderationQueued:(()=>{const r=reviews.find(r=>r.targetId===p.id);return r?r.status==="queued"||r.aiVerdict==="queued"||r.aiVerdict==="running":false;})(),moderationReason:p.status==="visible"?null:(()=>{const r=reviews.find(r=>r.targetId===p.id);if(!r)return null;if(r.status==="queued"||r.aiVerdict==="queued"||r.aiVerdict==="running")return "正在审核，通过后会公开显示。";return r.reviewNote??r.aiReason??null;})(),body:p.body,visibility:p.visibility,workspaceId:p.workspaceId,createdAt:p.createdAt,author:(()=>{const a=authors.find(u=>u.id===p.authorUserId);return a?{handle:a.handle,displayName:a.displayName}:null;})(),note:p.noteId?(()=>{const n=ns.find(n=>n.id===p.noteId);return n?{id:n.id,title:n.title}:null})():null,likes:reactions.filter(r=>r.postId===p.id&&r.kind==="like").length,liked:!!viewer&&reactions.some(r=>r.postId===p.id&&r.userId===viewer&&r.kind==="like"),comments:commentRows.find(r=>r.targetId===p.id)?.n??0,favorited:favs.some(f=>f.postId===p.id),editedAt:p.editedAt,mine:!!viewer&&p.authorUserId===viewer,appealable:(()=>{if(!viewer||p.authorUserId!==viewer||p.status!=="rejected")return false;const r=reviews.find(x=>x.targetId===p.id);return !!r&&r.status==="rejected"&&!r.reviewerId;})(),appealing:(()=>{const r=reviews.find(x=>x.targetId===p.id);return r?.kind==="appeal"&&r.status==="pending";})(),assets:assets.filter(a=>a.postId===p.id).map(assetDto)}));}
 /** 增量计数用客户端上次看到的水位。缺了或写歪了直接 422；太老按 7 天截，避免一次扫全表。 */
 function parseSince(raw:string|undefined){
   if(!raw)throw fail("VALIDATION","缺少 since");
@@ -78,7 +80,29 @@ feedRoutes.get("/feed/workspaces/:id/updates",async c=>{
   const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");
   return ok(c,await feedUpdates(and(eq(posts.workspaceId,wsId),readable(u.id)),parseSince(c.req.query("since")),u.id));
 });
-feedRoutes.post("/posts",async c=>{const u=await user(c);const body=z.object({body:z.string().min(1).max(5000),visibility:z.enum(["public","workspace"]),workspaceId:z.string().uuid().nullable().optional(),noteId:z.string().uuid().nullable().optional()}).parse(await c.req.json());if(body.visibility==="workspace"){if(!body.workspaceId)throw fail("VALIDATION","缺少工作区");const role=await memberRole(body.workspaceId,u.id);if(!role||role==="viewer")throw fail("FORBIDDEN","无权发布工作区动态");const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,body.workspaceId));if(ws?.frozen)throw fail("FORBIDDEN","工作区已冻结，暂时只读");}if(body.visibility==="public"&&body.workspaceId)throw fail("VALIDATION","公开动态不能指定工作区");if(body.noteId){const [n]=await db.select().from(notes).where(eq(notes.id,body.noteId));if(!n||n.trashedAt||!noteIsPublic(n))throw fail("VALIDATION","只能附加已发布笔记");if(body.visibility==="workspace"&&n.workspaceId!==body.workspaceId)throw fail("FORBIDDEN","不能附加其他工作区的笔记");if(body.visibility==="public"&&!(await memberRole(n.workspaceId,u.id)))throw fail("FORBIDDEN","不能附加无权访问的笔记");}const scope=body.visibility==="public"?"square":"circle";const settings=await instanceConfig();const held=moderationOn(settings,scope);const [p]=await db.insert(posts).values({authorUserId:u.id,workspaceId:body.workspaceId,visibility:body.visibility,body:body.body,noteId:body.noteId,status:held?"pending_review":"visible"}).returning();const mod=held?await queueReview({targetType:"post",targetId:p.id,scope,workspaceId:p.workspaceId,authorUserId:u.id,snapshot:body.body}):{held:false,queued:false,message:null};if(!held)await enqueueAgentMentions({text:p.body,post:p,sourceType:"post",sourceId:p.id});return ok(c,{...p,moderation:{held:mod.held,queued:mod.queued,message:mod.message}},201);});
+feedRoutes.post("/posts",async c=>{const u=await user(c);const body=z.object({body:z.string().max(5000),visibility:z.enum(["public","workspace"]),workspaceId:z.string().uuid().nullable().optional(),noteId:z.string().uuid().nullable().optional(),attachmentIds:z.array(z.string().uuid()).max(9).default([])}).parse(await c.req.json());if(!body.body.trim()&&!body.attachmentIds.length)throw fail("VALIDATION","写点文字或加个附件");if(body.visibility==="workspace"){if(!body.workspaceId)throw fail("VALIDATION","缺少工作区");const role=await memberRole(body.workspaceId,u.id);if(!role||role==="viewer")throw fail("FORBIDDEN","无权发布工作区动态");const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,body.workspaceId));if(ws?.frozen)throw fail("FORBIDDEN","工作区已冻结，暂时只读");}if(body.visibility==="public"&&body.workspaceId)throw fail("VALIDATION","公开动态不能指定工作区");if(body.noteId){const [n]=await db.select().from(notes).where(eq(notes.id,body.noteId));if(!n||n.trashedAt||!noteIsPublic(n))throw fail("VALIDATION","只能附加已发布笔记");if(body.visibility==="workspace"&&n.workspaceId!==body.workspaceId)throw fail("FORBIDDEN","不能附加其他工作区的笔记");if(body.visibility==="public"&&!(await memberRole(n.workspaceId,u.id)))throw fail("FORBIDDEN","不能附加无权访问的笔记");}const scope=body.visibility==="public"?"square":"circle";const settings=await instanceConfig();const held=moderationOn(settings,scope);const [p]=await db.insert(posts).values({authorUserId:u.id,workspaceId:body.workspaceId,visibility:body.visibility,body:body.body,noteId:body.noteId,status:held?"pending_review":"visible"}).returning();if(body.attachmentIds.length)await bindPostAssets(p.id,u.id,body.attachmentIds);const mod=held?await queueReview({targetType:"post",targetId:p.id,scope,workspaceId:p.workspaceId,authorUserId:u.id,snapshot:body.body}):{held:false,queued:false,message:null};if(!held)await enqueueAgentMentions({text:p.body,post:p,sourceType:"post",sourceId:p.id});return ok(c,{...p,moderation:{held:mod.held,queued:mod.queued,message:mod.message}},201);});
+feedRoutes.post("/posts/attachments",async c=>{
+  const u=await user(c);limit(`post-asset:${u.id}`,20,60_000);
+  const form=await c.req.formData();const f=form.get("file");
+  if(!(f instanceof File))throw fail("VALIDATION","请选择文件");
+  const row=await savePostAsset({userId:u.id,file:f});
+  return ok(c,assetDto(row),201);
+});
+feedRoutes.get("/posts/attachments/:id",async c=>{
+  const viewer=await currentUser(c);
+  const {asset,data}=await readPostAsset(c.req.param("id"),viewer?.id);
+  const inline=asset.mime.startsWith("image/")||asset.mime.startsWith("video/");
+  c.header("Content-Type",asset.mime);
+  c.header("Content-Disposition",`${inline?"inline":"attachment"}; filename*=UTF-8''${encodeURIComponent(asset.filename)}`);
+  c.header("X-Content-Type-Options","nosniff");
+  c.header("Cache-Control","private, max-age=3600");
+  return c.body(data);
+});
+feedRoutes.delete("/posts/attachments/:id",async c=>{
+  const u=await user(c);
+  await removeStagedAsset(c.req.param("id"),u.id);
+  return ok(c,{});
+});
 feedRoutes.delete("/posts/:id",async c=>{
   const u=await user(c);const [p]=await db.select().from(posts).where(eq(posts.id,c.req.param("id")));
   if(!p||p.status==="deleted")throw fail("NOT_FOUND","动态不存在");
@@ -89,6 +113,7 @@ feedRoutes.delete("/posts/:id",async c=>{
   }
   if(!allowed)throw fail("FORBIDDEN","无权删除");
   await db.update(posts).set({status:"deleted",updatedAt:new Date()}).where(eq(posts.id,p.id));
+  await trashPostAssets(p.id);
   return ok(c,{});
 });
 feedRoutes.post("/posts/:id/like",async c=>{const u=await user(c);const postId=c.req.param("id");const [post]=await db.select().from(posts).where(eq(posts.id,postId));if(!post||post.status!=="visible")throw fail("NOT_FOUND","动态不存在");if(post.visibility==="workspace"&&(!post.workspaceId||!(await memberRole(post.workspaceId,u.id))))throw fail("FORBIDDEN","无权操作此动态");const existing=await db.select().from(postReactions).where(and(eq(postReactions.postId,postId),eq(postReactions.userId,u.id),eq(postReactions.kind,"like")));if(existing.length)await db.delete(postReactions).where(and(eq(postReactions.postId,postId),eq(postReactions.userId,u.id),eq(postReactions.kind,"like")));else await db.insert(postReactions).values({postId,userId:u.id,kind:"like"});return ok(c,{liked:!existing.length});});
@@ -252,6 +277,7 @@ feedRoutes.post("/posts/:id/publish-to-square",async c=>{
   // 圈子可能没开审核而广场开了，所以复制到广场要按广场的规矩重审一次。
   const held=moderationOn(settings,"square");
   const[copy]=await db.insert(posts).values({authorUserId:u.id,workspaceId:null,visibility:"public",body:text,noteId:null,status:held?"pending_review":"visible"}).returning();
+  await copyPostAssets(p.id,copy.id,u.id);
   const mod=held?await queueReview({targetType:"post",targetId:copy.id,scope:"square",workspaceId:null,authorUserId:u.id,snapshot:text}):{held:false,queued:false,message:null};
   return ok(c,{id:copy.id,strippedLinks:leaked,moderation:{held:mod.held,queued:mod.queued,message:mod.message}},201);
 });

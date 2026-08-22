@@ -80,6 +80,23 @@ try {
   result.revokeKillsSecret = revokedDead;
   result.revokedStillAuditable = (await q('/mcp/tokens?includeRevoked=1', {}, c)).data.tokens.some(t => t.id === rotated.id);
   result.listOnlyGrowsByActive = (await list()).length === baseline + 3;
+
+  // 一把钥匙可绑多个工作区：get_me 列出全部，另一区的笔记也能读
+  const personal = me.personalWorkspaceId;
+  if (personal && personal !== ws.id) {
+    const multi = await create({ name: '跨区', rw: 'read', workspaceIds: [ws.id, personal] });
+    const shownMulti = (await list()).find(t => t.id === multi.id);
+    result.multiStoresWorkspaceIds = Array.isArray(shownMulti?.workspaceIds) && shownMulti.workspaceIds.length === 2;
+    const me2 = await tool(multi.secret, 'get_me');
+    result.multiGetMeListsBoth = Array.isArray(me2.workspaces) && me2.workspaces.length === 2;
+    const personalNbs = (await q(`/workspaces/${personal}/notebooks`, {}, c)).data.notebooks;
+    const personalNb = personalNbs[0];
+    result.multiCanReadOtherWorkspace = !personalNb || Array.isArray((await tool(multi.secret, 'list_folder', { notebook_id: personalNb.id })).notes);
+  } else {
+    result.multiStoresWorkspaceIds = true;
+    result.multiGetMeListsBoth = true;
+    result.multiCanReadOtherWorkspace = true;
+  }
 } finally {
   for (const id of made) await q(`/mcp/tokens/${id}`, { method: 'DELETE' }, c).catch(() => {});
   await q(`/workspaces/${ws.id}`, { method: 'DELETE', body: JSON.stringify({ confirmName: ws.name }) }, c).catch(() => {});

@@ -91,7 +91,7 @@ Owner/Admin：改角色、移出、复制邀请链接、按 handle 添加。
 1. 用户可加入的工作区数量一期不硬限；创建普通工作区受 `allow_user_create_workspace` 限制，实例管理员始终可建。
 2. Viewer 不能创建笔记本、不能建分享、不能发圈子、不能开 MCP 写档。
 3. Editor 可在 **自己有编辑权的笔记本** 里建目录/笔记/单篇与目录分享。
-4. 只有 Admin/Owner 可：建笔记本、改他人笔记本可见性（`private` 本除外）、发布整本文档站、看本区全部分享、看全区回收站、配工作区备份与工作区 AI Key。
+4. 只有 Admin/Owner 可：建笔记本、改他人笔记本可见性（`private` 本除外）、当场发布 / 下线整本文档站、审别人的发布申请、看本区全部分享、看全区回收站、配工作区备份与工作区 AI Key。对本有编辑权的 Editor 可**申请**发布文档站，通过前对外仍 404。
 5. `private` 本的创建者离开工作区：本随人迁回个人工作区（见 12），不留给 Admin。
 6. 工作区 `frozen=true`：所有写操作失败，读仍走原 ACL。
 7. slug 修改后旧 slug 30 天 301 到新 slug（文档站 URL 会变，分享链接因 token 不变）。
@@ -147,8 +147,11 @@ Admin 对 `open` 本可写；对 `private` 本不可写不可读。
 target 是笔记、目录或笔记本:
     return can_edit_note(actor, 该树所属笔记/目录/笔记本所在本的任意代表元)
     更精确：对该 notebook 有编辑权
-整本发布文档站:
+整本当场发布 / 下线文档站:
     return role in (admin, owner) AND notebook 不是别人的 private
+申请发布文档站:
+    return can_create_share(actor, notebook) AND role 不是 admin/owner
+    （管理员不必申请，直接发布）
 ```
 
 ### 5.5 权限缓存

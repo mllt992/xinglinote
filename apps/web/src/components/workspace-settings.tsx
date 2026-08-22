@@ -30,6 +30,7 @@ type Overview = {
   roles: Record<string, number>;
   stats: { members: number; notebooks: number; notes: number; notesActive7d: number; attachments: number; attachmentBytes: number; mcpActive: number; activeInvites: number; trashedNotes: number };
   shares: { active: number; expiringSoon: number; noPassword: number };
+  siteRequests: number;
   backup: { targets: number; scheduled: number; lastRunAt: string | null; lastStatus: string | null } | null;
   recentAudit: Array<{ id: string; action: string; result: string; actorType: string; createdAt: string; actorName: string | null }>;
 };
@@ -233,6 +234,7 @@ function buildHealth(o: Overview, onGo: (id: SectionId) => void, nav: (to: strin
   else if (o.canManage && o.backup && o.backup.scheduled === 0) list.push({ tone: "warn", icon: CloudUpload, title: "备份只能手动跑", text: "已有目标但频率都是「手动」，忘了点就没有新副本。改成每天或每周更稳。", action: { label: "去改频率", run: () => onGo("backup") } });
   if (o.shares.noPassword > 0) list.push({ tone: "warn", icon: Link2, title: `${o.shares.noPassword} 条分享链接没有密码`, text: "拿到链接的任何人都能打开。确认这些内容可以公开，或给它们补上访问密码。", action: { label: "去检查", run: () => onGo("shares") } });
   if (o.shares.expiringSoon > 0) list.push({ tone: "warn", icon: CalendarDays, title: `${o.shares.expiringSoon} 条分享 7 天内到期`, text: "到期后对方会打不开。需要继续用就先续期。", action: { label: "去续期", run: () => onGo("shares") } });
+  if (o.canManage && (o.siteRequests ?? 0) > 0) list.push({ tone: "warn", icon: Notebook, title: `${o.siteRequests} 个文档站等你审核`, text: "有编辑权的成员申请把笔记本发布出去。通过后 /s/ 才会对外。", action: { label: "去审核", run: () => onGo("shares") } });
   if (o.canManage && o.stats.activeInvites > 0) list.push({ tone: "warn", icon: UserPlus, title: `${o.stats.activeInvites} 条邀请链接还生效`, text: "邀请链接谁拿到谁能进。人到齐了就把它作废掉。", action: { label: "管理邀请", run: () => onGo("members") } });
   if (o.stats.trashedNotes > 0) list.push({ tone: "warn", icon: Archive, title: `回收站里有 ${o.stats.trashedNotes} 篇笔记`, text: "保留 30 天后自动销毁。要留的现在恢复，不要的可以立刻清掉。", action: { label: "打开回收站", run: () => nav(`/w/${o.workspace.id}/trash`) } });
   return list;

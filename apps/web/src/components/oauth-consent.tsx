@@ -35,7 +35,7 @@ export function OauthConsent() {
   const [busy, setBusy] = useState(false);
   const [notebooks, setNotebooks] = useState<Nb[]>([]);
 
-  const [workspaceId, setWorkspaceId] = useState("");
+  const [workspaceIds, setWorkspaceIds] = useState<string[]>([]);
   const [rw, setRw] = useState<Rw>("read");
   const [mode, setMode] = useState<"inherit" | "allowlist">("inherit");
   const [notebookIds, setNotebookIds] = useState<string[]>([]);
@@ -48,7 +48,7 @@ export function OauthConsent() {
     if (!id) return setErr("链接里缺少 request 参数");
     api<Req>(`/api/v1/oauth/requests/${id}`).then((d) => {
       setReq(d);
-      setWorkspaceId(d.workspaces[0]?.id ?? "");
+      setWorkspaceIds(d.workspaces[0]?.id ? [d.workspaces[0].id] : []);
       setRw(defaultRw(d.scope));
     }).catch((e: Error & { code?: string }) => {
       if (e.code === "UNAUTHENTICATED") {
@@ -60,17 +60,19 @@ export function OauthConsent() {
   }, [id]);
 
   useEffect(() => {
-    if (!workspaceId) return setNotebooks([]);
-    api<{ notebooks: Nb[] }>(`/api/v1/workspaces/${workspaceId}/notebooks`)
-      .then((d) => setNotebooks(d.notebooks)).catch(() => setNotebooks([]));
+    if (!workspaceIds.length) return setNotebooks([]);
+    void Promise.all(workspaceIds.map((id) =>
+      api<{ notebooks: Nb[] }>(`/api/v1/workspaces/${id}/notebooks`)
+        .then((d) => d.notebooks).catch(() => [] as Nb[]),
+    )).then((groups) => setNotebooks(groups.flat()));
     setNotebookIds([]);
-  }, [workspaceId]);
+  }, [workspaceIds.join(",")]);
 
   async function decide(action: "approve" | "deny") {
     setBusy(true); setErr("");
     try {
       const body = action === "approve" ? JSON.stringify({
-        workspaceId, rw, notebookMode: mode,
+        workspaceIds, rw, notebookMode: mode,
         notebookIds: mode === "allowlist" ? notebookIds : [],
         allowDelete: rw === "manage" && allowDelete,
         requireAiIndex, allowPrivateNotebooks: allowPrivate,
@@ -85,7 +87,13 @@ export function OauthConsent() {
   if (err && !req) return <Shell><FormError>{err}</FormError></Shell>;
   if (!req) return <Shell><p className="text-sm text-muted-foreground">正在读取授权请求…</p></Shell>;
 
-  const viewerOnly = req.workspaces.find((w) => w.id === workspaceId)?.role === "viewer";
+  const viewerOnly = req.workspaces.some((w) => workspaceIds.includes(w.id) && w.role === "viewer");
+  useEffect(() => {
+    if (viewerOnly && rw !== "read") { setRw("read"); setAllowDelete(false); }
+  }, [viewerOnly, rw]);
+  function toggleWorkspace(id: string) {
+    setWorkspaceIds((cur) => cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]);
+  }
 
   return <Shell>
     <div className="grid gap-4">
@@ -94,12 +102,16 @@ export function OauthConsent() {
         <p className="mt-1 text-xs text-muted-foreground">授权后会回到 {req.redirectHost}。资源：{req.resource}</p>
       </div>
 
-      <label className="grid gap-1.5">
-        <span className="text-xs font-medium text-muted-foreground">授权哪个工作区</span>
-        <select className="h-9 rounded-lg border bg-background px-3 text-sm" value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)}>
-          {req.workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-        </select>
-      </label>
+      <div>
+        <p className="mb-1.5 text-xs font-medium text-muted-foreground">授权哪些工作区</p>
+        <p className="mb-2 text-[11px] text-muted-foreground">可多选。权限不会超过你在每个区自己的权限。</p>
+        <div className="max-h-44 overflow-auto rounded-lg border p-1">
+          {req.workspaces.map((w) => <label key={w.id} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-sm hover:bg-muted">
+            <input type="checkbox" className="size-4 accent-current" checked={workspaceIds.includes(w.id)} onChange={() => toggleWorkspace(w.id)} />
+            <span className="truncate">{w.name}</span>
+          </label>)}
+        </div>
+      </div>
 
       <div>
         <p className="mb-1.5 text-xs font-medium text-muted-foreground">给到什么程度</p>
@@ -111,7 +123,7 @@ export function OauthConsent() {
             <span className="mt-1 block text-xs text-muted-foreground">{o.desc}</span>
           </button>)}
         </div>
-        {viewerOnly && <p className="mt-1.5 text-[11px] text-muted-foreground">你在这个工作区是 Viewer，只能授权只读。</p>}
+        {viewerOnly && <p className="mt-1.5 text-[11px] text-muted-foreground">你在勾选的某个工作区是 Viewer，只能授权只读。</p>}
       </div>
 
       <div>
@@ -121,7 +133,7 @@ export function OauthConsent() {
           <button type="button" onClick={() => setMode("allowlist")} className={`rounded-lg border p-3 text-left text-sm transition ${mode === "allowlist" ? "border-foreground bg-muted" : "hover:bg-muted/50"}`}>指定笔记本<span className="mt-1 block text-xs text-muted-foreground">只给勾选的这几本。</span></button>
         </div>
         {mode === "allowlist" && <div className="mt-2 max-h-44 overflow-auto rounded-lg border p-1">
-          {notebooks.length === 0 ? <p className="p-3 text-xs text-muted-foreground">这个工作区还没有笔记本。</p>
+          {notebooks.length === 0 ? <p className="p-3 text-xs text-muted-foreground">{workspaceIds.length ? "勾选的工作区还没有笔记本。" : "先勾选工作区。"}</p>
             : notebooks.map((n) => <label key={n.id} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-sm hover:bg-muted">
               <input type="checkbox" className="size-4 accent-current" checked={notebookIds.includes(n.id)}
                 onChange={(e) => setNotebookIds(e.target.checked ? [...notebookIds, n.id] : notebookIds.filter((x) => x !== n.id))} />
@@ -146,7 +158,7 @@ export function OauthConsent() {
       <p className="text-[11px] text-muted-foreground">授权后可以随时在「设置 → 集成」里吊销，吊销即刻生效。</p>
       <div className="flex justify-end gap-2">
         <Button variant="ghost" disabled={busy} onClick={() => void decide("deny")}>拒绝</Button>
-        <Button disabled={busy || !workspaceId || (mode === "allowlist" && !notebookIds.length)} onClick={() => void decide("approve")}>
+        <Button disabled={busy || !workspaceIds.length || (mode === "allowlist" && !notebookIds.length)} onClick={() => void decide("approve")}>
           {busy ? "处理中…" : "同意并继续"}
         </Button>
       </div>

@@ -24,7 +24,7 @@ result.noRawEnumInList = !/\bmanage\b|\bactive\b/.test(listText);
 
 result.dialogOpens = await click(`[...document.querySelectorAll('button')].find(x=>x.textContent.includes('新建钥匙'))`);
 const dialog = await ex(`document.querySelector('[role=dialog]')?.innerText||''`);
-result.hasWorkspacePicker = /工作区/.test(dialog) && (await ex(`!!document.querySelector('[role=dialog] select')`));
+result.hasWorkspacePicker = /工作区/.test(dialog) && /可多选/.test(dialog) && (await ex(`!![...document.querySelectorAll('[role=dialog] input[type=checkbox]')].length`));
 result.hasThreeTiers = ['只读', '读写', '全部'].every(x => dialog.includes(x));
 result.hasNotebookScope = dialog.includes('跟随我的权限') && dialog.includes('指定笔记本');
 result.hasExpiry = dialog.includes('永不过期') || dialog.includes('有效期');

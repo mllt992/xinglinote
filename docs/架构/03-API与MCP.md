@@ -102,7 +102,9 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | PATCH/DELETE | `/api/v1/shares/:id` | 改密续期 / 取消 |
 | POST | `/api/v1/public/shares/:token/unlock` | password |
 | GET | `/api/v1/public/shares/:token` | 解锁后的内容 JSON（页面也可 SSR） |
-| POST | `/api/v1/notebooks/:id/site` | 发布/改配置/下线 |
+| GET | `/api/v1/notebooks/:id/site` | 本站状态：已上线 / 待审 / 谁能发 |
+| PATCH | `/api/v1/notebooks/:id/site` | Admin 当场上下线；Editor 申请或撤回；Admin 带 `action=approve\|reject` 审申请 |
+| GET | `/api/v1/workspaces/:id/site-requests` | 本区待审的文档站申请，仅 Admin / Owner |
 
 ### 2.5 评论、动态、AI、MCP、回收站、备份
 
@@ -112,10 +114,19 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | POST | `/api/v1/comments/:id/moderate` | |
 | GET/POST | `/api/v1/corrections` | |
 | POST | `/api/v1/corrections/:id/review` | accept/reject |
-| GET/POST | `/api/v1/posts` | scope, workspaceId |
+| GET | `/api/v1/feed/public` | 广场时间线；回 `posts` + `now` |
+| GET | `/api/v1/feed/public/updates?since=` | 广场自 `since` 起的新帖数、有新回复的帖数；回 `newPosts` `repliedPosts` `now` |
+| GET | `/api/v1/feed/workspaces/:id` | 圈子时间线；成员；回 `posts` + `now` |
+| GET | `/api/v1/feed/workspaces/:id/updates?since=` | 圈子同上的增量计数；成员 |
+| GET/POST | `/api/v1/posts` | scope, workspaceId；POST 可带 `attachmentIds` |
+| POST | `/api/v1/posts/attachments` | 发帖前暂存附件（multipart `file`） |
+| GET/DELETE | `/api/v1/posts/attachments/:id` | 看 / 删；广场未登录可读 |
 | POST | `/api/v1/posts/:id/like` | |
 | PUT/DELETE | `/api/v1/posts/:id/favorite` | 收藏 / 取消 |
-| GET/POST | `/api/v1/posts/:id/comments` | 一层回复；登录直发，广场访客先审 |
+| GET/POST | `/api/v1/posts/:id/comments` | 一层回复；登录直发，广场访客先审。评论 DTO 带 `authorKind` / `agent` |
+| GET | `/api/v1/agents` | 公开：启用中的智能体，供 @ 补全；`?scope=square\|circle` |
+| GET/POST | `/api/v1/admin/agents` | 实例管理员；POST 建智能体 |
+| PATCH/DELETE | `/api/v1/admin/agents/:id` | 改 / 软删 |
 | POST | `/api/v1/posts/:id/report` | `{ reason, note? }`；先交 AI |
 | POST | `/api/v1/posts/:id/appeal` | `{ note? }`；仅 AI 下架后的作者 |
 | POST | `/api/v1/posts/:id/promote` | 转正为笔记 |
@@ -125,7 +136,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | POST | `/api/v1/ai/write` | 写作，回 diff |
 | POST | `/api/v1/ai/ask` | SSE 流 |
 | GET/PATCH | `/api/v1/workspaces/:id/ai` | |
-| CRUD | `/api/v1/mcp-tokens` | POST 响应含一次性 secret 与配置 JSON |
+| CRUD | `/api/v1/mcp-tokens` | POST 响应含一次性 secret 与配置 JSON；`workspaceIds[]`（兼容单数 `workspaceId`） |
 | POST | `/api/v1/mcp-tokens/:id/rotate` | |
 | GET | `/api/v1/workspaces/:id/mcp-audit` | `tokenId` / `tool` / `result` / `limit`；Admin 看本区，本人看自己的 |
 | GET | `/api/v1/workspaces/:id/trash` | |

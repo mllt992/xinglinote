@@ -37,3 +37,11 @@ test("文本附件里不能藏 HTML / SVG", () => {
 test("正常文本照常通过", () => {
   assert.equal(assertAttachmentType("text/markdown", Buffer.from("# 标题\n\n正文 <b> 也没关系", "utf8")), "text/markdown");
 });
+
+test("mp4 / webm 按头识别", () => {
+  const mp4 = Buffer.from([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0]);
+  const webm = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 1, 2, 3, 4]);
+  assert.equal(assertAttachmentType("video/mp4", mp4), "video/mp4");
+  assert.equal(assertAttachmentType("video/webm", webm), "video/webm");
+  assert.throws(() => assertAttachmentType("video/mp4", png), /不符/);
+});

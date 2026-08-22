@@ -124,7 +124,7 @@ let code;
 {
   const { status, body } = await j(`/api/v1/oauth/requests/${requestId}/approve`, {
     method: 'POST',
-    body: JSON.stringify({ workspaceId, rw: 'write', notebookMode: 'inherit', notebookIds: [], allowDelete: false, requireAiIndex: false, allowPrivateNotebooks: false, feedPublic: false, feedWorkspace: false, dailyWriteLimitBytes: null, expiresInDays: null }),
+    body: JSON.stringify({ workspaceIds: [workspaceId], rw: 'write', notebookMode: 'inherit', notebookIds: [], allowDelete: false, requireAiIndex: false, allowPrivateNotebooks: false, feedPublic: false, feedWorkspace: false, dailyWriteLimitBytes: null, expiresInDays: null }),
   }, cookie);
   const loc = body.data?.redirect ?? '';
   code = loc ? new URL(loc).searchParams.get('code') : null;
