@@ -5,7 +5,7 @@ import { api } from "../api";
 import { cn } from "../lib/utils";
 import { askFeedRefresh, feedUpdateTotal, formatFeedUpdateLabel, useFeedBadges } from "./feed-updates";
 
-/** 顶栏认的几个「地方」。问知识库不在其中：它是一个动作（开对话框），不是一个能停留的页面。 */
+/** 顶栏认的几个「地方」。问知识库不在其中：它是一个动作（开右侧问答栏），不是一个能停留的页面。 */
 export type NavPlace = "notes" | "circle" | "square" | "nav";
 
 const LAST_WS_KEY = "kb.last-workspace";

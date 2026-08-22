@@ -73,6 +73,7 @@ node scripts/verify-manage.mjs      # 备份 / 导出 / 审计 / 冻结 / 通知
 node scripts/verify-mcp-keys.mjs    # MCP 钥匙的额度、范围、档位、轮换、吊销
 node scripts/verify-mcp-tools.mjs   # MCP 工具合同：动态减清单、搜索、替换、今天、幂等、审计
 node scripts/verify-gaps.mjs        # 分享类型、分享总览、回收站销毁、搜索、标签
+node scripts/verify-saved-shares.mjs # 收到的分享：自动收下、移出不救活、手工再存
 node scripts/verify-notebook-move.mjs    # 笔记本跨工作区搬迁：内容、附件、搜索归属、双链、权限
 node scripts/verify-site-review.mjs      # 文档站：编辑申请、管理员过审才上线
 node scripts/verify-feed.mjs        # 圈子动态、泄漏检查、转正、公开主页、评论

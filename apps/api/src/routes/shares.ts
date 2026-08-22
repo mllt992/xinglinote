@@ -13,10 +13,15 @@ import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
 import { noteAccess } from "../lib/note-access.ts";
 import { notebookAccess } from "../lib/notebook-access.ts";
-import { folderSubtree, notebookSubtree } from "../lib/share-target.ts";
 import { limit } from "../lib/rate-limit.ts";
 import { clientIp } from "../lib/client-ip.ts";
 import { shareCookieName, shareCookieValid, shareCookieValue } from "../lib/share-cookie.ts";
+import {
+  headingSlug, loadLiveShare, loadLiveSite, renderShare, renderSite, sliceHeading,
+} from "../lib/share-render.ts";
+import {
+  dismissSaved, getSaved, listSaved, maybeAutoSave, openLocation, peekSaved, reactivateSaved, renderSavedContent, saveManually,
+} from "../lib/saved-shares.ts";
 
 export const shareRoutes = new Hono();
 
@@ -69,33 +74,7 @@ function publicShare(s: typeof shareLinks.$inferSelect) {
     revokedAt: s.revokedAt,
   };
 }
-function effective(s: typeof shareLinks.$inferSelect) { return s.status === "active" && (!s.expiresAt || s.expiresAt.getTime() > Date.now()); }
-
-/** 标题锚点：和前端渲染用的一套规则，中文直接保留。 */
-export const headingSlug = (text: string) => text.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^\p{L}\p{N}_-]/gu, "");
-/** 单节分享只给这一节：从该标题起，到下一个同级或更高级标题为止。 */
-function sliceHeading(body: string, anchor: string) {
-  const lines = body.split("\n");
-  const start = lines.findIndex(l => /^#{1,6}\s/.test(l) && headingSlug(l.replace(/^#+\s*/, "")) === anchor);
-  if (start < 0) return null;
-  const level = lines[start].match(/^#+/)![0].length;
-  let end = lines.length;
-  for (let i = start + 1; i < lines.length; i++) {
-    const m = lines[i].match(/^(#{1,6})\s/);
-    if (m && m[1].length <= level) { end = i; break; }
-  }
-  return lines.slice(start, end).join("\n").trim();
-}
-function treePayload(title: string, folders: Array<{ id: string; title: string; parentId: string | null }>, noteRows: Array<{ id: string; title: string; folderId: string | null; bodyMd: string; updatedAt: Date }>, wanted: string | undefined) {
-  const current = wanted ? noteRows.find(n => n.id === wanted) : noteRows[0];
-  if (wanted && !current) return null;
-  return {
-    title,
-    folders: folders.map(f => ({ id: f.id, title: f.title, parentId: f.parentId })),
-    notes: noteRows.map(n => ({ id: n.id, title: n.title, folderId: n.folderId })),
-    noteId: current?.id ?? null, noteTitle: current?.title ?? null, bodyMd: current?.bodyMd ?? "", updatedAt: current?.updatedAt ?? null,
-  };
-}
+export { headingSlug };
 
 const shareInput = z.object({
   password: z.string().max(100).optional(),
@@ -222,11 +201,15 @@ shareRoutes.delete("/shares/:id", async (c) => {
 });
 
 async function loadShare(token: string) {
-  const [share] = await db.select().from(shareLinks).where(eq(shareLinks.token, token));
-  if (!share || !effective(share)) throw fail("NOT_FOUND", "分享不存在或已失效");
-  return share;
+  return loadLiveShare(token);
 }
 const gone = () => fail("NOT_FOUND", "分享不存在或已失效");
+
+async function savedChip(userId: string | undefined, channel: Parameters<typeof peekSaved>[1]) {
+  if (!userId) return null;
+  const row = await peekSaved(userId, channel);
+  return row ? { id: row.id, status: row.status } : null;
+}
 
 shareRoutes.get("/public/shares/:token", async (c) => {
   const share = await loadShare(c.req.param("token"));
@@ -234,37 +217,24 @@ shareRoutes.get("/public/shares/:token", async (c) => {
   if (share.passwordHash && !shareCookieValid(getCookie(c, shareCookieName(share.token)), share.id, share.passwordHash)) {
     return ok(c, { requiresPassword: true, type: share.targetType, title: "受保护的分享" });
   }
-  const common = { requiresPassword: false, type: share.targetType, shareToken: share.token, commentsEnabled: share.commentsEnabled, correctionsEnabled: share.correctionsEnabled, showBacklinks: share.showBacklinks };
-
-  if (share.targetType === "attachment") {
-    const [file] = await db.select().from(attachments).where(eq(attachments.id, share.targetId));
-    if (!file || file.trashedAt) throw gone();
-    const [note] = await db.select().from(notes).where(eq(notes.id, file.noteId));
-    if (!note || note.trashedAt) throw gone();
-    return ok(c, { ...common, title: file.filename, attachment: { filename: file.filename, mime: file.mime, bytes: file.bytes, url: `/api/v1/public/shares/${share.token}/file` } });
-  }
-
-  if (share.targetType === "folder" || share.targetType === "notebook") {
-    const tree = share.targetType === "folder" ? await folderSubtree(share.targetId) : await notebookSubtree(share.targetId);
-    if (!tree) throw gone();
-    const payload = treePayload(tree.root.title, tree.folders, tree.notes, c.req.query("noteId"));
-    if (!payload) throw gone();
-    return ok(c, { ...common, ...payload });
-  }
-
-  const [note] = await db.select().from(notes).where(eq(notes.id, share.targetId));
-  if (!note || note.trashedAt) throw gone();
-  const [nb] = await db.select().from(notebooks).where(eq(notebooks.id, note.notebookId));
-  const bodyMd = share.targetType === "heading" ? sliceHeading(note.bodyMd, share.headingAnchor ?? "") : note.bodyMd;
-  if (bodyMd === null) throw gone();
-  return ok(c, { ...common, noteId: note.id, title: share.targetType === "heading" ? `${note.title} · 节选` : note.title, bodyMd, updatedAt: note.updatedAt, notebookTitle: nb?.title ?? "笔记" });
+  const payload = await renderShare(share, c.req.query("noteId"));
+  const user = await currentUser(c);
+  const lastNoteId = "noteId" in payload ? (payload as { noteId?: string | null }).noteId : null;
+  const channel = { source: "share" as const, share, lastNoteId };
+  if (user) await maybeAutoSave(user, channel);
+  return ok(c, { ...payload, savedShare: await savedChip(user?.id, channel) });
 });
 
 /** 附件只能经分享 token 下载，不给可猜的物理路径。 */
 shareRoutes.get("/public/shares/:token/file", async (c) => {
   const share = await loadShare(c.req.param("token"));
   if (share.targetType !== "attachment") throw gone();
-  if (share.passwordHash && !shareCookieValid(getCookie(c, shareCookieName(share.token)), share.id, share.passwordHash)) throw fail("FORBIDDEN", "请先解锁分享");
+  const unlocked = !share.passwordHash || shareCookieValid(getCookie(c, shareCookieName(share.token)), share.id, share.passwordHash);
+  if (!unlocked) {
+    const user = await currentUser(c);
+    const kept = user ? await peekSaved(user.id, { source: "share", share }) : null;
+    if (kept?.status !== "active") throw fail("FORBIDDEN", "请先解锁分享");
+  }
   const [file] = await db.select().from(attachments).where(eq(attachments.id, share.targetId));
   if (!file || file.trashedAt) throw gone();
   const [note] = await db.select().from(notes).where(eq(notes.id, file.noteId));
@@ -417,10 +387,63 @@ shareRoutes.get("/workspaces/:id/site-requests", async (c) => {
 });
 
 shareRoutes.get("/public/sites/:wsSlug/:nbSlug", async (c) => {
-  const [ws] = await db.select().from(workspaces).where(eq(workspaces.slug, c.req.param("wsSlug")));
-  if (!ws) throw fail("NOT_FOUND", "站点不存在");
-  const [nb] = await db.select().from(notebooks).where(and(eq(notebooks.workspaceId, ws.id), eq(notebooks.slug, c.req.param("nbSlug"))));
-  if (!nb?.sitePublished || nb.trashedAt) throw fail("NOT_FOUND", "站点不存在");
-  const list = await db.select().from(notes).where(and(eq(notes.notebookId, nb.id), eq(notes.published, true), eq(notes.moderationStatus, "none"), isNull(notes.trashedAt)));
-  return ok(c, { workspace: ws.name, notebook: nb.title, notebookId: nb.id, accent: nb.siteAccent, notes: list.map(n => ({ id: n.id, title: n.title, bodyMd: n.bodyMd, updatedAt: n.updatedAt })) });
+  const { ws, nb } = await loadLiveSite(c.req.param("wsSlug"), c.req.param("nbSlug"));
+  const payload = await renderSite(ws, nb);
+  const user = await currentUser(c);
+  const channel = { source: "site" as const, notebook: nb, workspaceName: ws.name, lastNoteId: payload.notes[0]?.id ?? null };
+  if (user) await maybeAutoSave(user, channel);
+  return ok(c, { ...payload, savedShare: await savedChip(user?.id, channel) });
+});
+
+shareRoutes.get("/me/saved-shares", async (c) => {
+  const user = await userRequired(c);
+  return ok(c, { items: await listSaved(user.id) });
+});
+
+shareRoutes.post("/me/saved-shares", async (c) => {
+  const user = await userRequired(c);
+  const body = z.object({
+    shareToken: z.string().min(1).max(80).optional(),
+    site: z.object({ wsSlug: z.string().min(1).max(80), nbSlug: z.string().min(1).max(80) }).optional(),
+    lastNoteId: z.string().uuid().nullable().optional(),
+    reactivateId: z.string().uuid().optional(),
+  }).parse(await c.req.json());
+  if (body.reactivateId) {
+    const saved = await reactivateSaved(user.id, body.reactivateId);
+    return ok(c, { id: saved.id, status: saved.status });
+  }
+  if (body.shareToken) {
+    const share = await loadLiveShare(body.shareToken);
+    const saved = await saveManually(user.id, { source: "share", share, lastNoteId: body.lastNoteId });
+    return ok(c, { id: saved.id, status: saved.status });
+  }
+  if (body.site) {
+    const { ws, nb } = await loadLiveSite(body.site.wsSlug, body.site.nbSlug);
+    const saved = await saveManually(user.id, { source: "site", notebook: nb, workspaceName: ws.name, lastNoteId: body.lastNoteId });
+    return ok(c, { id: saved.id, status: saved.status });
+  }
+  throw fail("VALIDATION", "请指定分享链接或文档站");
+});
+
+shareRoutes.get("/me/saved-shares/:id/content", async (c) => {
+  const user = await userRequired(c);
+  return ok(c, await renderSavedContent(user.id, c.req.param("id"), c.req.query("noteId")));
+});
+
+shareRoutes.get("/me/saved-shares/:id/open", async (c) => {
+  const user = await userRequired(c);
+  const to = await openLocation(user.id, c.req.param("id"), c.req.query("noteId"));
+  return c.redirect(to);
+});
+
+shareRoutes.get("/me/saved-shares/:id", async (c) => {
+  const user = await userRequired(c);
+  const { item } = await getSaved(user.id, c.req.param("id"));
+  return ok(c, item);
+});
+
+shareRoutes.delete("/me/saved-shares/:id", async (c) => {
+  const user = await userRequired(c);
+  await dismissSaved(user.id, c.req.param("id"));
+  return ok(c, {});
 });

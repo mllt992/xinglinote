@@ -182,6 +182,24 @@ const statements = [
     revoked_at timestamptz
   )`,
   `CREATE INDEX IF NOT EXISTS share_links_target_idx ON share_links(target_type, target_id)`,
+  `CREATE TABLE IF NOT EXISTS saved_shares (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source text NOT NULL,
+    share_id uuid,
+    site_notebook_id uuid,
+    last_note_id uuid,
+    title_snapshot text NOT NULL,
+    kind_snapshot text NOT NULL,
+    author_name_snapshot text NOT NULL DEFAULT '',
+    status text NOT NULL DEFAULT 'active',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    last_opened_at timestamptz NOT NULL DEFAULT now(),
+    dismissed_at timestamptz
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS saved_shares_user_share_uq ON saved_shares(user_id, share_id) WHERE share_id IS NOT NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS saved_shares_user_site_uq ON saved_shares(user_id, site_notebook_id) WHERE site_notebook_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS saved_shares_user_status_idx ON saved_shares(user_id, status, last_opened_at DESC)`,
   `CREATE TABLE IF NOT EXISTS posts (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), author_user_id uuid NOT NULL REFERENCES users(id), workspace_id uuid,
     visibility text NOT NULL DEFAULT 'public', body text NOT NULL, note_id uuid, status text NOT NULL DEFAULT 'visible', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
@@ -463,6 +481,8 @@ const statements = [
     ["mcp_tokens", "mcp_tokens_rw_chk", "rw IN ('read','write','manage')"],
     ["mcp_tokens", "mcp_tokens_mode_chk", "notebook_mode IN ('inherit','allowlist')"],
     ["share_links", "share_links_status_chk", "status IN ('active','revoked','expired')"],
+    ["saved_shares", "saved_shares_status_chk", "status IN ('active','dismissed')"],
+    ["saved_shares", "saved_shares_source_chk", "source IN ('share','site')"],
   ].map(([table, name, expr]) => `DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${name}') THEN
       ALTER TABLE ${table} ADD CONSTRAINT ${name} CHECK (${expr}) NOT VALID;

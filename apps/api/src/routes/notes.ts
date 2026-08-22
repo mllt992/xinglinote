@@ -503,7 +503,14 @@ knowledge.get("/search", async (c) => {
       page.push({ id: s.note.id, title: s.note.title, snippet: s.snippet, notebookId: s.note.notebookId, workspaceId: s.note.workspaceId, tags: s.note.tags, score: Math.round(s.score * 100) / 100 });
     }
   }
-  return ok(c, { hits: page, total: allowed, hasMore: more });
+  const received = [];
+  if (!notebookId && !tag && aiIndex == null) {
+    const { searchSavedTitles } = await import("../lib/saved-shares.ts");
+    received.push(...(await searchSavedTitles(user.id, q, 8)).map(r => ({
+      id: r.id, title: r.title, snippet: r.snippet, notebookId: "", workspaceId: "", kind: "saved_share" as const,
+    })));
+  }
+  return ok(c, { hits: [...page, ...received], total: allowed + received.length, hasMore: more });
 });
 
 /**

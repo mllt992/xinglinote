@@ -281,6 +281,27 @@ export const shareLinks = pgTable("share_links", {
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
 });
 
+/** 收到的分享：个人指针，不是副本。设计 21。 */
+export const savedShares = pgTable("saved_shares", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  source: text("source").notNull(),
+  shareId: uuid("share_id"),
+  siteNotebookId: uuid("site_notebook_id"),
+  lastNoteId: uuid("last_note_id"),
+  titleSnapshot: text("title_snapshot").notNull(),
+  kindSnapshot: text("kind_snapshot").notNull(),
+  authorNameSnapshot: text("author_name_snapshot").notNull().default(""),
+  status: text("status").notNull().default("active"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  lastOpenedAt: timestamp("last_opened_at", { withTimezone: true }).defaultNow().notNull(),
+  dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
+}, t => [
+  uniqueIndex("saved_shares_user_share_uq").on(t.userId, t.shareId),
+  uniqueIndex("saved_shares_user_site_uq").on(t.userId, t.siteNotebookId),
+  index("saved_shares_user_status_idx").on(t.userId, t.status, t.lastOpenedAt),
+]);
+
 export const posts = pgTable("posts", {
   id: uuid("id").defaultRandom().primaryKey(), authorUserId: uuid("author_user_id").notNull().references(() => users.id), workspaceId: uuid("workspace_id"),
   visibility: text("visibility").notNull().default("public"), body: text("body").notNull(), noteId: uuid("note_id"), status: text("status").notNull().default("visible"),

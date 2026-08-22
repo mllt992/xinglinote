@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Link, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import * as Avatar from "@radix-ui/react-avatar";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
-  AlertCircle, Archive, Bot, CalendarDays, Check, ChevronDown, ChevronRight, Circle, FilePlus2, Folder,
+  AlertCircle, Archive, Bot, CalendarDays, Check, ChevronDown, ChevronRight, Circle, FilePlus2, Folder, Inbox,
   FolderInput, FolderPlus, Globe2, List, MessageSquare, Link2, Lock, LogOut, MoreHorizontal, Notebook, Paintbrush, PanelRight,
   Pencil, Plus, RotateCcw, Search, Star, Settings, Share2, Sparkles, Sun, Trash2, Users, X, Copy, ExternalLink, Upload, Paperclip, Download,
   Keyboard, Maximize2, Minimize2, PanelLeft, PenLine, Terminal, Type, Workflow, FoldHorizontal, UnfoldHorizontal,
@@ -26,7 +26,7 @@ import { Badge } from "./components/ui/badge";
 import { ScrollArea } from "./components/ui/scroll-area";
 import { Separator } from "./components/ui/separator";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./components/ui/dialog";
-import { AskDialog } from "./components/ai-dialogs";
+import { AskSidebar } from "./components/ask-sidebar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuLabel, ContextMenuSeparator, ContextMenuTrigger } from "./components/ui/context-menu";
 import { Tooltip, TooltipProvider } from "./components/ui/tooltip";
@@ -45,6 +45,7 @@ import { NotebookList } from "./components/notebook-list";
 import { ImageLightbox } from "./components/image-lightbox";
 import { NoteRail, loadRailTab, saveRailTab, type Attachment, type RailTab } from "./components/note-rail";
 import { CalendarPage, TodayPage } from "./components/calendar";
+import { ReceivedShares, SavedShareChip } from "./components/received-shares";
 import { sortNotes } from "@kb/shared";
 import { diagramBlockAt, plainTextOf } from "@kb/shared/markdown";
 import { loadNotebookNoteSort, loadWorkspaceNotebookSort, saveNotebookNoteSort, saveWorkspaceNotebookSort, type NoteSortMode } from "./lib/note-sort-pref";
@@ -182,7 +183,7 @@ const withCanEdit = (saved: Omit<NoteDto, "canEdit"> & { canEdit?: boolean }, pr
   ({ ...saved, canEdit: saved.canEdit ?? prev?.canEdit ?? false });
 
 type Att = { id: string; filename: string; mime: string; bytes: number; url: string };
-type Hit = { id: string; title: string; snippet: string; notebookId: string; workspaceId: string; tags?: string[] };
+type Hit = { id: string; title: string; snippet: string; notebookId: string; workspaceId: string; tags?: string[]; kind?: string };
 type CreateKind = "workspace" | "notebook" | "folder" | null;
 
 function CreateDialog({ kind, onOpenChange, onSubmit }: { kind: CreateKind; onOpenChange: (v: boolean) => void; onSubmit: (name: string) => Promise<void> }) {
@@ -349,7 +350,8 @@ function AccountMenu({ me, wsId }: { me: Me | null | undefined; wsId?: string })
 
 function Workspace() {
   const askConfirm = useConfirm(); const askText = usePrompt(); const toast = useToast();
-  const me = useMe(); const nav = useNavigate(); const { wsId, noteId } = useParams();
+  const me = useMe(); const nav = useNavigate(); const { wsId, noteId, savedId } = useParams();
+  const receivedMode = useLocation().pathname.includes("/received");
   const circleUpdates = useFeedBadges({ workspaceId: wsId }).circle;
   const circleBadge = feedUpdateTotal(circleUpdates);
   const [spaces, setSpaces] = useState<Ws[]>([]); const [nbs, setNbs] = useState<Nb[]>([]); const [nbId, setNbId] = useState<string>();
@@ -385,7 +387,12 @@ function Workspace() {
     if (nbId) { setNoteSort(loadNotebookNoteSort(nbId)); api<{ published: boolean; slug: string; pending?: boolean; canPublish?: boolean; canRequest?: boolean }>(`/api/v1/notebooks/${nbId}/site`).then(setSite).catch(() => setSite(null)); }
   }, [nbId]);
   /** 换笔记本默认打开新本子的第一篇笔记（空本子退回空状态）；否则编辑区还停在上一个笔记本里，面包屑会显示成「新笔记本 › 旧笔记」。 */
-  function pickNotebook(id: string | undefined) { if (!id || id === nbId) return; autoOpenNb.current = id; setNbId(id); }
+  function pickNotebook(id: string | undefined) {
+    if (!id) return;
+    if (receivedMode) { autoOpenNb.current = id; setNbId(id); return; }
+    if (id === nbId) return;
+    autoOpenNb.current = id; setNbId(id);
+  }
   function changeNoteSort(mode: NoteSortMode) { setNoteSort(mode); if (nbId) saveNotebookNoteSort(nbId, mode); }
   function changeNotebookSort(mode: NoteSortMode) { setNbSort(mode); if (wsId) saveWorkspaceNotebookSort(wsId, mode); }
   /** 笔记本的自定义顺序。先本地排好再落库，失败就把服务端那份拉回来盖掉，别让侧栏停在假象上。 */
@@ -719,11 +726,12 @@ function Workspace() {
       // Vim 模式下 Esc 先给 Vim（回 normal），只有已经在 normal 时才轮到退全屏。
       // 否则想退插入模式会连编辑器全屏一起退掉（设计 17 §3.3）。
       if (e.key === "Escape" && vimMode && vimMode !== "NORMAL") return;
+      if (e.key === "Escape" && showAsk) { setShowAsk(false); return; }
       if (e.key === "Escape" && zen && !document.fullscreenElement) void toggleZen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [zen, vimMode]);
+  }, [zen, vimMode, showAsk]);
 
   function paletteCommands(): PaletteCommand[] {
     const list: PaletteCommand[] = [
@@ -743,7 +751,9 @@ function Workspace() {
       { id: "font-bigger", group: "编辑器", label: "正文字号调大", icon: <Type />, run: () => setLayout(v => ({ ...v, fontScale: stepScale(v.fontScale, 1) })) },
       { id: "font-smaller", group: "编辑器", label: "正文字号调小", icon: <Type />, run: () => setLayout(v => ({ ...v, fontScale: stepScale(v.fontScale, -1) })) },
       ...RENDER_KEYS.map(key => ({ id: `render-${key}`, group: "编辑器", label: `即时渲染${RENDER_LABELS[key]}：${layout.render[key] ? "开（点击退回源码）" : "关（点击恢复渲染）"}`, icon: <Type />, run: () => setLayout(v => ({ ...v, render: { ...v.render, [key]: !v.render[key] } })) })),
+      { id: "ask-kb", group: "导航", label: showAsk ? "关闭问知识库" : "问知识库", icon: <Sparkles />, run: () => setShowAsk(v => !v) },
       { id: "quick-open", group: "导航", label: "快速打开笔记", hint: "Ctrl+K", icon: <Search />, run: () => setQuickOpen(true) },
+      { id: "received", group: "导航", label: "已分享", icon: <Inbox />, run: () => nav(`/w/${wsId}/received`) },
       { id: "calendar", group: "导航", label: "日历", icon: <CalendarDays />, run: () => nav(`/w/${wsId}/calendar`) },
       { id: "today", group: "导航", label: "今天", icon: <Sun />, run: () => nav(`/w/${wsId}/today`) },
       { id: "trash", group: "导航", label: "回收站", icon: <Archive />, run: () => nav(`/w/${wsId}/trash`) },
@@ -811,20 +821,22 @@ function Workspace() {
           <Button variant={titleOnly ? "secondary" : "ghost"} size="sm" onClick={() => { const v = !titleOnly; setTitleOnly(v); void runSearch(search, { titleOnly: v }); }}>仅标题</Button>
           <span className="ml-auto pr-1 text-[11px] text-muted-foreground">{hits.length} 条</span>
         </div>
-        {hits.length === 0 ? <p className="px-3 py-6 text-center text-xs text-muted-foreground">没有匹配的笔记。</p> : hits.map(h => <button key={h.id} className="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left text-sm hover:bg-muted" onClick={() => { nav(`/w/${h.workspaceId}/n/${h.id}`); setSearch(""); setHits([]); }}><Search className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1"><span className="block truncate">{h.title}</span><span className="block truncate text-[11px] text-muted-foreground">{h.workspaceId !== wsId ? `${spaces.find(w => w.id === h.workspaceId)?.name ?? "其他工作区"} · ` : ""}{h.snippet}</span></span></button>)}</div>}</div>
-      <Tooltip content="用 AI 问这个工作区"><Button variant="ghost" size="sm" className="hidden text-muted-foreground lg:inline-flex" onClick={() => setShowAsk(true)}><Sparkles />问知识库</Button></Tooltip>
+        {hits.length === 0 ? <p className="px-3 py-6 text-center text-xs text-muted-foreground">没有匹配的笔记。</p> : hits.map(h => <button key={`${h.kind ?? "note"}:${h.id}`} className="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left text-sm hover:bg-muted" onClick={() => { nav(h.kind === "saved_share" ? `/w/${wsId}/received/${h.id}` : `/w/${h.workspaceId}/n/${h.id}`); setSearch(""); setHits([]); }}><Search className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1"><span className="block truncate">{h.title}</span><span className="block truncate text-[11px] text-muted-foreground">{h.kind === "saved_share" ? h.snippet : `${h.workspaceId !== wsId ? `${spaces.find(w => w.id === h.workspaceId)?.name ?? "其他工作区"} · ` : ""}${h.snippet}`}</span></span></button>)}</div>}</div>
+      <Tooltip content="用 AI 问这个工作区"><Button variant={showAsk ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" aria-pressed={showAsk} onClick={() => setShowAsk(v => !v)}><Sparkles /><span className="hidden lg:inline">问知识库</span></Button></Tooltip>
       <Tooltip content="快速打开（Ctrl+K）"><Button variant="ghost" size="icon" aria-label="快速打开" onClick={() => setQuickOpen(true)}><Search /></Button></Tooltip>
       <NotificationBell />
       <Tooltip content="外观"><Button variant="ghost" size="icon" onClick={() => nav("/settings/appearance")}><Paintbrush /></Button></Tooltip>
       <AccountMenu me={me} wsId={wsId} />
     </header>
 
-    <main className="app-grid grid min-h-0 flex-1" data-drawer={narrow && drawer ? "1" : undefined} style={{ gridTemplateColumns: narrow ? "minmax(0, 1fr)" : [showNotebooks ? `${layout.notebooksWidth}px` : null, showTree ? `${layout.treeWidth}px` : null, "minmax(0, 1fr)"].filter(Boolean).join(" ") }}>
+    <div className="flex min-h-0 flex-1">
+    <main className="app-grid grid min-h-0 min-w-0 flex-1" data-drawer={narrow && drawer ? "1" : undefined} style={{ gridTemplateColumns: narrow ? "minmax(0, 1fr)" : [showNotebooks ? `${layout.notebooksWidth}px` : null, (showTree || receivedMode) ? `${layout.treeWidth}px` : null, "minmax(0, 1fr)"].filter(Boolean).join(" ") }}>
       {/* 抽屉打开时的遮罩：点一下收起。窄屏没有「点空白处」可言，必须给个明确的退出。 */}
       {narrow && drawer && <button type="button" aria-label="收起侧栏" className="fixed inset-x-0 bottom-0 top-14 z-40 bg-foreground/40" onClick={() => setDrawer(false)} />}
       {showNotebooks && <aside className="notebook-panel relative flex min-h-0 flex-col border-r border-border bg-muted/35 p-2.5">
-        <div role="separator" aria-label="调整笔记本栏宽度" onPointerDown={e => startResize("notebooks", e)} className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize hover:bg-primary/20" /><div className="flex h-10 items-center justify-between px-2"><span className="sidebar-copy text-[11px] font-semibold uppercase tracking-[.12em] text-muted-foreground">笔记本</span><div className="flex items-center"><NoteSortMenu mode={nbSort} onChange={changeNotebookSort} title="笔记本排序" size="size-7" /><Tooltip content="新建笔记本"><Button variant="ghost" size="icon" className="size-7" onClick={() => setCreate("notebook")}><Plus /></Button></Tooltip></div></div><ScrollArea className="flex-1"><div className="p-0.5"><NotebookList notebooks={nbs} activeId={nbId} mode={nbSort} canReorder={canDeleteNotebook} canDelete={canDeleteNotebook} canMove={canMoveNotebook} canManage={canManageNotebook} onPick={pickNotebook} onReorder={persistNotebookOrder} onRename={nb => void renameNotebook(nb)} onAccess={nb => { pickNotebook(nb.id); setShowNotebookAccess(true); }} onMove={nb => setMoveNb(nb)} onImport={nb => { pickNotebook(nb.id); setShowImport(true); }} onExport={nb => void downloadZip(`/api/v1/notebooks/${nb.id}/export.zip`)} onShare={nb => setShareTarget({ kind: "notebook", id: nb.id, title: nb.title })} canShare={!!activeWs?.role && activeWs.role !== "viewer" && !activeWs.frozen} onDelete={nb => void deleteNotebook(nb)} /></div></ScrollArea><div className="border-t border-border pt-2"><button onClick={() => nav(`/w/${wsId}/calendar`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><CalendarDays className="size-4" /><span className="sidebar-copy">日历</span></button><button onClick={() => nav(`/w/${wsId}/today`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Sun className="size-4" /><span className="sidebar-copy">今天</span></button><button onClick={() => nav(`/w/${wsId}/feed`)} title={circleBadge ? formatFeedUpdateLabel(circleUpdates) : undefined} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Users className="size-4" /><span className="sidebar-copy">圈子</span>{circleBadge > 0 && <span className="ml-auto grid min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] font-semibold leading-4 text-primary-foreground">{circleBadge > 99 ? "99+" : circleBadge}</span>}</button><button onClick={() => nav(`/w/${wsId}/trash`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Archive className="size-4" /><span className="sidebar-copy">回收站</span></button></div></aside>}
+        <div role="separator" aria-label="调整笔记本栏宽度" onPointerDown={e => startResize("notebooks", e)} className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize hover:bg-primary/20" /><div className="flex h-10 items-center justify-between px-2"><span className="sidebar-copy text-[11px] font-semibold uppercase tracking-[.12em] text-muted-foreground">笔记本</span><div className="flex items-center"><NoteSortMenu mode={nbSort} onChange={changeNotebookSort} title="笔记本排序" size="size-7" /><Tooltip content="新建笔记本"><Button variant="ghost" size="icon" className="size-7" onClick={() => setCreate("notebook")}><Plus /></Button></Tooltip></div></div><ScrollArea className="flex-1"><div className="p-0.5"><NotebookList notebooks={nbs} activeId={nbId} mode={nbSort} canReorder={canDeleteNotebook} canDelete={canDeleteNotebook} canMove={canMoveNotebook} canManage={canManageNotebook} onPick={pickNotebook} onReorder={persistNotebookOrder} onRename={nb => void renameNotebook(nb)} onAccess={nb => { pickNotebook(nb.id); setShowNotebookAccess(true); }} onMove={nb => setMoveNb(nb)} onImport={nb => { pickNotebook(nb.id); setShowImport(true); }} onExport={nb => void downloadZip(`/api/v1/notebooks/${nb.id}/export.zip`)} onShare={nb => setShareTarget({ kind: "notebook", id: nb.id, title: nb.title })} canShare={!!activeWs?.role && activeWs.role !== "viewer" && !activeWs.frozen} onDelete={nb => void deleteNotebook(nb)} /></div></ScrollArea><div className="border-t border-border pt-2"><button onClick={() => nav(`/w/${wsId}/received`)} className={cn("flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm", receivedMode ? "bg-foreground text-background shadow-sm" : "text-muted-foreground hover:bg-muted hover:text-foreground")}><Inbox className="size-4" /><span className="sidebar-copy">已分享</span></button><button onClick={() => nav(`/w/${wsId}/calendar`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><CalendarDays className="size-4" /><span className="sidebar-copy">日历</span></button><button onClick={() => nav(`/w/${wsId}/today`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Sun className="size-4" /><span className="sidebar-copy">今天</span></button><button onClick={() => nav(`/w/${wsId}/feed`)} title={circleBadge ? formatFeedUpdateLabel(circleUpdates) : undefined} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Users className="size-4" /><span className="sidebar-copy">圈子</span>{circleBadge > 0 && <span className="ml-auto grid min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] font-semibold leading-4 text-primary-foreground">{circleBadge > 99 ? "99+" : circleBadge}</span>}</button><button onClick={() => nav(`/w/${wsId}/trash`)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><Archive className="size-4" /><span className="sidebar-copy">回收站</span></button></div></aside>}
 
+      {receivedMode && wsId ? <ReceivedShares wsId={wsId} savedId={savedId} /> : <>
       {showTree && <aside className="tree-panel relative flex min-h-0 flex-col border-r border-border bg-background">
         <div role="separator" aria-label="调整目录栏宽度" onPointerDown={e => startResize("tree", e)} className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize hover:bg-primary/20" /><div className="flex h-14 items-center gap-1 border-b border-border px-3"><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{activeNb?.title ?? "笔记"}</p><p className="truncate text-[11px] text-muted-foreground">{tree.length} 篇笔记 · {activeNb?.visibility==="private"?"私密":activeNb?.visibility==="restricted"?"指定成员":"全体成员"}</p></div><NoteSortMenu mode={noteSort} onChange={changeNoteSort} /><DropdownMenu><Tooltip content="笔记本操作"><span className="inline-flex"><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label="笔记本操作" className="size-8"><MoreHorizontal /></Button></DropdownMenuTrigger></span></Tooltip><DropdownMenuContent align="end">{activeNb && <DropdownMenuItem disabled={!canManageNotebook(activeNb)} onSelect={() => void renameNotebook(activeNb)}><Pencil />重命名笔记本</DropdownMenuItem>}<DropdownMenuItem onSelect={()=>setShowNotebookAccess(true)}><Lock />访问权限</DropdownMenuItem>{activeNb && <DropdownMenuItem disabled={!treeCanEdit} onSelect={() => setShareTarget({ kind: "notebook", id: activeNb.id, title: activeNb.title })}><Share2 />分享这个笔记本</DropdownMenuItem>}
 {site?.published && <DropdownMenuItem onSelect={() => window.open(site.slug, "_blank")}><ExternalLink />打开文档站</DropdownMenuItem>}
@@ -880,7 +892,10 @@ ${a.mime.startsWith("image/") ? "!" : ""}[${a.filename}](${a.url})` }, true)}
         </div>
         <EditorStatusBar status={status} statusErr={statusErr} bodyMd={note.bodyMd} cursor={cursor} readOnly={!note.canEdit} vimMode={vimMode} right={<CollabBadge collab={collab} />} />
       </> : <div className="grid h-full place-items-center p-8"><div className="max-w-sm text-center"><span className="mx-auto grid size-14 place-items-center rounded-2xl bg-muted"><Notebook className="size-6 text-muted-foreground" /></span><h2 className="mt-5 text-lg font-semibold tracking-tight">选择一篇笔记开始</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">从左侧打开现有笔记，或者新建一篇内容。</p><Button className="mt-5" onClick={() => void createNote()}><FilePlus2 />新建笔记</Button></div></div>}</section>
+      </>}
     </main>
+    {showAsk && <AskSidebar workspaceId={wsId} notebookId={nbId} notebookTitle={activeNb?.title} overlay={narrow} onClose={() => setShowAsk(false)} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} />}
+    </div>
     <CreateDialog kind={create} onOpenChange={v => !v && setCreate(null)} onSubmit={name => createNamed(create!, name)} />
     <ShareDialog target={shareTarget} open={!!shareTarget} onOpenChange={v => { if (!v) setShareTarget(null); }} />
     {note && <CollabDialog noteId={note.id} open={showCollab} onOpenChange={setShowCollab} collab={collab} viewers={viewers}
@@ -890,22 +905,23 @@ ${a.mime.startsWith("image/") ? "!" : ""}[${a.filename}](${a.url})` }, true)}
     <QuickOpen open={quickOpen} onOpenChange={setQuickOpen} onPick={(ws, note) => nav(`/w/${ws}/n/${note}`)} workspaceNames={Object.fromEntries(spaces.map(w => [w.id, w.name]))} />
     <MoveNotebookDialog notebook={moveNb} spaces={spaces} currentWorkspaceId={wsId} onOpenChange={v => !v && setMoveNb(null)} onMoved={notebookMoved} />
     <NotebookAccessDialog notebook={activeNb} workspaceId={wsId} open={showNotebookAccess} onOpenChange={setShowNotebookAccess} onSaved={()=>wsId&&api<{notebooks:Nb[]}>(`/api/v1/workspaces/${wsId}/notebooks`).then(d=>{setNbs(d.notebooks);const fresh=d.notebooks.find(n=>n.id===nbId);if(!fresh)setNbId(d.notebooks[0]?.id)})} />
-    <AskDialog open={showAsk} onOpenChange={setShowAsk} workspaceId={wsId} onOpenNote={id=>nav(`/w/${wsId}/n/${id}`)}/>
   </div></TooltipProvider>;
 }
 
 
-type PublicShareData={requiresPassword:boolean;type:string;shareToken?:string;title:string;bodyMd?:string;updatedAt?:string;notebookTitle?:string;noteId?:string|null;noteTitle?:string|null;commentsEnabled?:boolean;correctionsEnabled?:boolean;showBacklinks?:boolean;folders?:Array<{id:string;title:string;parentId:string|null}>;notes?:Array<{id:string;title:string;folderId:string|null}>;attachment?:{filename:string;mime:string;bytes:number;url:string}};
+type PublicShareData={requiresPassword:boolean;type:string;shareToken?:string;title:string;bodyMd?:string;updatedAt?:string;notebookTitle?:string;noteId?:string|null;noteTitle?:string|null;commentsEnabled?:boolean;correctionsEnabled?:boolean;showBacklinks?:boolean;folders?:Array<{id:string;title:string;parentId:string|null}>;notes?:Array<{id:string;title:string;folderId:string|null}>;attachment?:{filename:string;mime:string;bytes:number;url:string};savedShare?:{id:string;status:string}|null};
 function PublicShare() {
-  const { token } = useParams(); const [data, setData] = useState<PublicShareData | null>(null); const [password, setPassword] = useState(""); const [err, setErr] = useState(""); const [pick, setPick] = useState<string | null>(null);
+  const { token } = useParams(); const me = useMe(); const [data, setData] = useState<PublicShareData | null>(null); const [password, setPassword] = useState(""); const [err, setErr] = useState(""); const [pick, setPick] = useState<string | null>(null);
   const load = (noteId?: string | null) => token && api<PublicShareData>(`/api/v1/public/shares/${token}${noteId ? `?noteId=${noteId}` : ""}`).then(setData).catch(e => setErr((e as Error).message));
   useEffect(() => { void load(pick); }, [token, pick]);
   if (err) return <PublicFrame><Empty icon={<Link2 />} title="分享不存在或已失效" text="链接可能已被撤销、过期，或者内容已删除。" /></PublicFrame>;
   if (!data) return <div className="grid h-full place-items-center"><Circle className="size-5 animate-pulse fill-current" /></div>;
   if (data.requiresPassword) return <PublicFrame><div className="mx-auto max-w-sm rounded-2xl border border-border p-7 text-center"><span className="mx-auto grid size-12 place-items-center rounded-xl bg-muted"><Lock className="size-5" /></span><h1 className="mt-4 text-xl font-semibold">此分享受密码保护</h1><p className="mt-2 text-sm text-muted-foreground">输入分享者提供的密码以继续阅读。</p><form className="mt-5 space-y-3" onSubmit={async e => { e.preventDefault(); setErr(""); try { await api(`/api/v1/public/shares/${token}/unlock`, { method: "POST", body: JSON.stringify({ password }) }); setData(null); void load(pick); } catch (x) { setErr((x as Error).message); } }}><Input autoFocus type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="访问密码" /><FormError>{err}</FormError><Button className="w-full">解锁内容</Button></form></div></PublicFrame>;
 
+  const shareChip = me ? <SavedShareChip saved={data.savedShare ?? null} shareToken={token} lastNoteId={data.noteId} homeWsId={me.personalWorkspaceId ?? undefined} /> : null;
+
   if (data.type === "attachment" && data.attachment) { const a = data.attachment;
-    return <PublicFrame><div className="mx-auto max-w-xl">{a.mime.startsWith("image/") ? <img src={a.url} alt={a.filename} className="mx-auto max-h-[70vh] rounded-xl border" /> : <div className="rounded-2xl border p-10 text-center"><span className="mx-auto grid size-12 place-items-center rounded-xl bg-muted"><Paperclip className="size-5" /></span><p className="mt-4 text-lg font-medium">{a.filename}</p><p className="mt-1 text-xs text-muted-foreground">{a.mime} · {a.bytes < 1048576 ? `${Math.round(a.bytes / 1024)} KB` : `${(a.bytes / 1048576).toFixed(1)} MB`}</p></div>}<div className="mt-5 text-center"><a href={a.url} download={a.filename}><Button><Download />下载 {a.filename}</Button></a></div></div></PublicFrame>;
+    return <PublicFrame chip={shareChip}><div className="mx-auto max-w-xl">{a.mime.startsWith("image/") ? <img src={a.url} alt={a.filename} className="mx-auto max-h-[70vh] rounded-xl border" /> : <div className="rounded-2xl border p-10 text-center"><span className="mx-auto grid size-12 place-items-center rounded-xl bg-muted"><Paperclip className="size-5" /></span><p className="mt-4 text-lg font-medium">{a.filename}</p><p className="mt-1 text-xs text-muted-foreground">{a.mime} · {a.bytes < 1048576 ? `${Math.round(a.bytes / 1024)} KB` : `${(a.bytes / 1048576).toFixed(1)} MB`}</p></div>}<div className="mt-5 text-center"><a href={a.url} download={a.filename}><Button><Download />下载 {a.filename}</Button></a></div></div></PublicFrame>;
   }
 
   const treeShare = data.type === "folder" || data.type === "notebook";
@@ -914,23 +930,23 @@ function PublicShare() {
 
   if (treeShare) {
     const notes = data.notes ?? [];
-    return <div className="flex h-full flex-col"><header className="flex h-14 shrink-0 items-center border-b border-border px-5"><Brand /><Badge className="ml-3">{data.type === "notebook" ? "笔记本分享" : "目录分享"} · {data.title}</Badge></header>
+    return <div className="flex h-full flex-col"><header className="flex h-14 shrink-0 items-center border-b border-border px-5"><Brand /><Badge className="ml-3">{data.type === "notebook" ? "笔记本分享" : "目录分享"} · {data.title}</Badge>{shareChip}</header>
       <div className="grid min-h-0 flex-1 md:grid-cols-[260px_1fr]">
         <aside className="hidden min-h-0 border-r border-border bg-muted/30 md:block"><ScrollArea className="h-full"><div className="p-4"><p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{notes.length} 篇</p>{notes.map(n => <button key={n.id} onClick={() => setPick(n.id)} className={cn("mb-1 w-full rounded-lg px-3 py-2.5 text-left text-sm", n.id === data.noteId ? "bg-primary text-primary-foreground" : "hover:bg-muted")}>{n.title}</button>)}</div></ScrollArea></aside>
         <ScrollArea className="h-full"><main className="px-5 py-10 md:py-16">{notes.length === 0 ? <Empty icon={data.type === "notebook" ? <Notebook /> : <Folder />} title={data.type === "notebook" ? "这个笔记本还没有笔记" : "这个目录还没有笔记"} text="之后新建的笔记会自动出现在这里。" /> : body}{interactions}</main></ScrollArea>
       </div></div>;
   }
-  return <PublicFrame>{body}{interactions}</PublicFrame>;
+  return <PublicFrame chip={shareChip}>{body}{interactions}</PublicFrame>;
 }
-function PublicFrame({ children }: { children: ReactNode }) { return <div className="min-h-full bg-background"><header className="flex h-14 items-center border-b border-border px-5"><Brand /><Badge className="ml-3">公开阅读</Badge></header><main className="px-5 py-10 md:py-16">{children}</main></div>; }
+function PublicFrame({ children, chip }: { children: ReactNode; chip?: ReactNode }) { return <div className="min-h-full bg-background"><header className="flex h-14 items-center border-b border-border px-5"><Brand /><Badge className="ml-3">公开阅读</Badge>{chip}</header><main className="px-5 py-10 md:py-16">{children}</main></div>; }
 
 function PublicSite() {
-  const { wsSlug, nbSlug } = useParams(); const [data, setData] = useState<{ workspace: string; notebook: string; notebookId: string; accent: string | null; notes: Array<{ id: string; title: string; bodyMd: string; updatedAt: string }> } | null>(null); const [active, setActive] = useState<string>(); const [err, setErr] = useState("");
+  const { wsSlug, nbSlug } = useParams(); const me = useMe(); const [data, setData] = useState<{ workspace: string; notebook: string; notebookId: string; accent: string | null; notes: Array<{ id: string; title: string; bodyMd: string; updatedAt: string }>; savedShare?: { id: string; status: string } | null } | null>(null); const [active, setActive] = useState<string>(); const [err, setErr] = useState("");
   useEffect(() => { api<typeof data>(`/api/v1/public/sites/${wsSlug}/${nbSlug}`).then(d => { setData(d); setActive(d?.notes[0]?.id); }).catch(e => setErr((e as Error).message)); }, [wsSlug, nbSlug]);
   if (err) return <PublicFrame><Empty icon={<Globe2 />} title="文档站尚未发布" text="此站点不存在，或者管理员已将其下线。" /></PublicFrame>;
   if (!data) return <div className="grid h-full place-items-center"><Circle className="size-5 animate-pulse fill-current" /></div>;
   const current = data.notes.find(n => n.id === active);
-  return <div className="flex h-full flex-col" style={data.accent ? ({ "--primary": data.accent } as React.CSSProperties) : undefined}><header className="flex h-14 items-center border-b border-border px-4"><Brand /><Separator orientation="vertical" className="mx-4 h-5" /><span className="font-medium">{data.notebook}</span><span className="ml-auto text-xs text-muted-foreground">{data.workspace}</span></header><div className="grid min-h-0 flex-1 md:grid-cols-[260px_1fr]"><aside className="hidden min-h-0 border-r border-border bg-muted/30 md:block"><ScrollArea className="h-full"><div className="p-4"><p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">目录</p>{data.notes.map(n => <button key={n.id} onClick={() => setActive(n.id)} className={cn("mb-1 w-full rounded-lg px-3 py-2.5 text-left text-sm", n.id === active ? "bg-primary text-primary-foreground" : "hover:bg-muted")}>{n.title}</button>)}</div></ScrollArea></aside><ScrollArea className="h-full"><main className="mx-auto max-w-3xl px-6 py-12"><h1 className="mb-10 text-4xl font-semibold tracking-[-.055em]">{current?.title ?? "暂无公开页面"}</h1>{current && <MarkdownView source={current.bodyMd} />}{current && <PublicInteractions noteId={current.id} siteNotebookId={data.notebookId} commentsEnabled correctionsEnabled bodyMd={current.bodyMd} />}</main></ScrollArea></div></div>;
+  return <div className="flex h-full flex-col" style={data.accent ? ({ "--primary": data.accent } as React.CSSProperties) : undefined}><header className="flex h-14 items-center border-b border-border px-4"><Brand /><Separator orientation="vertical" className="mx-4 h-5" /><span className="font-medium">{data.notebook}</span><span className="ml-3 text-xs text-muted-foreground">{data.workspace}</span>{me && wsSlug && nbSlug && <SavedShareChip saved={data.savedShare ?? null} site={{ wsSlug, nbSlug }} lastNoteId={active} homeWsId={me.personalWorkspaceId ?? undefined} />}</header><div className="grid min-h-0 flex-1 md:grid-cols-[260px_1fr]"><aside className="hidden min-h-0 border-r border-border bg-muted/30 md:block"><ScrollArea className="h-full"><div className="p-4"><p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">目录</p>{data.notes.map(n => <button key={n.id} onClick={() => setActive(n.id)} className={cn("mb-1 w-full rounded-lg px-3 py-2.5 text-left text-sm", n.id === active ? "bg-primary text-primary-foreground" : "hover:bg-muted")}>{n.title}</button>)}</div></ScrollArea></aside><ScrollArea className="h-full"><main className="mx-auto max-w-3xl px-6 py-12"><h1 className="mb-10 text-4xl font-semibold tracking-[-.055em]">{current?.title ?? "暂无公开页面"}</h1>{current && <MarkdownView source={current.bodyMd} />}{current && <PublicInteractions noteId={current.id} siteNotebookId={data.notebookId} commentsEnabled correctionsEnabled bodyMd={current.bodyMd} />}</main></ScrollArea></div></div>;
 }
 
 function InvitePage() { const { token } = useParams(); const nav = useNavigate(); const me = useMe(); const [data, setData] = useState<{ workspace: string; role: string; expiresAt: string } | null>(null); const [err, setErr] = useState(""); useEffect(() => { api<typeof data>(`/api/v1/invites/${token}`).then(setData).catch(e => setErr((e as Error).message)); }, [token]); return <PublicFrame>{err ? <Empty icon={<Link2 />} title="邀请已失效" text={err} /> : !data ? <div className="grid place-items-center py-20"><Circle className="animate-pulse fill-current" /></div> : <div className="mx-auto max-w-md rounded-2xl border p-8 text-center"><Users className="mx-auto size-10 text-muted-foreground" /><h1 className="mt-5 text-2xl font-semibold">加入 {data.workspace}</h1><p className="mt-2 text-sm text-muted-foreground">你将以 {data.role} 身份加入此工作区。</p>{me === null ? <Button className="mt-6" onClick={() => location.assign(`/login?redirect=/invite/${token}`)}>登录后加入</Button> : <Button className="mt-6" onClick={async () => { const d = await api<{ workspaceId: string }>(`/api/v1/invites/${token}/accept`, { method: "POST" }); nav(`/w/${d.workspaceId}`); }}>确认加入</Button>}</div>}</PublicFrame>; }
@@ -1036,7 +1052,7 @@ function PublicProfile() { const { handle } = useParams();
   </div></PublicFrame>;
 }
 
-export function App() { const me = useMe(); return <><ImageLightbox /><Routes><Route path="/" element={<Square />} /><Route path="/nav" element={<NavPage />} /><Route path="/login" element={<Login />} /><Route path="/register" element={<Register />} /><Route path="/forgot-password" element={<ForgotPassword />} /><Route path="/reset-password" element={<ResetPassword />} /><Route path="/verify-email" element={<VerifyEmail />} /><Route path="/app" element={me === undefined ? null : me === null ? <Navigate to="/login" replace /> : me.personalWorkspaceId ? <Navigate to={`/w/${me.personalWorkspaceId}`} replace /> : <Navigate to="/login" />} /><Route path="/w/:wsId" element={<Workspace />} /><Route path="/w/:wsId/n/:noteId" element={<Workspace />} /><Route path="/w/:wsId/calendar" element={<CalendarPage />} /><Route path="/w/:wsId/today" element={<TodayPage />} /><Route path="/w/:wsId/trash" element={<TrashPage />} /><Route path="/w/:wsId/settings" element={<WorkspaceSettings />} /><Route path="/w/:wsId/settings/integrations" element={<IntegrationsPage />} /><Route path="/w/:wsId/members" element={<LegacyRedirect tab="members" />} /><Route path="/w/:wsId/manage" element={<LegacyRedirect tab="backup" />} /><Route path="/w/:wsId/feed" element={<WorkspaceFeed />} /><Route path="/u/:handle" element={<PublicProfile />} /><Route path="/invite/:token" element={<InvitePage />} /><Route path="/admin" element={<AdminPage />} /><Route path="/p/:token" element={<PublicShare />} /><Route path="/s/:wsSlug/:nbSlug" element={<PublicSite />} /><Route path="/oauth/consent" element={<OauthConsent />} /><Route path="/settings/integrations" element={<LegacyIntegrations />} /><Route path="/settings/appearance" element={<AppearancePage />} /><Route path="/settings/notifications" element={<NotificationsPage />} /></Routes></>; }
+export function App() { const me = useMe(); return <><ImageLightbox /><Routes><Route path="/" element={<Square />} /><Route path="/nav" element={<NavPage />} /><Route path="/login" element={<Login />} /><Route path="/register" element={<Register />} /><Route path="/forgot-password" element={<ForgotPassword />} /><Route path="/reset-password" element={<ResetPassword />} /><Route path="/verify-email" element={<VerifyEmail />} /><Route path="/app" element={me === undefined ? null : me === null ? <Navigate to="/login" replace /> : me.personalWorkspaceId ? <Navigate to={`/w/${me.personalWorkspaceId}`} replace /> : <Navigate to="/login" />} /><Route path="/w/:wsId" element={<Workspace />} /><Route path="/w/:wsId/n/:noteId" element={<Workspace />} /><Route path="/w/:wsId/received" element={<Workspace />} /><Route path="/w/:wsId/received/:savedId" element={<Workspace />} /><Route path="/w/:wsId/calendar" element={<CalendarPage />} /><Route path="/w/:wsId/today" element={<TodayPage />} /><Route path="/w/:wsId/trash" element={<TrashPage />} /><Route path="/w/:wsId/settings" element={<WorkspaceSettings />} /><Route path="/w/:wsId/settings/integrations" element={<IntegrationsPage />} /><Route path="/w/:wsId/members" element={<LegacyRedirect tab="members" />} /><Route path="/w/:wsId/manage" element={<LegacyRedirect tab="backup" />} /><Route path="/w/:wsId/feed" element={<WorkspaceFeed />} /><Route path="/u/:handle" element={<PublicProfile />} /><Route path="/invite/:token" element={<InvitePage />} /><Route path="/admin" element={<AdminPage />} /><Route path="/p/:token" element={<PublicShare />} /><Route path="/s/:wsSlug/:nbSlug" element={<PublicSite />} /><Route path="/oauth/consent" element={<OauthConsent />} /><Route path="/settings/integrations" element={<LegacyIntegrations />} /><Route path="/settings/appearance" element={<AppearancePage />} /><Route path="/settings/notifications" element={<NotificationsPage />} /></Routes></>; }
 
 /**
  * 底栏的协同角标（设计 17 §3.4）。连着就摆头像组，正在编辑的人加一圈同色描边；
