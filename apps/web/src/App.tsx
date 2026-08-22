@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import * as Avatar from "@radix-ui/react-avatar";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
@@ -996,7 +996,7 @@ function FeedShell({ identity, active, wsId, me, title, subtitle, notice, rail, 
 }
 
 function Square() {
-  const me = useMe(); const nav = useNavigate();
+  const me = useMe(); const nav = useNavigate(); const [params] = useSearchParams();
   const [spaces, setSpaces] = useState<Ws[]>([]); const [posts, setPosts] = useState<FeedPost[]>([]);
   useEffect(() => { if (me) api<{ workspaces: Ws[] }>("/api/v1/workspaces").then(d => setSpaces(d.workspaces)).catch(() => setSpaces([])); }, [me]);
   /** 顶栏的「笔记 / 圈子」要有个落点：优先最后待过的库，其次个人库。都没有（还没加载完 / 未登录）就只剩「广场」一项。 */
@@ -1007,14 +1007,14 @@ function Square() {
     identity={home ? <button className="-mx-1 flex items-center gap-2.5 rounded-lg px-1.5 py-1.5 hover:bg-muted" aria-label="回到我的知识库" onClick={() => nav(`/w/${home}`)}><Brand /></button> : <Brand />}
     active="square" wsId={home} me={me}
     title="广场" subtitle="整个实例的公开时间线。这里发的东西谁都看得到，写给自己人的用圈子。"
-    rail={<SquareRail posts={posts} me={me} homeWsId={home} onOpenNote={openNote} onNav={to => nav(to)} />}
+    rail={<SquareRail posts={posts} me={me} homeWsId={home} activeTag={params.get("tag") ?? undefined} onOpenNote={openNote} onNav={to => nav(to)} onTag={tag => nav(`/?tag=${encodeURIComponent(tag)}`)} />}
   >
     <FeedView scope="public" workspaces={spaces} canPost={!!me} signedIn={!!me} canModerate={me?.instanceRole==="admin"} onOpenNote={openNote} onLoaded={setPosts} />
   </FeedShell>;
 }
 
 function WorkspaceFeed() {
-  const { wsId } = useParams(); const nav = useNavigate(); const me = useMe(); const squareOn = useSquareEnabled();
+  const { wsId } = useParams(); const nav = useNavigate(); const me = useMe(); const squareOn = useSquareEnabled(); const [params] = useSearchParams();
   const [spaces, setSpaces] = useState<Ws[]>([]); const [posts, setPosts] = useState<FeedPost[]>([]); const [create, setCreate] = useState<CreateKind>(null);
   useEffect(() => { api<{ workspaces: Ws[] }>("/api/v1/workspaces").then(d => setSpaces(d.workspaces)).catch(() => setSpaces([])); }, []);
   useEffect(() => { if (wsId) saveLastWorkspace(wsId); }, [wsId]);
@@ -1028,14 +1028,14 @@ function WorkspaceFeed() {
     active="circle" wsId={wsId} me={me}
     title="圈子动态" subtitle={<>只有 <b className="font-medium text-foreground">{here?.name ?? "这个工作区"}</b> 的成员看得到。碎片想法先发这里，值得留的再转正为笔记。</>}
     notice={readOnly ? <p className="mt-4 rounded-xl border border-dashed px-3 py-2 text-xs text-muted-foreground">{here?.frozen ? "工作区已冻结，圈子现在只能看。" : "你在这个工作区是 Viewer，可以看动态但不能发。"}</p> : undefined}
-    rail={<CircleRail wsId={wsId} wsName={here?.name ?? "这个工作区"} wsKind={here?.kind ?? ""} canInvite={here?.kind !== "personal" && (here?.role === "owner" || here?.role === "admin")} posts={posts} squareEnabled={squareOn} onOpenNote={openNote} onNav={to => nav(to)} />}
+    rail={<CircleRail wsId={wsId} wsName={here?.name ?? "这个工作区"} wsKind={here?.kind ?? ""} canInvite={here?.kind !== "personal" && (here?.role === "owner" || here?.role === "admin")} posts={posts} squareEnabled={squareOn} activeTag={params.get("tag") ?? undefined} onOpenNote={openNote} onNav={to => nav(to)} onTag={tag => nav(`/w/${wsId}/feed?tag=${encodeURIComponent(tag)}`)} />}
   >
     <FeedView scope="workspace" workspaceId={wsId} workspaces={spaces} canPost={!!me && !readOnly} signedIn={!!me} canModerate={me?.instanceRole==="admin"||here?.role==="owner"||here?.role==="admin"} onOpenNote={openNote} onLoaded={setPosts} />
     <CreateDialog kind={create} onOpenChange={v => !v && setCreate(null)} onSubmit={async name => { const d = await api<{ workspace: Ws }>("/api/v1/workspaces", { method: "POST", body: JSON.stringify({ name }) }); nav(`/w/${d.workspace.id}/feed`); }} />
   </FeedShell>;
 }
 
-function PublicProfile() { const { handle } = useParams();
+function PublicProfile() { const { handle } = useParams(); const nav = useNavigate();
   type Profile={handle:string;displayName:string;bio:string|null;joinedAt:string;posts:FeedPost[];sites:Array<{title:string;url:string}>};
   const [data,setData]=useState<Profile|null>(null); const [err,setErr]=useState("");
   useEffect(()=>{ api<Profile>(`/api/v1/public/users/${handle}`).then(setData).catch(e=>setErr((e as Error).message)); },[handle]);
@@ -1047,7 +1047,7 @@ function PublicProfile() { const { handle } = useParams();
     {data.sites.length>0&&<section className="mt-8"><h2 className="mb-3 text-sm font-semibold">公开的文档站</h2><div className="space-y-2">{data.sites.map(s=><a key={s.url} href={s.url} className="flex items-center gap-2.5 rounded-xl border p-3 text-sm hover:bg-muted"><Globe2 className="size-4 text-muted-foreground"/>{s.title}</a>)}</div></section>}
     <section className="mt-8"><h2 className="mb-3 text-sm font-semibold">广场动态</h2>
       {data.posts.length===0?<p className="py-10 text-center text-sm text-muted-foreground">还没有公开动态。</p>
-      :<div className="space-y-3">{data.posts.map(p=><article key={p.id} className="rounded-2xl border bg-background p-4"><p className="text-xs text-muted-foreground">{new Date(p.createdAt).toLocaleString()}{p.editedAt?" · 已编辑":""}</p>{p.body&&<MarkdownView source={p.body} mode="public" className="feed-md mt-2"/>}<PostAssetGrid assets={p.assets??[]}/><p className="mt-2 text-xs text-muted-foreground">{p.likes} 次喜欢</p></article>)}</div>}
+      :<div className="space-y-3">{data.posts.map(p=><article key={p.id} className="rounded-2xl border bg-background p-4"><p className="text-xs text-muted-foreground">{new Date(p.createdAt).toLocaleString()}{p.editedAt?" · 已编辑":""}</p>{p.body&&<MarkdownView source={p.body} mode="public" hashtags onHashtag={tag=>nav(`/?tag=${encodeURIComponent(tag)}`)} className="feed-md mt-2"/>}<PostAssetGrid assets={p.assets??[]}/><p className="mt-2 text-xs text-muted-foreground">{p.likes} 次喜欢</p></article>)}</div>}
     </section>
   </div></PublicFrame>;
 }

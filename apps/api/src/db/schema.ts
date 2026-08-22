@@ -305,6 +305,7 @@ export const savedShares = pgTable("saved_shares", {
 export const posts = pgTable("posts", {
   id: uuid("id").defaultRandom().primaryKey(), authorUserId: uuid("author_user_id").notNull().references(() => users.id), workspaceId: uuid("workspace_id"),
   visibility: text("visibility").notNull().default("public"), body: text("body").notNull(), noteId: uuid("note_id"), status: text("status").notNull().default("visible"),
+  tags: jsonb("tags").notNull().default([]),
   editedAt: timestamp("edited_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -572,6 +573,8 @@ export const agents = pgTable("agents", {
   displayName: text("display_name").notNull(),
   bio: text("bio"),
   avatarEmoji: text("avatar_emoji").notNull().default("🤖"),
+  avatarSha256: text("avatar_sha256"),
+  avatarMime: text("avatar_mime"),
   systemPrompt: text("system_prompt").notNull(),
   enabled: boolean("enabled").notNull().default(true),
   allowSquare: boolean("allow_square").notNull().default(true),

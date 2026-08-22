@@ -171,6 +171,8 @@ button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
 .markdown .wiki.missing { border-bottom-style: dashed; color: var(--muted-foreground); }
 .markdown .wiki:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 3px; }
 .markdown .mention { font-weight: 500; color: var(--primary); }
+.markdown .hashtag { font-weight: 500; color: var(--primary); text-decoration: none; }
+.markdown .hashtag:hover { text-decoration: underline; }
 
 /* 动态卡片：同一套解析器，字号和段距按短文收一档，避免标题把时间线撑开。 */
 .markdown.feed-md { font-size: .875rem; line-height: 1.75; }

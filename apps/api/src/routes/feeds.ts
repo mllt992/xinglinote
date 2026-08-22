@@ -1,7 +1,7 @@
 import { Hono } from "hono";
-import { and, count, countDistinct, desc, eq, gt, inArray, isNull, lte, ne, or } from "drizzle-orm";
+import { and, count, countDistinct, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
-import { fail, normalizeTitle } from "@kb/shared";
+import { fail, isHashtag, normalizeHashtag, normalizeTitle, parseHashtags } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { agents, auditLogs, comments, contentReports, instanceSettings, moderationReviews, notebooks, notes, noteVersions, notifications, postFavorites, postReactions, posts, users, workspaceMembers, workspaces } from "../db/schema.ts";
 import { enqueueAgentMentions, listPendingAgentReplies } from "../lib/agents.ts";
@@ -23,6 +23,29 @@ export const feedRoutes=new Hono();
 async function user(c:Parameters<typeof currentUser>[0]){const u=await currentUser(c);if(!u)throw fail("UNAUTHENTICATED","未登录");return u;}
 /** 只有作者本人能在时间线里看到自己待审 / 被驳回的帖子，别人看不见。 */
 function readable(viewer?:string){return viewer?or(eq(posts.status,"visible"),and(eq(posts.authorUserId,viewer),inArray(posts.status,["pending_review","rejected"]))):eq(posts.status,"visible");}
+function postTagList(p:{tags?:unknown;body:string}){
+  const stored=Array.isArray(p.tags)?(p.tags as string[]).filter(Boolean):[];
+  return stored.length?stored:parseHashtags(p.body);
+}
+function parseFeedTag(raw:string|undefined){
+  if(!raw?.trim())return "";
+  const tag=normalizeHashtag(raw);
+  if(!isHashtag(tag))throw fail("VALIDATION","标签不合法");
+  return tag;
+}
+function withTag(scope:ReturnType<typeof and>,tag:string){
+  if(!tag)return scope;
+  return and(scope,or(
+    sql`${posts.tags} @> ${JSON.stringify([tag])}::jsonb`,
+    sql`${posts.body} ilike ${`%#${tag}%`}`,
+  ));
+}
+async function popularTags(scope:ReturnType<typeof and>){
+  const rows=await db.select({tags:posts.tags,body:posts.body}).from(posts).where(scope).orderBy(desc(posts.createdAt)).limit(80);
+  const counts=new Map<string,number>();
+  for(const r of rows)for(const t of postTagList(r))counts.set(t,(counts.get(t)??0)+1);
+  return[...counts.entries()].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0],"zh")).slice(0,20).map(([name,count])=>({name,count}));
+}
 /**
  * 给一页动态补上作者、点赞数、关联笔记标题。
  *
@@ -43,7 +66,7 @@ async function hydrate(rows:typeof posts.$inferSelect[], viewer?:string){
     viewer?pickIds(postIds,ids=>db.select({postId:postFavorites.postId}).from(postFavorites).where(and(eq(postFavorites.userId,viewer),inArray(postFavorites.postId,ids)))):Promise.resolve([] as Array<{postId:string}>),
     pickIds(postIds,ids=>listPostAssets(ids)),
   ]);
-  const held=rows.filter(p=>p.status!=="visible").map(p=>p.id);const reviews=held.length?await db.select().from(moderationReviews).where(and(eq(moderationReviews.targetType,"post"),inArray(moderationReviews.targetId,held))).orderBy(desc(moderationReviews.createdAt)):[];return rows.map(p=>({id:p.id,status:p.status,moderationQueued:(()=>{const r=reviews.find(r=>r.targetId===p.id);return r?r.status==="queued"||r.aiVerdict==="queued"||r.aiVerdict==="running":false;})(),moderationReason:p.status==="visible"?null:(()=>{const r=reviews.find(r=>r.targetId===p.id);if(!r)return null;if(r.status==="queued"||r.aiVerdict==="queued"||r.aiVerdict==="running")return "正在审核，通过后会公开显示。";return r.reviewNote??r.aiReason??null;})(),body:p.body,visibility:p.visibility,workspaceId:p.workspaceId,createdAt:p.createdAt,author:(()=>{const a=authors.find(u=>u.id===p.authorUserId);return a?{handle:a.handle,displayName:a.displayName}:null;})(),note:p.noteId?(()=>{const n=ns.find(n=>n.id===p.noteId);return n?{id:n.id,title:n.title}:null})():null,likes:reactions.filter(r=>r.postId===p.id&&r.kind==="like").length,liked:!!viewer&&reactions.some(r=>r.postId===p.id&&r.userId===viewer&&r.kind==="like"),comments:commentRows.find(r=>r.targetId===p.id)?.n??0,favorited:favs.some(f=>f.postId===p.id),editedAt:p.editedAt,mine:!!viewer&&p.authorUserId===viewer,appealable:(()=>{if(!viewer||p.authorUserId!==viewer||p.status!=="rejected")return false;const r=reviews.find(x=>x.targetId===p.id);return !!r&&r.status==="rejected"&&!r.reviewerId;})(),appealing:(()=>{const r=reviews.find(x=>x.targetId===p.id);return r?.kind==="appeal"&&r.status==="pending";})(),assets:assets.filter(a=>a.postId===p.id).map(assetDto)}));}
+  const held=rows.filter(p=>p.status!=="visible").map(p=>p.id);const reviews=held.length?await db.select().from(moderationReviews).where(and(eq(moderationReviews.targetType,"post"),inArray(moderationReviews.targetId,held))).orderBy(desc(moderationReviews.createdAt)):[];return rows.map(p=>({id:p.id,status:p.status,moderationQueued:(()=>{const r=reviews.find(r=>r.targetId===p.id);return r?r.status==="queued"||r.aiVerdict==="queued"||r.aiVerdict==="running":false;})(),moderationReason:p.status==="visible"?null:(()=>{const r=reviews.find(r=>r.targetId===p.id);if(!r)return null;if(r.status==="queued"||r.aiVerdict==="queued"||r.aiVerdict==="running")return "正在审核，通过后会公开显示。";return r.reviewNote??r.aiReason??null;})(),body:p.body,visibility:p.visibility,workspaceId:p.workspaceId,createdAt:p.createdAt,author:(()=>{const a=authors.find(u=>u.id===p.authorUserId);return a?{handle:a.handle,displayName:a.displayName}:null;})(),note:p.noteId?(()=>{const n=ns.find(n=>n.id===p.noteId);return n?{id:n.id,title:n.title}:null})():null,likes:reactions.filter(r=>r.postId===p.id&&r.kind==="like").length,liked:!!viewer&&reactions.some(r=>r.postId===p.id&&r.userId===viewer&&r.kind==="like"),comments:commentRows.find(r=>r.targetId===p.id)?.n??0,favorited:favs.some(f=>f.postId===p.id),editedAt:p.editedAt,mine:!!viewer&&p.authorUserId===viewer,appealable:(()=>{if(!viewer||p.authorUserId!==viewer||p.status!=="rejected")return false;const r=reviews.find(x=>x.targetId===p.id);return !!r&&r.status==="rejected"&&!r.reviewerId;})(),appealing:(()=>{const r=reviews.find(x=>x.targetId===p.id);return r?.kind==="appeal"&&r.status==="pending";})(),assets:assets.filter(a=>a.postId===p.id).map(assetDto),tags:postTagList(p)}));}
 /** 增量计数用客户端上次看到的水位。缺了或写歪了直接 422；太老按 7 天截，避免一次扫全表。 */
 function parseSince(raw:string|undefined){
   if(!raw)throw fail("VALIDATION","缺少 since");
@@ -68,20 +91,22 @@ async function feedUpdates(scope:ReturnType<typeof and>,since:Date,viewer?:strin
   ]);
   return {newPosts:asCount(fresh[0]?.n),repliedPosts:asCount(replied[0]?.n),now:new Date().toISOString()};
 }
-feedRoutes.get("/feed/public",async c=>{const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");const viewer=await currentUser(c);const rows=await db.select().from(posts).where(and(eq(posts.visibility,"public"),readable(viewer?.id))).orderBy(desc(posts.createdAt)).limit(50);return ok(c,{posts:await hydrate(rows,viewer?.id),now:new Date().toISOString()});});
+feedRoutes.get("/feed/public",async c=>{const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");const viewer=await currentUser(c);const tag=parseFeedTag(c.req.query("tag"));const rows=await db.select().from(posts).where(withTag(and(eq(posts.visibility,"public"),readable(viewer?.id)),tag)).orderBy(desc(posts.createdAt)).limit(50);const listed=tag?rows.filter(p=>postTagList(p).includes(tag)):rows;return ok(c,{posts:await hydrate(listed,viewer?.id),now:new Date().toISOString()});});
+feedRoutes.get("/feed/public/tags",async c=>{const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");const viewer=await currentUser(c);return ok(c,{tags:await popularTags(and(eq(posts.visibility,"public"),readable(viewer?.id)))});});
 feedRoutes.get("/feed/public/updates",async c=>{
   limit(`feed-updates:${clientIp(c)}`,60,60_000);
   const [settings]=await db.select().from(instanceSettings);if(!settings?.squareEnabled)throw fail("NOT_FOUND","广场已关闭");
   const viewer=await currentUser(c);
   return ok(c,await feedUpdates(and(eq(posts.visibility,"public"),readable(viewer?.id)),parseSince(c.req.query("since")),viewer?.id));
 });
-feedRoutes.get("/feed/workspaces/:id",async c=>{const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");const rows=await db.select().from(posts).where(and(eq(posts.workspaceId,wsId),readable(u.id))).orderBy(desc(posts.createdAt)).limit(50);return ok(c,{posts:await hydrate(rows,u.id),now:new Date().toISOString()});});
+feedRoutes.get("/feed/workspaces/:id",async c=>{const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");const tag=parseFeedTag(c.req.query("tag"));const rows=await db.select().from(posts).where(withTag(and(eq(posts.workspaceId,wsId),readable(u.id)),tag)).orderBy(desc(posts.createdAt)).limit(50);const listed=tag?rows.filter(p=>postTagList(p).includes(tag)):rows;return ok(c,{posts:await hydrate(listed,u.id),now:new Date().toISOString()});});
+feedRoutes.get("/feed/workspaces/:id/tags",async c=>{const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");return ok(c,{tags:await popularTags(and(eq(posts.workspaceId,wsId),readable(u.id)))});});
 feedRoutes.get("/feed/workspaces/:id/updates",async c=>{
   limit(`feed-updates:${clientIp(c)}`,60,60_000);
   const u=await user(c);const wsId=c.req.param("id");if(!(await memberRole(wsId,u.id)))throw fail("FORBIDDEN","不是工作区成员");
   return ok(c,await feedUpdates(and(eq(posts.workspaceId,wsId),readable(u.id)),parseSince(c.req.query("since")),u.id));
 });
-feedRoutes.post("/posts",async c=>{const u=await user(c);const body=z.object({body:z.string().max(5000),visibility:z.enum(["public","workspace"]),workspaceId:z.string().uuid().nullable().optional(),noteId:z.string().uuid().nullable().optional(),attachmentIds:z.array(z.string().uuid()).max(9).default([])}).parse(await c.req.json());if(!body.body.trim()&&!body.attachmentIds.length)throw fail("VALIDATION","写点文字或加个附件");if(body.visibility==="workspace"){if(!body.workspaceId)throw fail("VALIDATION","缺少工作区");const role=await memberRole(body.workspaceId,u.id);if(!role||role==="viewer")throw fail("FORBIDDEN","无权发布工作区动态");const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,body.workspaceId));if(ws?.frozen)throw fail("FORBIDDEN","工作区已冻结，暂时只读");}if(body.visibility==="public"&&body.workspaceId)throw fail("VALIDATION","公开动态不能指定工作区");if(body.noteId){const [n]=await db.select().from(notes).where(eq(notes.id,body.noteId));if(!n||n.trashedAt||!noteIsPublic(n))throw fail("VALIDATION","只能附加已发布笔记");if(body.visibility==="workspace"&&n.workspaceId!==body.workspaceId)throw fail("FORBIDDEN","不能附加其他工作区的笔记");if(body.visibility==="public"&&!(await memberRole(n.workspaceId,u.id)))throw fail("FORBIDDEN","不能附加无权访问的笔记");}const scope=body.visibility==="public"?"square":"circle";const settings=await instanceConfig();const held=moderationOn(settings,scope);const [p]=await db.insert(posts).values({authorUserId:u.id,workspaceId:body.workspaceId,visibility:body.visibility,body:body.body,noteId:body.noteId,status:held?"pending_review":"visible"}).returning();if(body.attachmentIds.length)await bindPostAssets(p.id,u.id,body.attachmentIds);const mod=held?await queueReview({targetType:"post",targetId:p.id,scope,workspaceId:p.workspaceId,authorUserId:u.id,snapshot:body.body}):{held:false,queued:false,message:null};if(!held)await enqueueAgentMentions({text:p.body,post:p,sourceType:"post",sourceId:p.id});return ok(c,{...p,moderation:{held:mod.held,queued:mod.queued,message:mod.message}},201);});
+feedRoutes.post("/posts",async c=>{const u=await user(c);const body=z.object({body:z.string().max(5000),visibility:z.enum(["public","workspace"]),workspaceId:z.string().uuid().nullable().optional(),noteId:z.string().uuid().nullable().optional(),attachmentIds:z.array(z.string().uuid()).max(9).default([])}).parse(await c.req.json());if(!body.body.trim()&&!body.attachmentIds.length)throw fail("VALIDATION","写点文字或加个附件");if(body.visibility==="workspace"){if(!body.workspaceId)throw fail("VALIDATION","缺少工作区");const role=await memberRole(body.workspaceId,u.id);if(!role||role==="viewer")throw fail("FORBIDDEN","无权发布工作区动态");const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,body.workspaceId));if(ws?.frozen)throw fail("FORBIDDEN","工作区已冻结，暂时只读");}if(body.visibility==="public"&&body.workspaceId)throw fail("VALIDATION","公开动态不能指定工作区");if(body.noteId){const [n]=await db.select().from(notes).where(eq(notes.id,body.noteId));if(!n||n.trashedAt||!noteIsPublic(n))throw fail("VALIDATION","只能附加已发布笔记");if(body.visibility==="workspace"&&n.workspaceId!==body.workspaceId)throw fail("FORBIDDEN","不能附加其他工作区的笔记");if(body.visibility==="public"&&!(await memberRole(n.workspaceId,u.id)))throw fail("FORBIDDEN","不能附加无权访问的笔记");}const scope=body.visibility==="public"?"square":"circle";const settings=await instanceConfig();const held=moderationOn(settings,scope);const [p]=await db.insert(posts).values({authorUserId:u.id,workspaceId:body.workspaceId,visibility:body.visibility,body:body.body,tags:parseHashtags(body.body),noteId:body.noteId,status:held?"pending_review":"visible"}).returning();if(body.attachmentIds.length)await bindPostAssets(p.id,u.id,body.attachmentIds);const mod=held?await queueReview({targetType:"post",targetId:p.id,scope,workspaceId:p.workspaceId,authorUserId:u.id,snapshot:body.body}):{held:false,queued:false,message:null};if(!held)await enqueueAgentMentions({text:p.body,post:p,sourceType:"post",sourceId:p.id});return ok(c,{...p,moderation:{held:mod.held,queued:mod.queued,message:mod.message}},201);});
 feedRoutes.post("/posts/attachments",async c=>{
   const u=await user(c);limit(`post-asset:${u.id}`,20,60_000);
   const form=await c.req.formData();const f=form.get("file");
@@ -131,13 +156,13 @@ feedRoutes.delete("/posts/:id/favorite",async c=>{
   return ok(c,{favorited:false});
 });
 
-function commentDto(r:typeof comments.$inferSelect,authors:Array<{id:string;displayName:string}>,agentRows:Array<{id:string;handle:string;displayName:string;avatarEmoji:string}>,viewerId?:string){
+function commentDto(r:typeof comments.$inferSelect,authors:Array<{id:string;displayName:string}>,agentRows:Array<{id:string;handle:string;displayName:string;avatarEmoji:string;avatarSha256:string|null}>,viewerId?:string){
   const agent=r.authorAgentId?agentRows.find(a=>a.id===r.authorAgentId):undefined;
   return {id:r.id,body:r.body,parentId:r.parentId,status:r.status,
     author:agent?agent.displayName:r.authorUserId?authors.find(a=>a.id===r.authorUserId)?.displayName??"已注销用户":r.guestName,
     authorKind:agent?"agent":r.authorUserId?"user":"guest",
     authorHandle:agent?.handle??null,
-    agent:agent?{id:agent.id,handle:agent.handle,displayName:agent.displayName,avatarEmoji:agent.avatarEmoji}:null,
+    agent:agent?{id:agent.id,handle:agent.handle,displayName:agent.displayName,avatarEmoji:agent.avatarEmoji,avatarUrl:agent.avatarSha256?`/api/v1/agents/${agent.id}/avatar`:null}:null,
     createdAt:r.createdAt,editedAt:r.editedAt,mine:!!viewerId&&r.authorUserId===viewerId,
     editableUntil:new Date(new Date(r.createdAt).getTime()+300000)};
 }
@@ -154,7 +179,7 @@ feedRoutes.get("/posts/:id/comments",async c=>{
   const authorIds=[...new Set(listed.map(r=>r.authorUserId).filter((x):x is string=>!!x))];
   const agentIds=[...new Set(listed.map(r=>r.authorAgentId).filter((x):x is string=>!!x))];
   const authors=authorIds.length?await db.select({id:users.id,displayName:users.displayName}).from(users).where(inArray(users.id,authorIds)):[];
-  const agentRows=agentIds.length?await db.select({id:agents.id,handle:agents.handle,displayName:agents.displayName,avatarEmoji:agents.avatarEmoji}).from(agents).where(inArray(agents.id,agentIds)):[];
+  const agentRows=agentIds.length?await db.select({id:agents.id,handle:agents.handle,displayName:agents.displayName,avatarEmoji:agents.avatarEmoji,avatarSha256:agents.avatarSha256}).from(agents).where(inArray(agents.id,agentIds)):[];
   const pendingReplies=await listPendingAgentReplies(post!.id);
   return ok(c,{canModerate,comments:listed.map(r=>commentDto(r,authors,agentRows,viewer?.id)),pendingReplies});
 });
@@ -258,7 +283,7 @@ feedRoutes.patch("/posts/:id",async c=>{
   const b=z.object({body:z.string().min(1).max(5000)}).parse(await c.req.json());
   // 改完要重新过一遍审核，否则先发一句人畜无害的再编辑成违规内容就绕过去了。
   const scope=p.visibility==="public"?"square":"circle";const settings=await instanceConfig();const held=moderationOn(settings,scope);
-  const[saved]=await db.update(posts).set({body:b.body,status:held?"pending_review":"visible",editedAt:new Date(),updatedAt:new Date()}).where(eq(posts.id,p.id)).returning();
+  const[saved]=await db.update(posts).set({body:b.body,tags:parseHashtags(b.body),status:held?"pending_review":"visible",editedAt:new Date(),updatedAt:new Date()}).where(eq(posts.id,p.id)).returning();
   const mod=held?await queueReview({targetType:"post",targetId:saved.id,scope,workspaceId:saved.workspaceId,authorUserId:u.id,snapshot:b.body}):{held:false,queued:false,message:null};
   if(!held)await enqueueAgentMentions({text:saved.body,post:saved,sourceType:"post",sourceId:saved.id});
   return ok(c,{id:saved.id,editedAt:saved.editedAt,status:saved.status,moderation:{held:mod.held,queued:mod.queued,message:mod.message}});
@@ -279,7 +304,7 @@ feedRoutes.post("/posts/:id/publish-to-square",async c=>{
   const text=stripLeaks(p.body,leaked);
   // 圈子可能没开审核而广场开了，所以复制到广场要按广场的规矩重审一次。
   const held=moderationOn(settings,"square");
-  const[copy]=await db.insert(posts).values({authorUserId:u.id,workspaceId:null,visibility:"public",body:text,noteId:null,status:held?"pending_review":"visible"}).returning();
+  const[copy]=await db.insert(posts).values({authorUserId:u.id,workspaceId:null,visibility:"public",body:text,tags:parseHashtags(text),noteId:null,status:held?"pending_review":"visible"}).returning();
   await copyPostAssets(p.id,copy.id,u.id);
   const mod=held?await queueReview({targetType:"post",targetId:copy.id,scope:"square",workspaceId:null,authorUserId:u.id,snapshot:text}):{held:false,queued:false,message:null};
   return ok(c,{id:copy.id,strippedLinks:leaked,moderation:{held:mod.held,queued:mod.queued,message:mod.message}},201);

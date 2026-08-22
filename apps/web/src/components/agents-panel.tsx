@@ -1,6 +1,7 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Bot, Pencil, Plus, Trash2 } from "lucide-react";
 import { api } from "../api";
+import { AgentAvatar } from "./agent-avatar";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { useConfirm } from "./ui/confirm";
@@ -17,6 +18,7 @@ export type AdminAgent = {
   displayName: string;
   bio: string | null;
   avatarEmoji: string;
+  avatarUrl?: string | null;
   systemPrompt?: string;
   enabled: boolean;
   allowSquare: boolean;
@@ -34,6 +36,8 @@ type Form = {
   displayName: string;
   bio: string;
   avatarEmoji: string;
+  avatarSha256: string | null;
+  avatarMime: string | null;
   systemPrompt: string;
   enabled: boolean;
   allowSquare: boolean;
@@ -45,7 +49,7 @@ type Form = {
 };
 
 const EMPTY: Form = {
-  handle: "", displayName: "", bio: "", avatarEmoji: "🤖",
+  handle: "", displayName: "", bio: "", avatarEmoji: "🤖", avatarSha256: null, avatarMime: null,
   systemPrompt: "你是这个知识库的助手。用简洁的中文回答动态里的问题，不知道就直说。",
   enabled: true, allowSquare: true, allowCircle: true, knowledgeEnabled: false,
   baseUrl: "", chatModel: "", apiKey: "",
@@ -67,6 +71,10 @@ export function AgentsPanel() {
   const [form, setForm] = useState<Form>(EMPTY);
   const [formErr, setFormErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [avatarDirty, setAvatarDirty] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const load = () => api<{ agents: AdminAgent[] }>("/api/v1/admin/agents")
     .then(d => { setAgents(d.agents); setError(""); })
@@ -78,17 +86,31 @@ export function AgentsPanel() {
   function openNew() {
     setForm(EMPTY);
     setFormErr("");
+    setPreview(null);
+    setAvatarDirty(false);
     setEditing("new");
   }
   function openEdit(a: AdminAgent) {
     setForm({
       handle: a.handle, displayName: a.displayName, bio: a.bio ?? "", avatarEmoji: a.avatarEmoji || "🤖",
+      avatarSha256: null, avatarMime: null,
       systemPrompt: a.systemPrompt ?? "", enabled: a.enabled, allowSquare: a.allowSquare, allowCircle: a.allowCircle,
       knowledgeEnabled: a.knowledgeEnabled, baseUrl: a.baseUrl, chatModel: a.chatModel,
       apiKey: a.keyConfigured ? `••••${a.keySuffix}` : "",
     });
+    setPreview(a.avatarUrl ?? null);
+    setAvatarDirty(false);
     setFormErr("");
     setEditing(a);
+  }
+
+  async function uploadAvatar(file: File) {
+    const body = new FormData();
+    body.append("file", file);
+    const res = await fetch("/api/v1/admin/agents/avatar", { method: "POST", body, credentials: "include", headers: { "X-Requested-With": "fetch" } });
+    const json = await res.json() as { ok: true; data: { sha256: string; mime: string } } | { ok: false; error: { message: string } };
+    if (!json.ok) throw new Error(json.error.message);
+    return json.data;
   }
 
   async function save() {
@@ -99,6 +121,7 @@ export function AgentsPanel() {
         displayName: form.displayName.trim(),
         bio: form.bio.trim() || null,
         avatarEmoji: form.avatarEmoji.trim() || "🤖",
+        ...(avatarDirty || editing === "new" ? { avatarSha256: form.avatarSha256, avatarMime: form.avatarMime } : {}),
         systemPrompt: form.systemPrompt.trim(),
         enabled: form.enabled,
         allowSquare: form.allowSquare,
@@ -157,7 +180,9 @@ export function AgentsPanel() {
       <p className="mt-1 text-xs text-muted-foreground">先建一个，再去动态里 @ 它试试。</p>
     </div>}
     {!loading && agents.map(a => <article key={a.id} className="flex flex-wrap items-start gap-4 rounded-xl border bg-background p-5">
-      <span className="grid size-11 place-items-center rounded-xl bg-muted text-xl">{a.avatarEmoji}</span>
+      <span className="grid size-11 place-items-center overflow-hidden rounded-xl bg-muted text-xl">
+        <AgentAvatar emoji={a.avatarEmoji} url={a.avatarUrl} label={a.displayName} className="size-11 text-xl" />
+      </span>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-sm font-semibold">{a.displayName}</p>
@@ -192,7 +217,29 @@ export function AgentsPanel() {
           </div>
           <Field title="简介"><Input value={form.bio} maxLength={200} placeholder="一句话说明它擅长什么" onChange={e => setForm({ ...form, bio: e.target.value })} /></Field>
           <Field title="头像">
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="grid size-12 place-items-center overflow-hidden rounded-xl border bg-muted text-2xl">
+                <AgentAvatar emoji={form.avatarEmoji} url={preview} label={form.displayName} className="size-12 text-2xl" />
+              </span>
+              <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden"
+                onChange={async e => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (!file) return;
+                  setFormErr("");
+                  try {
+                    const uploaded = await uploadAvatar(file);
+                    setForm(f => ({ ...f, avatarSha256: uploaded.sha256, avatarMime: uploaded.mime }));
+                    setAvatarDirty(true);
+                    setPreview(URL.createObjectURL(file));
+                  } catch (err) {
+                    setFormErr((err as Error).message);
+                  }
+                }} />
+              <Button type="button" variant="outline" size="sm" onClick={() => fileRef.current?.click()}>上传图片</Button>
+              {preview && <Button type="button" variant="ghost" size="sm" onClick={() => { setForm(f => ({ ...f, avatarSha256: null, avatarMime: null })); setAvatarDirty(true); setPreview(null); }}>去掉图片</Button>}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
               {EMOJIS.map(e => <button key={e} type="button" onClick={() => setForm({ ...form, avatarEmoji: e })}
                 className={`grid size-9 place-items-center rounded-lg border text-lg ${form.avatarEmoji === e ? "border-primary bg-primary/10" : "bg-background"}`}>{e}</button>)}
             </div>
@@ -211,7 +258,16 @@ export function AgentsPanel() {
           </div>
         </div>
         <FormError>{formErr}</FormError>
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
+          {editing && editing !== "new" && <Button type="button" variant="outline" disabled={testing || busy} onClick={async () => {
+            setTesting(true); setFormErr("");
+            try {
+              const d = await api<{ reply: string }>(`/api/v1/admin/agents/${editing.id}/test`, { method: "POST", body: JSON.stringify({}) });
+              toast.success("模型通了", d.reply);
+            } catch (e) {
+              setFormErr((e as Error).message);
+            } finally { setTesting(false); }
+          }}>{testing ? "在试…" : "试一下模型"}</Button>}
           <Button variant="ghost" onClick={() => setEditing(null)}>取消</Button>
           <Button disabled={busy || !form.displayName.trim() || !form.handle.trim() || !form.systemPrompt.trim() || !form.baseUrl.trim() || !form.chatModel.trim()} onClick={() => void save()}>{busy ? "保存中…" : "保存"}</Button>
         </div>

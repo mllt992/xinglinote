@@ -205,6 +205,13 @@ test("==高亮== 支持嵌套，落单的等号不吃字", () => {
   assert.doesNotMatch(renderMarkdown("`==代码里的==`"), /<mark>/);
 });
 
+test("打开 hashtags 才把 #标签 标成链接", () => {
+  assert.doesNotMatch(renderMarkdown("今天 #轻舟"), /class="hashtag"/);
+  assert.match(renderMarkdown("今天 #轻舟", { hashtags: true }), /data-hashtag="轻舟"/);
+  assert.doesNotMatch(renderMarkdown("# 一级标题", { hashtags: true }), /class="hashtag"/);
+  assert.doesNotMatch(renderMarkdown("`#轻舟`", { hashtags: true }), /class="hashtag"/);
+});
+
 test("传了 mentionHandles 才把 @handle 标成 mention", () => {
   assert.doesNotMatch(renderMarkdown("找 @Arch 帮忙"), /class="mention"/);
   assert.match(renderMarkdown("找 @Arch 帮忙", { mentionHandles: ["arch"] }), /<span class="mention">@Arch<\/span>/);

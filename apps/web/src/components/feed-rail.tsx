@@ -30,6 +30,16 @@ function NoteRow({ title, onOpen }: { title: string; onOpen: () => void }) {
 }
 
 /** 右栏的料全部从已经拿到的时间线里推，不额外打接口，翻页也不会多一轮请求。 */
+function TagCloud({ tags, active, onPick }: { tags: string[]; active?: string; onPick: (tag: string) => void }) {
+  if (!tags.length) return null;
+  return <div className="flex flex-wrap gap-1.5">
+    {tags.map(t => <button key={t} type="button" onClick={() => onPick(t)}
+      className={`rounded-full border px-2 py-0.5 text-xs ${active === t ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted"}`}>
+      #{t}
+    </button>)}
+  </div>;
+}
+
 function useFeedDigest(posts: FeedPost[]) {
   const authors = useMemo(() => {
     const seen = new Map<string, { handle: string; displayName: string; count: number }>();
@@ -41,15 +51,20 @@ function useFeedDigest(posts: FeedPost[]) {
     for (const p of posts) { if (!p.note || !p.workspaceId || seen.has(p.note.id)) continue; seen.add(p.note.id); out.push({ id: p.note.id, title: p.note.title, workspaceId: p.workspaceId }); }
     return out.slice(0, 5);
   }, [posts]);
-  return { authors, cited };
+  const tags = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of posts) for (const t of p.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh")).slice(0, 12).map(([name]) => name);
+  }, [posts]);
+  return { authors, cited, tags };
 }
 
 /** 右栏跟着滚：main 是滚动容器，顶栏在容器外面，所以贴顶只留一点呼吸位就够。 */
 const rail = "space-y-4 lg:sticky lg:top-4";
 
 /** 广场右栏。 */
-export function SquareRail({ posts, me, homeWsId, onOpenNote, onNav }: { posts: FeedPost[]; me: Me | null | undefined; homeWsId?: string; onOpenNote: (workspaceId: string, noteId: string) => void; onNav: (to: string) => void }) {
-  const { authors, cited } = useFeedDigest(posts);
+export function SquareRail({ posts, me, homeWsId, activeTag, onOpenNote, onNav, onTag }: { posts: FeedPost[]; me: Me | null | undefined; homeWsId?: string; activeTag?: string; onOpenNote: (workspaceId: string, noteId: string) => void; onNav: (to: string) => void; onTag?: (tag: string) => void }) {
+  const { authors, cited, tags } = useFeedDigest(posts);
   return <div className={rail}>
     {me === null && <RailCard title="加入这个实例">
       <p className="text-xs leading-5 text-muted-foreground">登录后可以发动态、评论、收藏，也能把值得留下的想法转正成笔记。</p>
@@ -61,6 +76,7 @@ export function SquareRail({ posts, me, homeWsId, onOpenNote, onNav }: { posts: 
     {cited.length > 0 && <RailCard title="动态里提到的笔记">
       <ul className="space-y-1">{cited.map(n => <li key={n.id}><NoteRow title={n.title} onOpen={() => onOpenNote(n.workspaceId, n.id)} /></li>)}</ul>
     </RailCard>}
+    {tags.length > 0 && onTag && <RailCard title="热门标签"><TagCloud tags={tags} active={activeTag} onPick={onTag} /></RailCard>}
     <RailCard title="关于广场">
       <ul className="space-y-2 text-xs leading-5 text-muted-foreground">
         <li className="flex gap-2"><Globe2 className="mt-0.5 size-3.5 shrink-0" /><span>发到这里的动态，实例里所有人都看得到。</span></li>
@@ -73,11 +89,11 @@ export function SquareRail({ posts, me, homeWsId, onOpenNote, onNav }: { posts: 
 }
 
 /** 圈子右栏。广场那边靠时间线推人，圈子里成员是确定的，直接列出来才知道「只有谁看得到」。 */
-export function CircleRail({ wsId, wsName, wsKind, canInvite, posts, squareEnabled, onOpenNote, onNav }: {
-  wsId: string; wsName: string; wsKind: string; canInvite: boolean; posts: FeedPost[]; squareEnabled: boolean;
-  onOpenNote: (workspaceId: string, noteId: string) => void; onNav: (to: string) => void;
+export function CircleRail({ wsId, wsName, wsKind, canInvite, posts, squareEnabled, activeTag, onOpenNote, onNav, onTag }: {
+  wsId: string; wsName: string; wsKind: string; canInvite: boolean; posts: FeedPost[]; squareEnabled: boolean; activeTag?: string;
+  onOpenNote: (workspaceId: string, noteId: string) => void; onNav: (to: string) => void; onTag?: (tag: string) => void;
 }) {
-  const { authors, cited } = useFeedDigest(posts);
+  const { authors, cited, tags } = useFeedDigest(posts);
   const [members, setMembers] = useState<Member[] | null>(null);
   useEffect(() => { setMembers(null); api<{ members: Member[] }>(`/api/v1/workspaces/${wsId}/members`).then(d => setMembers(d.members)).catch(() => setMembers([])); }, [wsId]);
   const counted = new Map(authors.map(a => [a.handle, a.count]));
@@ -93,6 +109,7 @@ export function CircleRail({ wsId, wsName, wsKind, canInvite, posts, squareEnabl
     {cited.length > 0 && <RailCard title="动态里提到的笔记">
       <ul className="space-y-1">{cited.map(n => <li key={n.id}><NoteRow title={n.title} onOpen={() => onOpenNote(n.workspaceId, n.id)} /></li>)}</ul>
     </RailCard>}
+    {tags.length > 0 && onTag && <RailCard title="热门标签"><TagCloud tags={tags} active={activeTag} onPick={onTag} /></RailCard>}
     <RailCard title="关于圈子">
       <ul className="space-y-2 text-xs leading-5 text-muted-foreground">
         <li className="flex gap-2"><Lock className="mt-0.5 size-3.5 shrink-0" /><span>只有 {wsName} 的成员看得到，Viewer 只读。</span></li>

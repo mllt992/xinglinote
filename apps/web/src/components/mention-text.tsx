@@ -6,6 +6,7 @@ export type MentionAgent = {
   handle: string;
   displayName: string;
   avatarEmoji?: string;
+  avatarUrl?: string | null;
   bio?: string | null;
 };
 

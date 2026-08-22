@@ -16,6 +16,8 @@ export function MarkdownView({
   sourceLines = false,
   className,
   mentionHandles,
+  hashtags,
+  onHashtag,
 }: {
   source: string;
   /** 点双链。宿主负责消歧、跨区跳转、点未创建的就地新建（规格 §9.4）。 */
@@ -29,11 +31,14 @@ export function MarkdownView({
   className?: string;
   /** 动态里要高亮的智能体 handle。笔记正文不要传。 */
   mentionHandles?: Iterable<string>;
+  /** 动态里把 #标签 标成可点。 */
+  hashtags?: boolean;
+  onHashtag?: (tag: string) => void;
 }) {
   const mentionKey = mentionHandles ? [...mentionHandles].join("\0") : "";
   const html = useMemo(
-    () => toSafeHtml(source || "_空白笔记_", { mode, resolveWiki, interactiveTasks: !!onToggleTask, sourceLines, mentionHandles }),
-    [source, mode, resolveWiki, onToggleTask, sourceLines, mentionKey],
+    () => toSafeHtml(source || "_空白笔记_", { mode, resolveWiki, interactiveTasks: !!onToggleTask, sourceLines, mentionHandles, hashtags }),
+    [source, mode, resolveWiki, onToggleTask, sourceLines, mentionKey, hashtags],
   );
 
   const host = useRef<HTMLDivElement | null>(null);
@@ -66,6 +71,12 @@ export function MarkdownView({
         if (target instanceof HTMLImageElement && !target.closest("a")) {
           event.preventDefault();
           openLightbox(target.currentSrc || target.src, target.alt);
+          return;
+        }
+        const tagEl = target.closest<HTMLElement>("[data-hashtag]");
+        if (tagEl && onHashtag) {
+          event.preventDefault();
+          onHashtag(tagEl.dataset.hashtag ?? "");
           return;
         }
         follow(target);

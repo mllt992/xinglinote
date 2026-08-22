@@ -6,7 +6,7 @@ import{MarkdownView}from'../MarkdownView';
 import{FEED_REFRESH_EVENT,formatFeedUpdateLabel,readOpenComments,updatesPath,writeFeedSeen,writeOpenComments,type FeedUpdateCounts}from'./feed-updates';
 
 export type PostAsset={id:string;filename:string;mime:string;bytes:number;kind:"image"|"video"|"file";url:string};
-export type FeedPost={id:string;body:string;visibility:string;workspaceId:string|null;createdAt:string;editedAt:string|null;mine:boolean;author:{handle:string;displayName:string}|null;note:{id:string;title:string}|null;likes:number;liked:boolean;comments?:number;favorited?:boolean;status?:string;moderationQueued?:boolean;moderationReason?:string|null;appealable?:boolean;appealing?:boolean;assets?:PostAsset[]};
+export type FeedPost={id:string;body:string;visibility:string;workspaceId:string|null;createdAt:string;editedAt:string|null;mine:boolean;author:{handle:string;displayName:string}|null;note:{id:string;title:string}|null;likes:number;liked:boolean;comments?:number;favorited?:boolean;status?:string;moderationQueued?:boolean;moderationReason?:string|null;appealable?:boolean;appealing?:boolean;assets?:PostAsset[];tags?:string[]};
 const ACCEPT="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,application/pdf,text/plain,text/markdown,application/zip";
 function formatSize(n:number){if(n<1024)return`${n} B`;if(n<1024*1024)return`${(n/1024).toFixed(1)} KB`;return`${(n/1024/1024).toFixed(1)} MB`;}
 export function PostAssetGrid({assets}:{assets:PostAsset[]}){
@@ -48,7 +48,7 @@ type Nb={id:string;title:string};
 /** 广场与圈子共用一套时间线。scope=workspace 时发的是圈子动态。 */
 export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModerate,onOpenNote,onLoaded}:{scope:"public"|"workspace";workspaceId?:string;workspaces:Array<{id:string;name:string}>;canPost:boolean;signedIn?:boolean;canModerate?:boolean;onOpenNote?:(workspaceId:string,noteId:string)=>void;onLoaded?:(posts:FeedPost[])=>void}){
   const askConfirm=useConfirm();const toast=useToast();
-  const[searchParams]=useSearchParams();
+  const[searchParams,setSearchParams]=useSearchParams();
   const[posts,setPosts]=useState<FeedPost[]>([]);const[body,setBody]=useState("");const[err,setErr]=useState("");const[dlgErr,setDlgErr]=useState("");const[busy,setBusy]=useState(false);
   const[editing,setEditing]=useState<FeedPost|null>(null);const[draft,setDraft]=useState("");
   const[promote,setPromote]=useState<FeedPost|null>(null);const[target,setTarget]=useState({workspaceId:"",notebookId:"",title:""});const[books,setBooks]=useState<Nb[]>([]);
@@ -61,9 +61,19 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
   const[fresh,setFresh]=useState<{newIds:Set<string>;repliedIds:Set<string>}|null>(null);
   const[assets,setAssets]=useState<PostAsset[]>([]);const[uploading,setUploading]=useState(false);
   const[agents,setAgents]=useState<MentionAgent[]>([]);
+  const[popularTags,setPopularTags]=useState<string[]>([]);
   const mentionHandles=useMemo(()=>agents.map(a=>a.handle),[agents]);
+  const activeTag=searchParams.get("tag")?.trim()??"";
+  const pickTag=(tag:string|null)=>{
+    const next=new URLSearchParams(searchParams);
+    if(tag)next.set("tag",tag);else next.delete("tag");
+    next.delete("post");
+    setSearchParams(next,{replace:true});
+  };
   const fileRef=useRef<HTMLInputElement>(null);
   const path=scope==="public"?"/api/v1/feed/public":`/api/v1/feed/workspaces/${workspaceId}`;
+  const listPath=activeTag?`${path}?tag=${encodeURIComponent(activeTag)}`:path;
+  const tagsPath=scope==="public"?"/api/v1/feed/public/tags":`/api/v1/feed/workspaces/${workspaceId}/tags`;
   /** 单条动态的点赞、编辑、删除就地改这一条：整条时间线重拉会闪一下、丢滚动位置，点个赞不该付这个代价。
       listRef 只经 apply 写入，所以连点两下也不会拿到上一次渲染的旧列表。 */
   const listRef=useRef<FeedPost[]>([]);
@@ -72,11 +82,11 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
   const patchOne=(id:string,fn:(p:FeedPost)=>FeedPost)=>apply(listRef.current.map(p=>p.id===id?fn(p):p));
   const dropOne=(id:string)=>apply(listRef.current.filter(p=>p.id!==id));
   const rememberSeen=(at:string)=>{sinceRef.current=at;writeFeedSeen(scope,workspaceId,at);setUpdates({newPosts:0,repliedPosts:0});};
-  const load=()=>api<{posts:FeedPost[];now?:string}>(path).then(d=>{apply(d.posts);rememberSeen(d.now??new Date().toISOString());setFresh(null);}).catch(e=>toast.error("加载动态失败",(e as Error).message));
+  const load=()=>api<{posts:FeedPost[];now?:string}>(listPath).then(d=>{apply(d.posts);rememberSeen(d.now??new Date().toISOString());setFresh(null);}).catch(e=>toast.error("加载动态失败",(e as Error).message));
   async function refreshUpdates(){
     if(refreshing)return;setRefreshing(true);
     try{
-      const d=await api<{posts:FeedPost[];now?:string}>(path);
+      const d=await api<{posts:FeedPost[];now?:string}>(listPath);
       const prev=new Map(listRef.current.map(p=>[p.id,p]));
       const newIds=new Set(d.posts.filter(p=>!prev.has(p.id)).map(p=>p.id));
       const repliedIds=new Set(d.posts.filter(p=>{const old=prev.get(p.id);return!!old&&(p.comments??0)>(old.comments??0);}).map(p=>p.id));
@@ -87,7 +97,8 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
     }catch(e){toast.error("刷新动态失败",(e as Error).message);}
     finally{setRefreshing(false);}
   }
-  useEffect(()=>{void load()},[path]);
+  useEffect(()=>{void load()},[listPath]);
+  useEffect(()=>{api<{tags:Array<{name:string}>}>(tagsPath).then(d=>setPopularTags(d.tags.map(t=>t.name))).catch(()=>setPopularTags([]));},[tagsPath]);
   const deepPost=searchParams.get("post");
   useEffect(()=>{
     setOpenCommentsState(deepPost||readOpenComments(scope,workspaceId));
@@ -173,8 +184,12 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
   }
 
   return <div className="space-y-4">
+    {activeTag&&<div className="flex items-center gap-2 rounded-xl border bg-background px-3 py-2 text-sm">
+      <span>正在看 <b className="text-primary">#{activeTag}</b></span>
+      <Button variant="ghost" size="sm" className="ml-auto h-7" onClick={()=>pickTag(null)}>看全部</Button>
+    </div>}
     {canPost&&<div className="rounded-2xl border bg-background p-4">
-      <MentionField value={body} onChange={setBody} agents={agents} maxLength={5000} placeholder={scope==="public"?"发到广场，实例里所有人可见。可以用 [[双链]] 引用已公开的笔记，也可以 @ 智能体。":"发到本工作区的圈子，只有成员看得到。输入 @ 可叫智能体。"} className="min-h-24"/>
+      <MentionField value={body} onChange={setBody} agents={agents} tags={popularTags} maxLength={5000} placeholder={scope==="public"?"发到广场，实例里所有人可见。可以用 [[双链]] 引用已公开的笔记，也可以 @ 智能体、#标签。":"发到本工作区的圈子，只有成员看得到。输入 @ 可叫智能体，# 可加标签。"} className="min-h-24"/>
       {assets.length>0&&<div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
         {assets.map(a=><div key={a.id} className="relative overflow-hidden rounded-xl border bg-muted">
           {a.kind==="image"?<img src={a.url} alt={a.filename} className="h-28 w-full object-cover"/>
@@ -199,7 +214,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
       <span>{formatFeedUpdateLabel(updates)}</span>
       <span className="text-xs font-normal text-muted-foreground">{refreshing?"更新中…":"点击查看"}</span>
     </button>}
-    {posts.length===0?<div className="rounded-2xl border border-dashed py-14 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground"><Globe2 className="size-5"/></span><p className="mt-3 text-sm font-medium">还没有动态</p><p className="mt-1 text-xs text-muted-foreground">{scope==="public"?"第一条公开动态还没出现。":"圈子里的碎片想法可以先发这里，之后再转正为笔记。"}</p></div>
+    {posts.length===0?<div className="rounded-2xl border border-dashed py-14 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground"><Globe2 className="size-5"/></span><p className="mt-3 text-sm font-medium">{activeTag?`还没有 #${activeTag}`:"还没有动态"}</p><p className="mt-1 text-xs text-muted-foreground">{activeTag?"换个标签，或发一条带这个标签的动态。":scope==="public"?"第一条公开动态还没出现。":"圈子里的碎片想法可以先发这里，之后再转正为笔记。"}</p></div>
     :posts.map(p=><article key={p.id} id={`feed-post-${p.id}`} className={cn("rounded-2xl border bg-background p-4", (fresh?.newIds.has(p.id)||fresh?.repliedIds.has(p.id))&&"border-primary/40")}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <b className="text-sm text-foreground">{p.author?.displayName??"已注销用户"}</b>
@@ -220,7 +235,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
           </DropdownMenuContent></DropdownMenu>}
         </div>
       </div>
-      {p.body&&<MarkdownView source={p.body} mode={scope==="public"?"public":"library"} mentionHandles={mentionHandles} className="feed-md mt-3"/>}
+      {p.body&&<MarkdownView source={p.body} mode={scope==="public"?"public":"library"} mentionHandles={mentionHandles} hashtags onHashtag={pickTag} className="feed-md mt-3"/>}
       <PostAssetGrid assets={p.assets??[]}/>
       <HeldNote post={p} onAppeal={x=>{setDlgErr("");setAppealNote("");setAppealing(x)}}/>
       {p.note&&<button className="mt-3 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs hover:bg-muted" onClick={()=>p.workspaceId&&onOpenNote?.(p.workspaceId,p.note!.id)}><NotebookPen className="size-3.5"/>{p.note.title}</button>}
@@ -230,7 +245,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
 
     <Dialog open={!!editing} onOpenChange={v=>{if(!v)setEditing(null);setDlgErr("")}}><DialogContent>
       <DialogHeader><DialogTitle>编辑动态</DialogTitle><DialogDescription>改完会标上「已编辑」。</DialogDescription></DialogHeader>
-      <MentionField value={draft} onChange={setDraft} agents={agents} className="min-h-32" maxLength={5000}/>
+      <MentionField value={draft} onChange={setDraft} agents={agents} tags={popularTags} className="min-h-32" maxLength={5000}/>
       <FormError>{dlgErr}</FormError>
       <div className="flex justify-end gap-2"><Button variant="ghost" onClick={()=>setEditing(null)}>取消</Button><Button disabled={busy||!draft.trim()} onClick={async()=>{if(!editing)return;setBusy(true);try{const d=await api<{editedAt?:string;status?:string;moderation?:Held}>(`/api/v1/posts/${editing.id}`,{method:"PATCH",body:JSON.stringify({body:draft})});if(d.moderation?.queued)toast.success("改动已提交",d.moderation.message??"审核通过后会公开显示。");else if(d.moderation?.held)toast.success("改动已提交，等待人工审核",d.moderation.message??undefined);patchOne(editing.id,x=>({...x,body:draft,editedAt:d.editedAt??new Date().toISOString(),status:d.status??x.status,moderationQueued:!!d.moderation?.queued,moderationReason:d.moderation?.message??null}));setEditing(null)}catch(e){setDlgErr((e as Error).message)}finally{setBusy(false)}}}>保存</Button></div>
     </DialogContent></Dialog>

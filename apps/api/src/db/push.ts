@@ -204,6 +204,7 @@ const statements = [
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), author_user_id uuid NOT NULL REFERENCES users(id), workspace_id uuid,
     visibility text NOT NULL DEFAULT 'public', body text NOT NULL, note_id uuid, status text NOT NULL DEFAULT 'visible', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
   )`,
+  `ALTER TABLE posts ADD COLUMN IF NOT EXISTS tags jsonb NOT NULL DEFAULT '[]'::jsonb`,
   `CREATE TABLE IF NOT EXISTS post_assets (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     post_id uuid REFERENCES posts(id),
@@ -557,6 +558,8 @@ const statements = [
     deleted_at timestamptz
   )`,
   `ALTER TABLE comments ADD COLUMN IF NOT EXISTS author_agent_id uuid`,
+  `ALTER TABLE agents ADD COLUMN IF NOT EXISTS avatar_sha256 text`,
+  `ALTER TABLE agents ADD COLUMN IF NOT EXISTS avatar_mime text`,
   `CREATE TABLE IF NOT EXISTS agent_replies (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     agent_id uuid NOT NULL REFERENCES agents(id),

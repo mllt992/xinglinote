@@ -5,6 +5,7 @@ import { footnotePlugin } from "./footnote.js";
 import { headingAnchorPlugin, outlineFromTokens, type OutlineItem } from "./headings.js";
 import { mathPlugin } from "./math.js";
 import { markPlugin } from "./mark.js";
+import { hashtagPlugin } from "./hashtag.js";
 import { mentionPlugin } from "./mention.js";
 import { sourceLinePlugin } from "./source-lines.js";
 import { taskListPlugin } from "./tasklist.js";
@@ -33,6 +34,8 @@ export type MarkdownEnv = {
   sourceLines?: boolean;
   /** 动态里要高亮的 @handle。不传则整段当普通文本，笔记正文不要开。 */
   mentionHandles?: Iterable<string>;
+  /** 动态里把 #标签 标成可点。笔记正文不要开。 */
+  hashtags?: boolean;
 };
 
 /**
@@ -52,6 +55,7 @@ const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographe
   .use(footnotePlugin)
   .use(markPlugin)
   .use(mentionPlugin)
+  .use(hashtagPlugin)
   .use(headingAnchorPlugin)
   .use(sourceLinePlugin);
 

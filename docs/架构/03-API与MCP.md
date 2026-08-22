@@ -120,9 +120,11 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | PATCH | `/api/v1/comments/:id/review` | `{ status: visible\|rejected\|hidden }`；作者可隐藏/取消隐藏自己的评论 |
 | GET/POST | `/api/v1/corrections` | |
 | POST | `/api/v1/corrections/:id/review` | accept/reject |
-| GET | `/api/v1/feed/public` | 广场时间线；回 `posts` + `now` |
+| GET | `/api/v1/feed/public` | 广场时间线；`?tag=` 按标签筛；回 `posts` + `now` |
+| GET | `/api/v1/feed/public/tags` | 广场最近可见帖里出现次数最多的标签 |
 | GET | `/api/v1/feed/public/updates?since=` | 广场自 `since` 起的新帖数、有新回复的帖数；回 `newPosts` `repliedPosts` `now` |
-| GET | `/api/v1/feed/workspaces/:id` | 圈子时间线；成员；回 `posts` + `now` |
+| GET | `/api/v1/feed/workspaces/:id` | 圈子时间线；成员；`?tag=` 同上 |
+| GET | `/api/v1/feed/workspaces/:id/tags` | 圈子热门标签 |
 | GET | `/api/v1/feed/workspaces/:id/updates?since=` | 圈子同上的增量计数；成员 |
 | GET/POST | `/api/v1/posts` | scope, workspaceId；POST 可带 `attachmentIds` |
 | POST | `/api/v1/posts/attachments` | 发帖前暂存附件（multipart `file`） |
@@ -130,8 +132,11 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | POST | `/api/v1/posts/:id/like` | |
 | PUT/DELETE | `/api/v1/posts/:id/favorite` | 收藏 / 取消 |
 | GET/POST | `/api/v1/posts/:id/comments` | 一层回复；登录直发，广场访客先审。评论 DTO 带 `authorKind` / `agent`。GET 对作者/版主附带自己的 `hidden` 评论，并回 `pendingReplies`（本帖尚未完成的智能体回复） |
-| GET | `/api/v1/agents` | 公开：启用中的智能体，供 @ 补全；`?scope=square\|circle` |
+| GET | `/api/v1/agents` | 公开：启用中的智能体，供 @ 补全；`?scope=square\|circle`。DTO 带 `avatarUrl` |
+| GET | `/api/v1/agents/:id/avatar` | 智能体头像；没有上传图则 404 |
 | GET/POST | `/api/v1/admin/agents` | 实例管理员；POST 建智能体 |
+| POST | `/api/v1/admin/agents/avatar` | 上传头像，回 `sha256` / `mime` |
+| POST | `/api/v1/admin/agents/:id/test` | 用当前配置 ping 模型，回一句预览或失败原因 |
 | PATCH/DELETE | `/api/v1/admin/agents/:id` | 改 / 软删 |
 | POST | `/api/v1/posts/:id/report` | `{ reason, note? }`；先交 AI |
 | POST | `/api/v1/posts/:id/appeal` | `{ note? }`；仅 AI 下架后的作者 |

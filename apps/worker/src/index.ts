@@ -17,6 +17,15 @@ import { extractPdfText } from "../../api/src/lib/pdf-text.ts";
 import { readStoredFile, releaseStoredFile } from "../../api/src/lib/blobs.ts";
 import { applyModeration } from "../../api/src/lib/moderation.ts";
 import { executeAgentReply } from "../../api/src/lib/agents.ts";
+import { AppError } from "@kb/shared";
+function shouldRetry(e:unknown){
+  const msg=e instanceof Error?e.message:String(e);
+  if(/实例关了 AI|智能体已停用|密文解不开|模型没有返回文字|找不到这个模型|请检查 Key/.test(msg))return false;
+  if(e instanceof AppError&&e.status>=400&&e.status<500&&e.status!==429)return false;
+  const code=/\((\d{3})\)/.exec(msg)?.[1];
+  if(code&&["400","401","403","404","422"].includes(code))return false;
+  return true;
+}
 const interval=Number(process.env.WORKER_INTERVAL_MS??5000); // durable worker cadence
 async function claim(){return db.transaction(async tx=>{const[job]=await tx.select().from(backgroundJobs).where(and(or(eq(backgroundJobs.status,"pending"),and(eq(backgroundJobs.status,"running"),lt(backgroundJobs.lockedAt,new Date(Date.now()-300000)))),lte(backgroundJobs.runAfter,new Date()))).orderBy(asc(backgroundJobs.createdAt)).limit(1).for("update",{skipLocked:true});if(!job)return null;const[claimed]=await tx.update(backgroundJobs).set({status:"running",lockedAt:new Date(),attempts:job.attempts+1}).where(eq(backgroundJobs.id,job.id)).returning();return claimed;});}
 async function execute(job:typeof backgroundJobs.$inferSelect){
@@ -140,7 +149,7 @@ ${env.publicUrl}/w/${item.workspaceId}/calendar?item=${item.id}`);}
 }
 const BATCH=10;                                        // 队列一堆积，一轮只干一件事会等好几小时，所以一轮抽一小批
 async function tick(){for(let i=0;i<BATCH;i++)if(!await one())return;}
-async function one(){const job=await claim();if(!job)return false;try{await execute(job);await db.update(backgroundJobs).set({status:"done",finishedAt:new Date(),lastError:null}).where(eq(backgroundJobs.id,job.id));}catch(e){const retry=job.attempts<5;await db.update(backgroundJobs).set({status:retry?"pending":"failed",runAfter:new Date(Date.now()+Math.min(3600000,1000*2**job.attempts)),lastError:e instanceof Error?e.message:String(e)}).where(eq(backgroundJobs.id,job.id));}
+async function one(){const job=await claim();if(!job)return false;try{await execute(job);await db.update(backgroundJobs).set({status:"done",finishedAt:new Date(),lastError:null}).where(eq(backgroundJobs.id,job.id));}catch(e){const retry=job.attempts<5&&shouldRetry(e);await db.update(backgroundJobs).set({status:retry?"pending":"failed",runAfter:new Date(Date.now()+Math.min(3600000,1000*2**job.attempts)),lastError:e instanceof Error?e.message:String(e)}).where(eq(backgroundJobs.id,job.id));}
  return true;}
 async function schedule(){const now=new Date();for(const t of await db.select().from(backupTargets).where(eq(backupTargets.enabled,true))){if(t.schedule==='manual')continue;const due=!t.lastRunAt||(t.schedule==='daily'?now.getTime()-t.lastRunAt.getTime()>=86400000:now.getTime()-t.lastRunAt.getTime()>=7*86400000);if(due){const active=await db.select().from(backupRuns).where(and(eq(backupRuns.targetId,t.id),or(eq(backupRuns.status,'pending'),eq(backupRuns.status,'running'))));if(!active.length){const[r]=await db.insert(backupRuns).values({targetId:t.id,workspaceId:t.workspaceId}).returning();await db.insert(backgroundJobs).values({type:'backup_workspace',payload:{targetId:t.id,runId:r.id}});}}}for(const type of["purge_trash","cleanup_tokens","expire_shares","prune_versions","calendar_rollover"]){const rows=await db.select().from(backgroundJobs).where(and(eq(backgroundJobs.type,type),or(eq(backgroundJobs.status,"pending"),eq(backgroundJobs.status,"running"))));if(!rows.length)await db.insert(backgroundJobs).values({type,payload:{},runAfter:new Date()});}
  // ICS 轮询自己续期，这里只负责点火：认「不带 subscriptionId」的那条才是轮询job，否则一条手动同步就能把轮询挡住

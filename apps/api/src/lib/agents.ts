@@ -31,6 +31,10 @@ export type FeedPostRef = {
   body: string;
 };
 
+export function agentAvatarUrl(row: { id: string; avatarSha256?: string | null }) {
+  return row.avatarSha256 ? `/api/v1/agents/${row.id}/avatar` : null;
+}
+
 export function publicAgent(row: AgentRow) {
   return {
     id: row.id,
@@ -38,6 +42,7 @@ export function publicAgent(row: AgentRow) {
     displayName: row.displayName,
     bio: row.bio,
     avatarEmoji: row.avatarEmoji,
+    avatarUrl: agentAvatarUrl(row),
   };
 }
 
@@ -106,6 +111,7 @@ export type PendingAgentReply = {
   sourceId: string;
   parentCommentId: string | null;
   status: "pending" | "running" | "failed";
+  reason: string | null;
 };
 
 function asReplyJob(payload: unknown): AgentReplyJob | null {
@@ -147,6 +153,7 @@ export async function listPendingAgentReplies(postId: string): Promise<PendingAg
       sourceId: payload.sourceId,
       parentCommentId: payload.parentCommentId,
       status: job.status === "failed" ? "failed" : job.status === "running" ? "running" : "pending",
+      reason: job.status === "failed" ? (job.lastError?.trim() || "模型没有回上") : null,
     });
   }
   return out;
@@ -218,13 +225,13 @@ function systemPrompt(agent: AgentRow) {
 
 export async function executeAgentReply(payload: AgentReplyJob) {
   const [inst] = await db.select({ aiEnabled: instanceSettings.aiEnabled }).from(instanceSettings);
-  if (!inst?.aiEnabled) return;
+  if (!inst?.aiEnabled) throw new Error("实例关了 AI，智能体不会回复");
   const [agent] = await db.select().from(agents).where(eq(agents.id, payload.agentId));
-  if (!agent || !agent.enabled || agent.deletedAt) return;
+  if (!agent || !agent.enabled || agent.deletedAt) throw new Error("智能体已停用或删除");
   const [post] = await db.select().from(posts).where(eq(posts.id, payload.postId));
-  if (!post || post.status !== "visible") return;
-  if (post.visibility === "public" && !agent.allowSquare) return;
-  if (post.visibility !== "public" && !agent.allowCircle) return;
+  if (!post || post.status !== "visible") throw new Error("动态还不能回复");
+  if (post.visibility === "public" && !agent.allowSquare) throw new Error("这个智能体不能在广场回复");
+  if (post.visibility !== "public" && !agent.allowCircle) throw new Error("这个智能体不能在圈子回复");
   if (await existingReply(agent.id, payload.sourceType, payload.sourceId)) return;
 
   const since = new Date(Date.now() - 3_600_000);
@@ -237,7 +244,7 @@ export async function executeAgentReply(payload: AgentReplyJob) {
   let trigger = post.body;
   if (payload.sourceType === "comment") {
     const [comment] = await db.select().from(comments).where(eq(comments.id, payload.sourceId));
-    if (!comment || comment.status !== "visible" || comment.targetId !== post.id) return;
+    if (!comment || comment.status !== "visible" || comment.targetId !== post.id) throw new Error("触发回复的评论已经不可见");
     trigger = comment.body;
   }
 
@@ -262,10 +269,10 @@ export async function executeAgentReply(payload: AgentReplyJob) {
   }, [
     { role: "system", content: systemPrompt(agent) },
     { role: "user", content: parts.join("\n\n") },
-  ], { temperature: 0.6 });
+  ], { temperature: 0.6, timeoutMs: 90_000, maxTokens: 1800 });
 
   const body = sanitizeAgentReply(out.content);
-  if (!body) return;
+  if (!body) throw new Error("模型没有返回文字");
 
   const href = feedPostHref(post);
   await db.transaction(async tx => {

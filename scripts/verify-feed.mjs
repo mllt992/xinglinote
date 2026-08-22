@@ -24,6 +24,13 @@ try {
   const feed = (await q(`/feed/workspaces/${ws.id}`, {}, c)).data;
   result.workspaceFeedLists = feed.posts.some(p => p.id === post.id);
 
+  const tagged = (await q("/posts", { method: "POST", body: JSON.stringify({ body: "给圈子打个 #轻舟 标签", visibility: "workspace", workspaceId: ws.id }) }, c)).data;
+  madePosts.push(tagged.id);
+  const byTag = (await q(`/feed/workspaces/${ws.id}?tag=${encodeURIComponent("轻舟")}`, {}, c)).data;
+  result.feedFiltersByTag = byTag.posts.some(p => p.id === tagged.id) && byTag.posts.every(p => (p.tags ?? []).includes("轻舟"));
+  const hot = (await q(`/feed/workspaces/${ws.id}/tags`, {}, c)).data;
+  result.feedListsPopularTags = Array.isArray(hot.tags) && hot.tags.some(t => t.name === "轻舟");
+
   // 动态附件：先暂存再挂到帖上；广场未登录也能读图。
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
   async function uploadAsset(buf, name, type, cookie) {

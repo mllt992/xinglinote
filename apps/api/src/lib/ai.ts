@@ -2,8 +2,11 @@ import { and, desc, eq } from "drizzle-orm";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { aiProviders } from "../db/schema.ts";
+import { extractChatContent, providerErrorHint } from "./ai-chat.ts";
 import { safeFetch } from "./net-guard.ts";
 import { open } from "./secrets.ts";
+
+export { extractChatContent } from "./ai-chat.ts";
 
 export type Provider = typeof aiProviders.$inferSelect;
 export type ChatProvider = { baseUrl: string; chatModel: string; apiKey: string };
@@ -34,18 +37,31 @@ export async function embed(p: Provider, input: string[]) {
   return (d.data ?? []).sort((a, b) => a.index - b.index).map(x => x.embedding);
 }
 
-type ChatResponse = { choices?: Array<{ message?: { content?: string } }>; usage?: Record<string, number> };
-
 /** 唯一一份聊天调用。routes/ai.ts 以前自己抄了一模一样的一份，别再抄了。 */
-export async function chatAi(p: ChatProvider, messages: Array<{ role: string; content: string }>, opts?: { temperature?: number }) {
-  const r = await safeFetch(`${p.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${open(p.apiKey)}` },
-    body: JSON.stringify({ model: p.chatModel, messages, temperature: opts?.temperature ?? 0.2 }),
-  }, "AI 提供商地址");
-  if (!r.ok) throw fail("AI_PROVIDER_ERROR", `模型请求失败 (${r.status})`);
-  const d = (await r.json()) as ChatResponse;
-  return { content: String(d.choices?.[0]?.message?.content ?? ""), usage: d.usage ?? {} };
+export async function chatAi(p: ChatProvider, messages: Array<{ role: string; content: string }>, opts?: { temperature?: number; timeoutMs?: number; maxTokens?: number }) {
+  let r: Response;
+  try {
+    r = await safeFetch(`${p.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${open(p.apiKey)}`, "x-api-key": open(p.apiKey) },
+      body: JSON.stringify({
+        model: p.chatModel,
+        messages,
+        temperature: opts?.temperature ?? 0.2,
+        ...(opts?.maxTokens ? { max_tokens: opts.maxTokens } : {}),
+      }),
+      signal: AbortSignal.timeout(opts?.timeoutMs ?? 30_000),
+    }, "AI 提供商地址");
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/timeout|aborted|AbortError/i.test(msg)) throw fail("AI_PROVIDER_ERROR", "模型响应超时");
+    throw e;
+  }
+  const raw = await r.text();
+  if (!r.ok) throw fail("AI_PROVIDER_ERROR", providerErrorHint(r.status, raw));
+  let d: { usage?: Record<string, number> } = {};
+  try { d = raw ? JSON.parse(raw) as { usage?: Record<string, number> } : {}; } catch { throw fail("AI_PROVIDER_ERROR", "模型返回的不是 JSON"); }
+  return { content: extractChatContent(d), usage: d.usage ?? {} };
 }
 
 export function plain(md: string) {

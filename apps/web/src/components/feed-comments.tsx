@@ -11,13 +11,14 @@ import { useConfirm } from "./ui/confirm";
 import { useToast } from "./ui/toast";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { MentionField } from "./mention-field";
+import { AgentAvatar } from "./agent-avatar";
 import { MentionText, type MentionAgent } from "./mention-text";
 
 type Comment = {
   id: string; body: string; parentId: string | null; status: string;
   author: string | null; authorKind?: "user" | "guest" | "agent";
   authorHandle?: string | null;
-  agent?: { id: string; handle: string; displayName: string; avatarEmoji: string } | null;
+  agent?: { id: string; handle: string; displayName: string; avatarEmoji: string; avatarUrl?: string | null } | null;
   createdAt: string; editedAt: string | null;
   mine: boolean; editableUntil: string;
 };
@@ -27,12 +28,13 @@ type PendingReply = {
   sourceId: string;
   parentCommentId: string | null;
   status: "pending" | "running" | "failed";
+  reason?: string | null;
 };
 type Challenge = { question: string; token: string };
 
 function AuthorLabel({ c }: { c: Comment }) {
   return <>
-    {c.agent?.avatarEmoji && <span>{c.agent.avatarEmoji}</span>}
+    {c.authorKind === "agent" && <AgentAvatar emoji={c.agent?.avatarEmoji} url={c.agent?.avatarUrl} label={c.author ?? ""} className="size-4 text-sm" />}
     <b className="text-foreground">{c.author ?? "访客"}</b>
     {c.authorKind === "agent" && <Badge>智能体</Badge>}
     {c.authorHandle && <span>@{c.authorHandle}</span>}
@@ -42,9 +44,9 @@ function AuthorLabel({ c }: { c: Comment }) {
 function PendingRow({ item }: { item: PendingReply }) {
   const failed = item.status === "failed";
   return <div className={cn("flex items-center gap-2 rounded-lg px-3 py-2 text-xs", failed ? "text-muted-foreground" : "text-muted-foreground")}>
-    <span>{item.agent.avatarEmoji ?? "🤖"}</span>
+    <AgentAvatar emoji={item.agent.avatarEmoji} url={item.agent.avatarUrl} label={item.agent.displayName} className="size-4 text-sm" />
     {failed
-      ? <span>@{item.agent.handle} 这次没回上</span>
+      ? <span>@{item.agent.handle} 这次没回上{item.reason ? `：${item.reason}` : ""}</span>
       : <span className="inline-flex items-center gap-2">
         <span className="size-1.5 animate-pulse rounded-full bg-primary" />
         @{item.agent.handle} 正在回复…
