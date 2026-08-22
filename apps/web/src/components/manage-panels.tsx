@@ -166,7 +166,7 @@ export function DangerPanel({workspaceId,workspaceName,kind,role,frozen,deletion
 }
 
 type WsShare={id:string;token:string;targetType:string;targetTitle:string;hasPassword:boolean;expiresAt:string|null;commentsEnabled:boolean;correctionsEnabled:boolean;status:string;createdAt:string;mine:boolean};
-const shareType:Record<string,string>={note:"整篇",heading:"某一节",folder:"目录",attachment:"附件"};
+const shareType:Record<string,string>={note:"整篇",heading:"某一节",folder:"目录",attachment:"附件",notebook:"整本"};
 
 /** 本区分享总览：Admin/Owner 能收掉别人建的链接。 */
 export function SharesPanel({workspaceId}:{workspaceId:string}){

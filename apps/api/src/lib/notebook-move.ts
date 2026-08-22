@@ -125,6 +125,8 @@ export async function moveNotebook(notebookId: string, targetWorkspaceId: string
         await tx.update(shareLinks).set({ workspaceId: dst.id })
           .where(and(eq(shareLinks.targetType, "attachment"), inArray(shareLinks.targetId, files.map(a => a.id))));
       }
+      await tx.update(shareLinks).set({ workspaceId: dst.id })
+        .where(and(eq(shareLinks.targetType, "notebook"), eq(shareLinks.targetId, nb.id)));
       for (const m of dropped) {
         await tx.delete(notebookMembers).where(and(eq(notebookMembers.notebookId, nb.id), eq(notebookMembers.userId, m.userId)));
       }

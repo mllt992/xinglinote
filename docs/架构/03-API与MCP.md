@@ -95,6 +95,10 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 |---|---|---|
 | POST | `/api/v1/shares` | targetType, targetId, password?, expiresAt? |
 | GET | `/api/v1/shares` | mine 或 workspaceId= 本区 |
+| GET/POST | `/api/v1/notes/:id/shares` | 单篇 / 单节 |
+| GET/POST | `/api/v1/notebooks/:id/shares` | 整本 |
+| POST | `/api/v1/folders/:id/shares` | 目录 |
+| POST | `/api/v1/attachments/:id/shares` | 附件 |
 | PATCH/DELETE | `/api/v1/shares/:id` | 改密续期 / 取消 |
 | POST | `/api/v1/public/shares/:token/unlock` | password |
 | GET | `/api/v1/public/shares/:token` | 解锁后的内容 JSON（页面也可 SSR） |

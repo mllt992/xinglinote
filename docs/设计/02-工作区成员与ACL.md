@@ -144,10 +144,10 @@ Admin 对 `open` 本可写；对 `private` 本不可写不可读。
 ### 5.4 `can_create_share(actor, target)`
 
 ```
-target 是笔记或目录:
-    return can_edit_note(actor, 该树所属笔记/目录所在本的任意代表元)
-    更精确：对该目录所属 notebook 有编辑权
-整本发布:
+target 是笔记、目录或笔记本:
+    return can_edit_note(actor, 该树所属笔记/目录/笔记本所在本的任意代表元)
+    更精确：对该 notebook 有编辑权
+整本发布文档站:
     return role in (admin, owner) AND notebook 不是别人的 private
 ```
 

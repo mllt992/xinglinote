@@ -45,6 +45,15 @@ try {
   result.folderShareLists = folderPage.type === 'folder' && folderPage.notes.some(n => n.id === note.id) && folderPage.notes.some(n => n.id === later.id);
   result.folderShareExcludesOutside = !folderPage.notes.some(n => n.id === other.id);
 
+  // 整本分享：含根上的笔记，之后新建的也在里面；不看 published
+  const nbShare = (await q(`/notebooks/${nb.id}/shares`, { method: 'POST', body: JSON.stringify({}) }, c)).data;
+  const laterRoot = (await q('/notes', { method: 'POST', body: JSON.stringify({ notebookId: nb.id, title: '本根上后来新建的' }) }, c)).data;
+  const listed = (await q(`/notebooks/${nb.id}/shares`, {}, c)).data;
+  const nbPage = (await anon(`/public/shares/${nbShare.token}`)).json.data;
+  result.notebookShareType = nbShare.targetType === 'notebook' && nbPage.type === 'notebook';
+  result.notebookShareListsAll = [note.id, later.id, other.id, laterRoot.id].every(id => nbPage.notes.some(n => n.id === id));
+  result.notebookShareListApi = listed.shares.some(s => s.id === nbShare.id);
+
   // 附件分享：只能经 token 下载
   const form = new FormData();
   form.append('file', new Blob(['attachment body'], { type: 'text/plain' }), '附件.txt');
@@ -58,8 +67,9 @@ try {
 
   // 分享总览
   const overview = (await q(`/workspaces/${ws.id}/shares`, {}, c)).data;
-  result.overviewListsAll = overview.canManageAll && [section.id, folderShare.id, fileShare.id].every(id => overview.shares.some(s => s.id === id));
+  result.overviewListsAll = overview.canManageAll && [section.id, folderShare.id, fileShare.id, nbShare.id].every(id => overview.shares.some(s => s.id === id));
   result.overviewHasTitles = overview.shares.find(s => s.id === fileShare.id)?.targetTitle === '附件.txt';
+  result.overviewHasNotebook = overview.shares.find(s => s.id === nbShare.id)?.targetTitle === nb.title;
   await q(`/shares/${section.id}`, { method: 'PATCH', body: JSON.stringify({ password: 'secret-pass', expiresInDays: 7 }) }, c);
   result.overviewCanEdit = (await anon(`/public/shares/${section.token}`)).json.data.requiresPassword === true;
 

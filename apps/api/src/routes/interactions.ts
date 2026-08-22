@@ -18,11 +18,17 @@ import { rebuildLinks } from "../lib/links.ts";
 import { assertUserStorage, textBytes } from "../lib/quota.ts";
 import { noteAccess } from "../lib/note-access.ts";
 import { assertCanModeratePost } from "../lib/post-access.ts";
+import { shareCoversNote } from "../lib/share-target.ts";
 
 export const interactionRoutes = new Hono();
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 async function publicChannel(c:Parameters<typeof getCookie>[0],noteId:string,shareToken?: string, siteNotebookId?: string) {
-  if (shareToken) { const [s] = await db.select().from(shareLinks).where(eq(shareLinks.token, shareToken)); if (!s || s.status !== "active" || (s.targetType!=="note"&&s.targetType!=="heading")||s.targetId!==noteId||(s.expiresAt && s.expiresAt.getTime() <= Date.now())) throw fail("NOT_FOUND", "分享不存在");if(s.passwordHash&&!shareCookieValid(getCookie(c,shareCookieName(s.token)),s.id,s.passwordHash))throw fail("FORBIDDEN","请先解锁分享"); return { shareId: s.id, siteNotebookId: null, comments: s.commentsEnabled, corrections: s.correctionsEnabled }; }
+  if (shareToken) {
+    const [s] = await db.select().from(shareLinks).where(eq(shareLinks.token, shareToken));
+    if (!s || s.status !== "active" || (s.expiresAt && s.expiresAt.getTime() <= Date.now()) || !(await shareCoversNote(s, noteId))) throw fail("NOT_FOUND", "分享不存在");
+    if (s.passwordHash && !shareCookieValid(getCookie(c, shareCookieName(s.token)), s.id, s.passwordHash)) throw fail("FORBIDDEN", "请先解锁分享");
+    return { shareId: s.id, siteNotebookId: null, comments: s.commentsEnabled, corrections: s.correctionsEnabled };
+  }
   if (siteNotebookId) {const [nb]=await db.select().from(notebooks).where(eq(notebooks.id,siteNotebookId));const[note]=await db.select().from(notes).where(eq(notes.id,noteId));if(!nb?.sitePublished||nb.trashedAt||!note||note.notebookId!==nb.id||!note.published||note.moderationStatus!=="none"||note.trashedAt)throw fail("NOT_FOUND","文档站内容不存在");return { shareId: null, siteNotebookId, comments: true, corrections: true };}
   throw fail("VALIDATION", "缺少公开来源");
 }

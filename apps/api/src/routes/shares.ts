@@ -13,6 +13,7 @@ import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
 import { noteAccess } from "../lib/note-access.ts";
 import { notebookAccess } from "../lib/notebook-access.ts";
+import { folderSubtree, notebookSubtree } from "../lib/share-target.ts";
 import { limit } from "../lib/rate-limit.ts";
 import { clientIp } from "../lib/client-ip.ts";
 import { shareCookieName, shareCookieValid, shareCookieValue } from "../lib/share-cookie.ts";
@@ -44,6 +45,11 @@ async function manageableAttachment(c: Parameters<typeof currentUser>[0], attach
   if (!file || file.trashedAt) throw fail("NOT_FOUND", "附件不存在");
   await manageableNote(c, file.noteId);
   return { user, file };
+}
+async function manageableNotebook(c: Parameters<typeof currentUser>[0], notebookId: string) {
+  const user = await userRequired(c);
+  const { notebook } = await notebookAccess(notebookId, user.id, "edit");
+  return { user, notebook };
 }
 function publicShare(s: typeof shareLinks.$inferSelect) {
   return {
@@ -80,15 +86,15 @@ function sliceHeading(body: string, anchor: string) {
   }
   return lines.slice(start, end).join("\n").trim();
 }
-/** 目录分享是实时子树：之后新建的笔记也会出现在链接里。 */
-async function subtree(folderId: string) {
-  const [root] = await db.select().from(folders).where(eq(folders.id, folderId));
-  if (!root || root.trashedAt) return null;
-  const all = await db.select().from(folders).where(and(eq(folders.notebookId, root.notebookId), isNull(folders.trashedAt)));
-  const ids = new Set([root.id]);
-  for (let grew = true; grew;) { grew = false; for (const f of all) if (f.parentId && ids.has(f.parentId) && !ids.has(f.id)) { ids.add(f.id); grew = true; } }
-  const rows = await db.select().from(notes).where(and(eq(notes.notebookId, root.notebookId), isNull(notes.trashedAt)));
-  return { root, folders: all.filter(f => ids.has(f.id)), notes: rows.filter(n => n.folderId && ids.has(n.folderId)) };
+function treePayload(title: string, folders: Array<{ id: string; title: string; parentId: string | null }>, noteRows: Array<{ id: string; title: string; folderId: string | null; bodyMd: string; updatedAt: Date }>, wanted: string | undefined) {
+  const current = wanted ? noteRows.find(n => n.id === wanted) : noteRows[0];
+  if (wanted && !current) return null;
+  return {
+    title,
+    folders: folders.map(f => ({ id: f.id, title: f.title, parentId: f.parentId })),
+    notes: noteRows.map(n => ({ id: n.id, title: n.title, folderId: n.folderId })),
+    noteId: current?.id ?? null, noteTitle: current?.title ?? null, bodyMd: current?.bodyMd ?? "", updatedAt: current?.updatedAt ?? null,
+  };
 }
 
 const shareInput = z.object({
@@ -135,6 +141,19 @@ shareRoutes.post("/notes/:id/shares", async (c) => {
   return ok(c, publicShare(created), 201);
 });
 
+shareRoutes.get("/notebooks/:id/shares", async (c) => {
+  const { notebook } = await manageableNotebook(c, c.req.param("id"));
+  const rows = await db.select().from(shareLinks).where(eq(shareLinks.targetId, notebook.id)).orderBy(desc(shareLinks.createdAt));
+  return ok(c, { shares: rows.filter(s => s.targetType === "notebook").map(publicShare) });
+});
+
+shareRoutes.post("/notebooks/:id/shares", async (c) => {
+  const { user, notebook } = await manageableNotebook(c, c.req.param("id"));
+  const body = shareInput.parse(await c.req.json());
+  const created = await issue(body, { workspaceId: notebook.workspaceId, targetType: "notebook", targetId: notebook.id, createdBy: user.id });
+  return ok(c, publicShare(created), 201);
+});
+
 shareRoutes.post("/folders/:id/shares", async (c) => {
   const { user, folder } = await manageableFolder(c, c.req.param("id"));
   const body = shareInput.parse(await c.req.json());
@@ -161,13 +180,15 @@ shareRoutes.get("/workspaces/:id/shares", async (c) => {
   // folders、attachments 三张表全拉出来，只为了 find 一个 title。
   const wanted = (kind: string) => mine.filter(s => (kind === "note" ? s.targetType === "note" || s.targetType === "heading" : s.targetType === kind)).map(s => s.targetId);
   const pick = async <T>(ids: string[], run: (ids: string[]) => Promise<T[]>) => (ids.length ? run(ids) : []);
-  const [ns, fs2, as] = await Promise.all([
+  const [ns, fs2, as, nbs] = await Promise.all([
     pick(wanted("note"), ids => db.select({ id: notes.id, title: notes.title }).from(notes).where(inArray(notes.id, ids))),
     pick(wanted("folder"), ids => db.select({ id: folders.id, title: folders.title }).from(folders).where(inArray(folders.id, ids))),
     pick(wanted("attachment"), ids => db.select({ id: attachments.id, filename: attachments.filename }).from(attachments).where(inArray(attachments.id, ids))),
+    pick(wanted("notebook"), ids => db.select({ id: notebooks.id, title: notebooks.title }).from(notebooks).where(inArray(notebooks.id, ids))),
   ]);
   const label = (s: typeof shareLinks.$inferSelect) => s.targetType === "folder" ? fs2.find(f => f.id === s.targetId)?.title
     : s.targetType === "attachment" ? as.find(a => a.id === s.targetId)?.filename
+    : s.targetType === "notebook" ? nbs.find(n => n.id === s.targetId)?.title
     : ns.find(n => n.id === s.targetId)?.title;
   return ok(c, { canManageAll: role === "owner" || role === "admin", shares: mine.map(s => ({ ...publicShare(s), targetTitle: label(s) ?? "已删除的内容", createdBy: s.createdBy, mine: s.createdBy === user.id })) });
 });
@@ -223,16 +244,12 @@ shareRoutes.get("/public/shares/:token", async (c) => {
     return ok(c, { ...common, title: file.filename, attachment: { filename: file.filename, mime: file.mime, bytes: file.bytes, url: `/api/v1/public/shares/${share.token}/file` } });
   }
 
-  if (share.targetType === "folder") {
-    const tree = await subtree(share.targetId);
+  if (share.targetType === "folder" || share.targetType === "notebook") {
+    const tree = share.targetType === "folder" ? await folderSubtree(share.targetId) : await notebookSubtree(share.targetId);
     if (!tree) throw gone();
-    const wanted = c.req.query("noteId");
-    const current = wanted ? tree.notes.find(n => n.id === wanted) : tree.notes[0];
-    if (wanted && !current) throw gone();
-    return ok(c, { ...common, title: tree.root.title,
-      folders: tree.folders.map(f => ({ id: f.id, title: f.title, parentId: f.parentId })),
-      notes: tree.notes.map(n => ({ id: n.id, title: n.title, folderId: n.folderId })),
-      noteId: current?.id ?? null, noteTitle: current?.title ?? null, bodyMd: current?.bodyMd ?? "", updatedAt: current?.updatedAt ?? null });
+    const payload = treePayload(tree.root.title, tree.folders, tree.notes, c.req.query("noteId"));
+    if (!payload) throw gone();
+    return ok(c, { ...common, ...payload });
   }
 
   const [note] = await db.select().from(notes).where(eq(notes.id, share.targetId));

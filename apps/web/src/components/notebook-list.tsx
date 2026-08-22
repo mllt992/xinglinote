@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Download, FolderInput, GripVertical, Lock, Notebook, Pencil, Trash2, Upload } from "lucide-react";
+import { Download, FolderInput, GripVertical, Lock, Notebook, Pencil, Share2, Trash2, Upload } from "lucide-react";
 import { moveNoteId, sortNotes, type NoteSortMode } from "@kb/shared";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
@@ -38,7 +38,9 @@ export function NotebookList({
   onMove,
   onImport,
   onExport,
+  onShare,
   onDelete,
+  canShare,
 }: {
   notebooks: NotebookItem[];
   activeId?: string;
@@ -55,7 +57,10 @@ export function NotebookList({
   onMove: (nb: NotebookItem) => void;
   onImport: (nb: NotebookItem) => void;
   onExport: (nb: NotebookItem) => void;
+  onShare: (nb: NotebookItem) => void;
   onDelete: (nb: NotebookItem) => void;
+  /** 对本有编辑权才能建分享。Viewer / 冻结工作区关掉。 */
+  canShare: boolean;
 }) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
@@ -126,6 +131,7 @@ export function NotebookList({
             <ContextMenuLabel>{n.title}</ContextMenuLabel>
             <ContextMenuItem disabled={!canManage(n)} onSelect={() => onRename(n)}><Pencil />重命名</ContextMenuItem>
             <ContextMenuItem disabled={!canManage(n)} onSelect={() => onAccess(n)}><Lock />访问权限</ContextMenuItem>
+            <ContextMenuItem disabled={!canShare} onSelect={() => onShare(n)}><Share2 />分享这个笔记本</ContextMenuItem>
             {canMove && <ContextMenuItem onSelect={() => onMove(n)}><FolderInput />移动到其他工作区…</ContextMenuItem>}
             <ContextMenuSeparator />
             <ContextMenuItem onSelect={() => onImport(n)}><Upload />导入 Markdown 或 zip</ContextMenuItem>
