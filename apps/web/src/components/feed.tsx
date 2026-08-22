@@ -1,9 +1,9 @@
-import{useEffect,useMemo,useRef,useState}from'react';import{FileText,Flag,Globe2,Heart,ImagePlus,MessageSquare,MoreHorizontal,NotebookPen,Paperclip,Pencil,RefreshCw,Send,Star,Trash2,X}from'lucide-react';import{api}from'../api';import{cn}from'../lib/utils';import{openLightbox}from'../lib/lightbox';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
+import{useEffect,useMemo,useRef,useState}from'react';import{useSearchParams}from'react-router-dom';import{parseMentions}from'@kb/shared';import{FileText,Flag,Globe2,Heart,ImagePlus,MessageSquare,MoreHorizontal,NotebookPen,Paperclip,Pencil,RefreshCw,Send,Star,Trash2,X}from'lucide-react';import{api}from'../api';import{cn}from'../lib/utils';import{openLightbox}from'../lib/lightbox';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
 import{FeedComments}from'./feed-comments';
 import{MentionField}from'./mention-field';
 import{type MentionAgent}from'./mention-text';
 import{MarkdownView}from'../MarkdownView';
-import{FEED_REFRESH_EVENT,formatFeedUpdateLabel,updatesPath,writeFeedSeen,type FeedUpdateCounts}from'./feed-updates';
+import{FEED_REFRESH_EVENT,formatFeedUpdateLabel,readOpenComments,updatesPath,writeFeedSeen,writeOpenComments,type FeedUpdateCounts}from'./feed-updates';
 
 export type PostAsset={id:string;filename:string;mime:string;bytes:number;kind:"image"|"video"|"file";url:string};
 export type FeedPost={id:string;body:string;visibility:string;workspaceId:string|null;createdAt:string;editedAt:string|null;mine:boolean;author:{handle:string;displayName:string}|null;note:{id:string;title:string}|null;likes:number;liked:boolean;comments?:number;favorited?:boolean;status?:string;moderationQueued?:boolean;moderationReason?:string|null;appealable?:boolean;appealing?:boolean;assets?:PostAsset[]};
@@ -48,10 +48,12 @@ type Nb={id:string;title:string};
 /** 广场与圈子共用一套时间线。scope=workspace 时发的是圈子动态。 */
 export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModerate,onOpenNote,onLoaded}:{scope:"public"|"workspace";workspaceId?:string;workspaces:Array<{id:string;name:string}>;canPost:boolean;signedIn?:boolean;canModerate?:boolean;onOpenNote?:(workspaceId:string,noteId:string)=>void;onLoaded?:(posts:FeedPost[])=>void}){
   const askConfirm=useConfirm();const toast=useToast();
+  const[searchParams]=useSearchParams();
   const[posts,setPosts]=useState<FeedPost[]>([]);const[body,setBody]=useState("");const[err,setErr]=useState("");const[dlgErr,setDlgErr]=useState("");const[busy,setBusy]=useState(false);
   const[editing,setEditing]=useState<FeedPost|null>(null);const[draft,setDraft]=useState("");
   const[promote,setPromote]=useState<FeedPost|null>(null);const[target,setTarget]=useState({workspaceId:"",notebookId:"",title:""});const[books,setBooks]=useState<Nb[]>([]);
-  const[openComments,setOpenComments]=useState<string|null>(null);const[commentTick,setCommentTick]=useState<Record<string,number>>({});
+  const[openComments,setOpenCommentsState]=useState<string|null>(()=>searchParams.get("post")||readOpenComments(scope,workspaceId));const[commentTick,setCommentTick]=useState<Record<string,number>>({});
+  const setOpenComments=(id:string|null)=>{setOpenCommentsState(id);writeOpenComments(scope,workspaceId,id);};
   const[reporting,setReporting]=useState<FeedPost|null>(null);const[reportReason,setReportReason]=useState("spam");const[reportNote,setReportNote]=useState("");
   const[appealing,setAppealing]=useState<FeedPost|null>(null);const[appealNote,setAppealNote]=useState("");
   const[updates,setUpdates]=useState<FeedUpdateCounts>({newPosts:0,repliedPosts:0});
@@ -86,6 +88,15 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
     finally{setRefreshing(false);}
   }
   useEffect(()=>{void load()},[path]);
+  const deepPost=searchParams.get("post");
+  useEffect(()=>{
+    setOpenCommentsState(deepPost||readOpenComments(scope,workspaceId));
+  },[path,scope,workspaceId,deepPost]);
+  useEffect(()=>{
+    if(!deepPost)return;
+    const el=document.getElementById(`feed-post-${deepPost}`);
+    if(el)el.scrollIntoView({block:"nearest",behavior:"smooth"});
+  },[deepPost,posts.length]);
   useEffect(()=>{api<{agents:MentionAgent[]}>(`/api/v1/agents?scope=${scope==="public"?"square":"circle"}`).then(d=>setAgents(d.agents)).catch(()=>setAgents([]));},[scope]);
   useEffect(()=>{
     const tick=()=>{
@@ -130,11 +141,14 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
         const leaked=scan.links.filter(l=>!l.publiclyVisible).map(l=>l.title);
         if(leaked.length&&!await askConfirm({title:"这条动态里有对外看不到的链接",description:<>发到广场后，下面这些链接会退化成纯文本，读者点不开：<span className="mt-2 block font-medium text-foreground">{leaked.join("、")}</span></>,confirmText:"仍然发布"})){setBusy(false);return;}
       }
-      const created=await api<{status?:string;moderation?:Held}>("/api/v1/posts",{method:"POST",body:JSON.stringify({body,visibility:scope,attachmentIds:assets.map(a=>a.id),...(scope==="workspace"?{workspaceId}:{})})});
+      const created=await api<{id?:string;status?:string;moderation?:Held}>("/api/v1/posts",{method:"POST",body:JSON.stringify({body,visibility:scope,attachmentIds:assets.map(a=>a.id),...(scope==="workspace"?{workspaceId}:{})})});
+      const called=parseMentions(body).filter(h=>agents.some(a=>a.handle===h));
       if(created.moderation?.queued)toast.success("已发布",created.moderation.message??"审核通过后会公开显示。");
       else if(created.moderation?.held)toast.success("已提交，等待人工审核",created.moderation.message??undefined);
+      else if(called.length)toast.success("已发布",`已叫到 ${called.map(h=>`@${h}`).join("、")}，回复会出现在评论里。`);
       else toast.success("已发布");
       setBody("");setAssets([]);await load();
+      if(created.id&&called.length&&!created.moderation?.held)setOpenComments(created.id);
     }catch(e){setErr((e as Error).message)}finally{setBusy(false)}
   }
   async function like(p:FeedPost){if(!signedIn){toast.error("请先登录");return;}try{const d=await api<{liked:boolean}>(`/api/v1/posts/${p.id}/like`,{method:"POST"});patchOne(p.id,x=>({...x,liked:d.liked,likes:Math.max(0,x.likes+(d.liked?1:-1))}))}catch(e){toast.error("操作失败",(e as Error).message)}}
@@ -186,7 +200,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
       <span className="text-xs font-normal text-muted-foreground">{refreshing?"更新中…":"点击查看"}</span>
     </button>}
     {posts.length===0?<div className="rounded-2xl border border-dashed py-14 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground"><Globe2 className="size-5"/></span><p className="mt-3 text-sm font-medium">还没有动态</p><p className="mt-1 text-xs text-muted-foreground">{scope==="public"?"第一条公开动态还没出现。":"圈子里的碎片想法可以先发这里，之后再转正为笔记。"}</p></div>
-    :posts.map(p=><article key={p.id} className={cn("rounded-2xl border bg-background p-4", (fresh?.newIds.has(p.id)||fresh?.repliedIds.has(p.id))&&"border-primary/40")}>
+    :posts.map(p=><article key={p.id} id={`feed-post-${p.id}`} className={cn("rounded-2xl border bg-background p-4", (fresh?.newIds.has(p.id)||fresh?.repliedIds.has(p.id))&&"border-primary/40")}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <b className="text-sm text-foreground">{p.author?.displayName??"已注销用户"}</b>
         {p.author&&<a className="hover:underline" href={`/u/${p.author.handle}`}>@{p.author.handle}</a>}
@@ -195,7 +209,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
         {fresh?.repliedIds.has(p.id)&&<Badge>有新回复</Badge>}
         <div className="ml-auto flex items-center gap-1">
           <Button variant="ghost" size="sm" onClick={()=>void like(p)}><Heart className={p.liked?"fill-current":""}/>{p.likes||""}</Button>
-          <Button variant="ghost" size="sm" onClick={()=>setOpenComments(id=>id===p.id?null:p.id)}><MessageSquare/>{p.comments||""}</Button>
+          <Button variant="ghost" size="sm" aria-expanded={openComments===p.id} aria-controls={`feed-comments-${p.id}`} onClick={()=>setOpenComments(openComments===p.id?null:p.id)}><MessageSquare/>{openComments===p.id?"收起评论":p.comments?`${p.comments} 条评论`:"评论"}</Button>
           <Button variant="ghost" size="sm" aria-label={p.favorited?"取消收藏":"收藏"} onClick={()=>void favorite(p)}><Star className={p.favorited?"fill-current":""}/></Button>
           {(p.mine||scope==="workspace"||signedIn)&&<DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label="更多操作"><MoreHorizontal/></Button></DropdownMenuTrigger><DropdownMenuContent align="end">
             {p.mine&&<DropdownMenuItem onSelect={()=>{setDlgErr("");setEditing(p);setDraft(p.body)}}><Pencil/>编辑</DropdownMenuItem>}
@@ -210,6 +224,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
       <PostAssetGrid assets={p.assets??[]}/>
       <HeldNote post={p} onAppeal={x=>{setDlgErr("");setAppealNote("");setAppealing(x)}}/>
       {p.note&&<button className="mt-3 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs hover:bg-muted" onClick={()=>p.workspaceId&&onOpenNote?.(p.workspaceId,p.note!.id)}><NotebookPen className="size-3.5"/>{p.note.title}</button>}
+      {openComments!==p.id&&(p.comments??0)>0&&<button type="button" className="mt-3 text-left text-xs text-muted-foreground hover:text-foreground" onClick={()=>setOpenComments(p.id)}>查看 {p.comments} 条评论</button>}
       {openComments===p.id&&<FeedComments key={`${p.id}:${commentTick[p.id]??0}`} postId={p.id} signedIn={!!signedIn} agents={agents} onCount={n=>patchOne(p.id,x=>({...x,comments:n}))}/>}
     </article>)}
 

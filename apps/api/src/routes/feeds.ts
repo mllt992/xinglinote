@@ -4,7 +4,8 @@ import { z } from "zod";
 import { fail, normalizeTitle } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { agents, auditLogs, comments, contentReports, instanceSettings, moderationReviews, notebooks, notes, noteVersions, notifications, postFavorites, postReactions, posts, users, workspaceMembers, workspaces } from "../db/schema.ts";
-import { enqueueAgentMentions } from "../lib/agents.ts";
+import { enqueueAgentMentions, listPendingAgentReplies } from "../lib/agents.ts";
+import { commentListedTo, feedPostHref } from "../lib/comments.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
@@ -147,13 +148,15 @@ feedRoutes.get("/posts/:id/comments",async c=>{
   let canModerate=false;if(viewer)try{await assertCanModeratePost(post!,viewer);canModerate=true;}catch{/* 普通人只看得到已公开的 */}
   const rows=await db.select().from(comments).where(and(
     eq(comments.targetType,"post"),eq(comments.targetId,post!.id),
-    canModerate?inArray(comments.status,["visible","pending"]):eq(comments.status,"visible"),
+    inArray(comments.status,["visible","pending","hidden"]),
   )).orderBy(desc(comments.createdAt));
-  const authorIds=[...new Set(rows.map(r=>r.authorUserId).filter((x):x is string=>!!x))];
-  const agentIds=[...new Set(rows.map(r=>r.authorAgentId).filter((x):x is string=>!!x))];
+  const listed=rows.filter(r=>commentListedTo(r,viewer?.id,canModerate));
+  const authorIds=[...new Set(listed.map(r=>r.authorUserId).filter((x):x is string=>!!x))];
+  const agentIds=[...new Set(listed.map(r=>r.authorAgentId).filter((x):x is string=>!!x))];
   const authors=authorIds.length?await db.select({id:users.id,displayName:users.displayName}).from(users).where(inArray(users.id,authorIds)):[];
   const agentRows=agentIds.length?await db.select({id:agents.id,handle:agents.handle,displayName:agents.displayName,avatarEmoji:agents.avatarEmoji}).from(agents).where(inArray(agents.id,agentIds)):[];
-  return ok(c,{canModerate,comments:rows.map(r=>commentDto(r,authors,agentRows,viewer?.id))});
+  const pendingReplies=await listPendingAgentReplies(post!.id);
+  return ok(c,{canModerate,comments:listed.map(r=>commentDto(r,authors,agentRows,viewer?.id)),pendingReplies});
 });
 
 feedRoutes.post("/posts/:id/comments",async c=>{
@@ -184,12 +187,12 @@ feedRoutes.post("/posts/:id/comments",async c=>{
   if(status==="pending"){
     await db.insert(notifications).values({
       userId:post.authorUserId,type:"interaction_pending",title:"有新的待审评论",body:body.body.slice(0,100),
-      href:post.workspaceId?`/w/${post.workspaceId}/feed`:"/",
+      href:feedPostHref(post),
     });
   }else if(viewer&&viewer.id!==post.authorUserId){
     await db.insert(notifications).values({
       userId:post.authorUserId,type:"post_comment",title:"你的动态有新评论",body:body.body.slice(0,100),
-      href:post.workspaceId?`/w/${post.workspaceId}/feed`:"/",
+      href:feedPostHref(post),
     });
   }
   if(status==="visible")await enqueueAgentMentions({text:body.body,post,sourceType:"comment",sourceId:row.id,parentCommentId:row.parentId??row.id});

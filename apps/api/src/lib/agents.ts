@@ -4,6 +4,7 @@ import { db } from "../db/client.ts";
 import { agentReplies, agents, backgroundJobs, comments, instanceSettings, notebooks, notes, notifications, posts, users } from "../db/schema.ts";
 import { chatAi } from "./ai.ts";
 import { sanitizeAgentReply } from "./agents-text.ts";
+import { feedPostHref } from "./comments.ts";
 import { likeContains } from "./like.ts";
 import { assertSafeOutboundUrl } from "./net-guard.ts";
 import { seal, suffix } from "./secrets.ts";
@@ -97,6 +98,58 @@ async function queuedReply(agentId: string, sourceType: string, sourceId: string
     sql`payload->>'agentId' = ${agentId} AND payload->>'sourceId' = ${sourceId} AND payload->>'sourceType' = ${sourceType}`,
   )).limit(1);
   return !!job;
+}
+
+export type PendingAgentReply = {
+  agent: ReturnType<typeof publicAgent>;
+  sourceType: "post" | "comment";
+  sourceId: string;
+  parentCommentId: string | null;
+  status: "pending" | "running" | "failed";
+};
+
+function asReplyJob(payload: unknown): AgentReplyJob | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as Record<string, unknown>;
+  if (typeof p.agentId !== "string" || typeof p.postId !== "string") return null;
+  if (p.sourceType !== "post" && p.sourceType !== "comment") return null;
+  if (typeof p.sourceId !== "string") return null;
+  return {
+    agentId: p.agentId,
+    sourceType: p.sourceType,
+    sourceId: p.sourceId,
+    postId: p.postId,
+    parentCommentId: typeof p.parentCommentId === "string" ? p.parentCommentId : null,
+  };
+}
+
+/** 本帖还在排队 / 刚失败的智能体回复，给评论区占位用。失败只留 15 分钟。 */
+export async function listPendingAgentReplies(postId: string): Promise<PendingAgentReply[]> {
+  const jobs = await db.select().from(backgroundJobs).where(and(
+    eq(backgroundJobs.type, "agent_reply"),
+    inArray(backgroundJobs.status, ["pending", "running", "failed"]),
+    sql`payload->>'postId' = ${postId}`,
+  ));
+  const cutoff = Date.now() - 15 * 60_000;
+  const live = jobs.filter(j => j.status !== "failed" || (j.finishedAt ?? j.createdAt).getTime() > cutoff);
+  const agentIds = [...new Set(live.map(j => asReplyJob(j.payload)?.agentId).filter((x): x is string => !!x))];
+  const rows = agentIds.length ? await db.select().from(agents).where(inArray(agents.id, agentIds)) : [];
+  const byId = new Map(rows.map(a => [a.id, a]));
+  const out: PendingAgentReply[] = [];
+  for (const job of live) {
+    const payload = asReplyJob(job.payload);
+    const agent = payload ? byId.get(payload.agentId) : undefined;
+    if (!payload || !agent) continue;
+    if (await existingReply(payload.agentId, payload.sourceType, payload.sourceId)) continue;
+    out.push({
+      agent: publicAgent(agent),
+      sourceType: payload.sourceType,
+      sourceId: payload.sourceId,
+      parentCommentId: payload.parentCommentId,
+      status: job.status === "failed" ? "failed" : job.status === "running" ? "running" : "pending",
+    });
+  }
+  return out;
 }
 
 export async function enqueueAgentMentions(input: {
@@ -214,7 +267,7 @@ export async function executeAgentReply(payload: AgentReplyJob) {
   const body = sanitizeAgentReply(out.content);
   if (!body) return;
 
-  const href = post.workspaceId ? `/w/${post.workspaceId}/feed` : "/";
+  const href = feedPostHref(post);
   await db.transaction(async tx => {
     const [dup] = await tx.select({ id: agentReplies.id }).from(agentReplies).where(and(
       eq(agentReplies.agentId, agent.id),

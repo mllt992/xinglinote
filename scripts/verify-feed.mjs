@@ -81,6 +81,21 @@ try {
     result.updatesCountRepliedPosts = true;
   }
 
+  // 隐藏不是消失：作者自己还看得到，别人看不到，取消隐藏后回来。
+  const hid = (await q(`/posts/${post.id}/comments`, { method: "POST", body: JSON.stringify({ body: "藏起来这条" }) }, c)).data;
+  await q(`/comments/${hid.id}/review`, { method: "PATCH", body: JSON.stringify({ status: "hidden" }) }, c);
+  const asAuthor = (await q(`/posts/${post.id}/comments`, {}, c)).data;
+  result.hiddenVisibleToAuthor = asAuthor.comments.some(x => x.id === hid.id && x.status === "hidden");
+  result.commentsReturnPendingReplies = Array.isArray(asAuthor.pendingReplies);
+  if (otherCookie) {
+    const asOther = (await q(`/posts/${post.id}/comments`, {}, otherCookie)).data;
+    result.hiddenHiddenFromOthers = !asOther.comments.some(x => x.id === hid.id);
+  } else {
+    result.hiddenHiddenFromOthers = true;
+  }
+  await q(`/comments/${hid.id}/review`, { method: "PATCH", body: JSON.stringify({ status: "visible" }) }, c);
+  result.unhideRestores = (await q(`/posts/${post.id}/comments`, {}, c)).data.comments.some(x => x.id === hid.id && x.status === "visible");
+
   // 编辑
   await q(`/posts/${post.id}`, { method: 'PATCH', body: JSON.stringify({ body: '圈子里的第一条想法（改过）' }) }, c);
   const edited = (await q(`/feed/workspaces/${ws.id}`, {}, c)).data.posts.find(p => p.id === post.id);

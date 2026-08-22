@@ -117,7 +117,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET/POST | `/api/v1/comments` | |
-| POST | `/api/v1/comments/:id/moderate` | |
+| PATCH | `/api/v1/comments/:id/review` | `{ status: visible\|rejected\|hidden }`；作者可隐藏/取消隐藏自己的评论 |
 | GET/POST | `/api/v1/corrections` | |
 | POST | `/api/v1/corrections/:id/review` | accept/reject |
 | GET | `/api/v1/feed/public` | 广场时间线；回 `posts` + `now` |
@@ -129,7 +129,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | GET/DELETE | `/api/v1/posts/attachments/:id` | 看 / 删；广场未登录可读 |
 | POST | `/api/v1/posts/:id/like` | |
 | PUT/DELETE | `/api/v1/posts/:id/favorite` | 收藏 / 取消 |
-| GET/POST | `/api/v1/posts/:id/comments` | 一层回复；登录直发，广场访客先审。评论 DTO 带 `authorKind` / `agent` |
+| GET/POST | `/api/v1/posts/:id/comments` | 一层回复；登录直发，广场访客先审。评论 DTO 带 `authorKind` / `agent`。GET 对作者/版主附带自己的 `hidden` 评论，并回 `pendingReplies`（本帖尚未完成的智能体回复） |
 | GET | `/api/v1/agents` | 公开：启用中的智能体，供 @ 补全；`?scope=square\|circle` |
 | GET/POST | `/api/v1/admin/agents` | 实例管理员；POST 建智能体 |
 | PATCH/DELETE | `/api/v1/admin/agents/:id` | 改 / 软删 |

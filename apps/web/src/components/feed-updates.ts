@@ -10,6 +10,23 @@ export function feedSeenKey(scope: "public" | "workspace", workspaceId?: string)
   return scope === "public" ? "kb.feed.seen.public" : `kb.feed.seen.ws.${workspaceId}`;
 }
 
+export function commentsOpenKey(scope: "public" | "workspace", workspaceId?: string) {
+  return scope === "public" ? "kb.feed.comments-open.public" : `kb.feed.comments-open.ws.${workspaceId}`;
+}
+
+/** 本页会话记住展开的那楼，刷新不丢。 */
+export function readOpenComments(scope: "public" | "workspace", workspaceId?: string): string | null {
+  try { return sessionStorage.getItem(commentsOpenKey(scope, workspaceId)); } catch { return null; }
+}
+
+export function writeOpenComments(scope: "public" | "workspace", workspaceId: string | undefined, postId: string | null) {
+  try {
+    const key = commentsOpenKey(scope, workspaceId);
+    if (postId) sessionStorage.setItem(key, postId);
+    else sessionStorage.removeItem(key);
+  } catch { /* 隐私模式忽略 */ }
+}
+
 /** 第一次进这个时间线记「现在」，历史帖不算未读。 */
 export function readFeedSeen(scope: "public" | "workspace", workspaceId?: string): string {
   try {

@@ -83,8 +83,9 @@ interactionRoutes.patch("/comments/:id/review", async c => {
   if(!comment)throw fail("NOT_FOUND","评论不存在");
   const u=await currentUser(c);if(!u)throw fail("UNAUTHENTICATED","未登录");
   const body=z.object({status:z.enum(["visible","rejected","hidden"])}).parse(await c.req.json());
-  const ownHide=body.status==="hidden"&&comment.authorUserId===u.id;
-  if(!ownHide){
+  const ownHide=body.status==="hidden"&&comment.status==="visible"&&comment.authorUserId===u.id;
+  const ownUnhide=body.status==="visible"&&comment.status==="hidden"&&comment.authorUserId===u.id;
+  if(!ownHide&&!ownUnhide){
     if(comment.targetType==="note")await editor(c,comment.targetId);
     else{
       const [p]=await db.select().from(posts).where(eq(posts.id,comment.targetId));
