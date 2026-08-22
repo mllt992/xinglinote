@@ -1,6 +1,7 @@
 export * from "./errors.js";
 export * from "./theme.js";
 export * from "./note-sort.js";
+export * from "./note-tree.js";
 export * from "./diff.js";
 export * from "./mentions.js";
 export * from "./hashtags.js";

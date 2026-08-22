@@ -77,7 +77,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | POST | `/api/v1/notes` | notebookId, folderId, title? |
 | GET/PATCH | `/api/v1/notes/:id` | PATCH: bodyMd, title, published, aiIndex, expectedVersion, force? |
 | DELETE | `/api/v1/notes/:id` | trash |
-| POST | `/api/v1/notes/:id/move` | |
+| POST | `/api/v1/notes/:id/move` | `notebookId?`, `folderId?`；同工作区内改目录或换本。目标目录已有同名笔记则拒绝 |
 | GET | `/api/v1/notes/:id/versions` | |
 | POST | `/api/v1/notes/:id/versions/:v/restore` | |
 | POST | `/api/v1/notes/:id/presence` | heartbeat |

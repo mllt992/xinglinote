@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { and, asc, count, desc, eq, ilike, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 import { canEditNote, canReadNote, recencyBoost, scoreNote, tokenize, type WsRole } from "@kb/core";
-import { fail, nextSortKey } from "@kb/shared";
+import { fail, FOLDER_DEPTH_LIMIT, folderMoveExceedsDepth, nextSortKey } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { attachments, auditLogs, folders, notebookMembers, notebooks, notes, noteVersions, users, workspaceMembers, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
@@ -16,6 +16,7 @@ import { notebookAccess } from "../lib/notebook-access.ts";
 import { attachNoteModeration, instanceConfig, lastReviewedAt, moderationOn, queueReview, withdrawOpenReviews } from "../lib/moderation.ts";
 import { notebookVisibleTo } from "../lib/notebook-access.ts";
 import { moveNotebook } from "../lib/notebook-move.ts";
+import { relocateNote } from "../lib/note-move.ts";
 import { purgeFolder,purgeNotebook,purgeNotes,restoreFolder,restoreFolderId,restoreNotebook,restoreTitle,trashFolder,trashNotebook } from "../lib/trash.ts";
 
 export const knowledge = new Hono();
@@ -58,6 +59,31 @@ async function assertNoFolderCycle(folderId: string, nextParentId: string | null
   for (let cur: string | null | undefined = nextParentId; cur; cur = parentOf.get(cur)) {
     if (seen.has(cur)) throw fail("VALIDATION", "这样会让目录成环");
     seen.add(cur);
+  }
+}
+
+async function liveFoldersInNotebook(notebookId: string) {
+  return db.select({ id: folders.id, title: folders.title, parentId: folders.parentId })
+    .from(folders)
+    .where(and(eq(folders.notebookId, notebookId), isNull(folders.trashedAt)));
+}
+
+/** 设计 03 §5.3：目录深度一期上限 8。 */
+async function assertFolderDepth(notebookId: string, nextParentId: string | null | undefined, movingId?: string) {
+  if (!nextParentId) return;
+  const all = (await liveFoldersInNotebook(notebookId)).map(f => ({ ...f, parentId: f.parentId ?? null }));
+  if (movingId) {
+    if (folderMoveExceedsDepth(all, movingId, nextParentId)) throw fail("VALIDATION", `目录最多嵌套 ${FOLDER_DEPTH_LIMIT} 层`);
+    return;
+  }
+  let depth = 0;
+  const parentOf = new Map(all.map(f => [f.id, f.parentId]));
+  const seen = new Set<string>();
+  for (let cur: string | null | undefined = nextParentId; cur; cur = parentOf.get(cur)) {
+    if (seen.has(cur)) throw fail("VALIDATION", "这样会让目录成环");
+    seen.add(cur);
+    depth++;
+    if (depth >= FOLDER_DEPTH_LIMIT) throw fail("VALIDATION", `目录最多嵌套 ${FOLDER_DEPTH_LIMIT} 层`);
   }
 }
 
@@ -391,11 +417,26 @@ knowledge.delete("/notebooks/:id", async (c) => {
   return ok(c, {});
 });
 
+knowledge.post("/notes/:id/move", async (c) => {
+  const user = await requireUser(c);
+  const body = z.object({
+    notebookId: z.string().uuid().optional(),
+    folderId: z.string().uuid().nullable().optional(),
+  }).parse(await c.req.json());
+  const { note } = await noteAccess(c.req.param("id"), user.id, "edit");
+  const targetId = body.notebookId ?? note.notebookId;
+  const { notebook: nb } = await notebookAccess(targetId, user.id, "edit");
+  const folderId = body.folderId === undefined ? (note.folderId ?? null) : body.folderId;
+  const moved = await relocateNote({ note, targetNotebook: nb, folderId, actorId: user.id });
+  return ok(c, moved);
+});
+
 knowledge.post("/folders", async (c) => {
   const user = await requireUser(c);
   const body = z.object({ notebookId: z.string().uuid(), parentId: z.string().uuid().nullable().optional(), title: z.string().min(1).max(100) }).parse(await c.req.json());
   const {notebook:nb,workspace:ws}=await notebookAccess(body.notebookId,user.id,"edit");
   await assertFolderInNotebook(body.parentId, nb.id);
+  await assertFolderDepth(nb.id, body.parentId ?? null);
   const [folder] = await db.insert(folders).values({ workspaceId: ws.id, notebookId: nb.id, parentId: body.parentId ?? null, title: body.title.trim() }).returning();
   return ok(c, folder, 201);
 });
@@ -409,6 +450,7 @@ knowledge.patch("/folders/:id", async (c) => {
   if (body.parentId !== undefined) {
     await assertFolderInNotebook(body.parentId, folder.notebookId);
     await assertNoFolderCycle(folder.id, body.parentId);
+    await assertFolderDepth(folder.notebookId, body.parentId, folder.id);
   }
   const [saved] = await db.update(folders).set({ title: body.title ?? folder.title, parentId: body.parentId === undefined ? folder.parentId : body.parentId }).where(eq(folders.id, folder.id)).returning();
   return ok(c, saved);

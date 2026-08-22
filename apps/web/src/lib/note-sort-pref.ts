@@ -45,3 +45,33 @@ export function saveWorkspaceNotebookSort(workspaceId: string, mode: NoteSortMod
     /* 同上 */
   }
 }
+
+const OPEN_KEY = "kb.notebook-tree-open";
+
+function readOpenCache(): Record<string, string[]> {
+  try {
+    const raw = localStorage.getItem(OPEN_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, string[]> = {};
+    for (const [id, value] of Object.entries(parsed)) {
+      if (id && Array.isArray(value)) out[id] = value.filter((item): item is string => typeof item === "string");
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** 这本笔记本里哪些目录是展开的。按本记，换本不该把折叠状态冲掉。 */
+export function loadOpenFolders(notebookId: string): string[] {
+  return readOpenCache()[notebookId] ?? [];
+}
+
+export function saveOpenFolders(notebookId: string, folderIds: readonly string[]): void {
+  try {
+    localStorage.setItem(OPEN_KEY, JSON.stringify({ ...readOpenCache(), [notebookId]: [...folderIds] }));
+  } catch {
+    /* 同上 */
+  }
+}
