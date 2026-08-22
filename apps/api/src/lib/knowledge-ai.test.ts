@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatAskUserMessage, keywordNeedles, packAskContext, rankKeywordNotes, snippetAround } from "./knowledge-ai.ts";
+import { askNeedsNotes, formatAskUserMessage, hitsSupportQuestion, keywordNeedles, packAskContext, rankKeywordNotes, snippetAround } from "./knowledge-ai.ts";
 import { tokenize } from "@kb/core";
 
 test("中文问句拆成 2-gram，而不是整句去 ILIKE", () => {
@@ -40,6 +40,25 @@ test("packAskContext 压预算：每篇最多两段、合计截断", () => {
   assert.equal(packed.filter(h => h.noteId === "a").length, 2);
   assert.ok(packed.every(h => h.excerpt.length <= 360));
   assert.ok(packed.reduce((n, h) => n + h.excerpt.length + h.title.length + 16, 0) <= 2200 + 360);
+});
+
+test("短换算不翻库，问笔记才翻", () => {
+  assert.equal(askNeedsNotes("1亿=? ? M"), false);
+  assert.equal(askNeedsNotes("1GB等于多少MB"), false);
+  assert.equal(askNeedsNotes("2+3=?"), false);
+  assert.equal(askNeedsNotes("安全口令是什么？"), true);
+  assert.equal(askNeedsNotes("这个项目的发布流程是什么"), true);
+});
+
+test("无关语义近邻不能当引用", () => {
+  const kept = hitsSupportQuestion("1亿=? M", [
+    { noteId: "a", title: "IP质量检测", excerpt: "查看各个网站识别到的IP状态", score: 1 },
+  ]);
+  assert.equal(kept.length, 0);
+  const hit = hitsSupportQuestion("安全口令是什么", [
+    { noteId: "b", title: "火星计划", excerpt: "蓝色灯塔项目的安全口令是青瓷河流。", score: 1 },
+  ]);
+  assert.equal(hit[0]?.noteId, "b");
 });
 
 test("问答 prompt 不带 note UUID", () => {

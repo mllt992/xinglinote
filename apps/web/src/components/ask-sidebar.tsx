@@ -17,6 +17,7 @@ type Turn = {
   question: string;
   answer: string;
   citations: Citation[];
+  grounded?: boolean;
   at: number;
   scope: "workspace" | "notebook";
 };
@@ -123,12 +124,13 @@ export function AskSidebar({
     setError("");
     setQ("");
     try {
-      const data = await api<{ answer: string; citations: Citation[] }>("/api/v1/ai/ask", {
+      const data = await api<{ answer: string; citations: Citation[]; grounded?: boolean }>("/api/v1/ai/ask", {
         method: "POST",
         body: JSON.stringify({
           workspaceId,
           question,
           notebookId: scope === "notebook" ? notebookId : undefined,
+          history: turns.slice(-3).map(t => ({ question: t.question, answer: t.answer.slice(0, 240) })),
         }),
       });
       const next: Turn[] = [...turns, {
@@ -136,6 +138,7 @@ export function AskSidebar({
         question,
         answer: data.answer,
         citations: data.citations ?? [],
+        grounded: data.grounded,
         at: Date.now(),
         scope,
       }];
@@ -209,7 +212,7 @@ export function AskSidebar({
         <Sparkles className="size-4 text-muted-foreground" />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold">问知识库</p>
-          <p className="truncate text-[11px] text-muted-foreground">依据已开启 AI 可读的笔记回答</p>
+          <p className="truncate text-[11px] text-muted-foreground">笔记优先，换算和常识可直接答</p>
         </div>
         {turns.length > 0 && (
           <Tooltip content="清空这轮会话">
@@ -253,7 +256,7 @@ export function AskSidebar({
             <div className="py-10 text-center">
               <span className="mx-auto mb-3 grid size-8 place-items-center text-muted-foreground/40"><Sparkles className="size-8" /></span>
               <p className="text-sm font-medium">用这个问题问你的库</p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">只根据有权限且已开启 AI 可读的笔记生成，引用可以一边看着原文一边对照。</p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">库内事实只根据已开启 AI 可读的笔记；换算、计算、常识不必翻库。</p>
             </div>
           )}
 
@@ -263,6 +266,9 @@ export function AskSidebar({
               <div className="rounded-xl bg-muted/50 px-3 py-2.5">
                 <MarkdownView source={turn.answer} className="feed-md" />
               </div>
+              {turn.grounded === false && turn.citations.length === 0 && (
+                <p className="text-[11px] text-muted-foreground">未引用笔记，这是模型自己的回答。</p>
+              )}
               {turn.citations.length > 0 && (
                 <div className="space-y-1.5">
                   {turn.citations.map((c, i) => (
@@ -293,7 +299,7 @@ export function AskSidebar({
           ))}
 
           {busy && (
-            <div className="rounded-xl bg-muted/50 px-3 py-2.5 text-sm text-muted-foreground">正在检索并生成回答…</div>
+            <div className="rounded-xl bg-muted/50 px-3 py-2.5 text-sm text-muted-foreground">正在生成回答…</div>
           )}
           <div ref={bottom} />
         </div>
