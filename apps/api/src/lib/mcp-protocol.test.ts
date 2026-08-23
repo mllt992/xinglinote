@@ -69,7 +69,7 @@ test("高影响写工具公开版本校验、确认和预览参数", () => {
 
 test("创建类工具公开 UUID 幂等键", () => {
   const tools = toolsFor({ rw: "manage", allowDelete: true, feedPublic: true, feedWorkspace: true });
-  for (const name of ["create_note", "create_task", "post_to_feed", "upload_image"]) {
+  for (const name of ["create_note", "create_task", "post_to_feed", "upload_image", "create_attachment_upload", "complete_attachment_upload"]) {
     const tool = tools.find(t => t.name === name);
     const prop = (tool?.inputSchema.properties as { client_request_id?: { format?: string } } | undefined)?.client_request_id;
     assert.equal(prop?.format, "uuid", `${name} 缺少 client_request_id`);

@@ -1,5 +1,6 @@
 // MCP 工具合同：动态减清单、注解、搜索、替换、最近、今天、幂等。
 import { KB_EMAIL, KB_PASSWORD } from './creds.mjs';
+import { createHash } from 'node:crypto';
 
 const base = (process.env.KB_BASE_URL ?? 'http://127.0.0.1:12098') + '/api/v1';
 async function api(path, opt = {}, cookie = '') {
@@ -39,7 +40,7 @@ try {
 
   const listed = (await rpc(manage.secret, 'tools/list')).result.tools;
   const names = listed.map(t => t.name);
-  result.hasCoreTools = ['list_folder', 'move_note', 'add_tags', 'replace_in_note', 'list_recent', 'today', 'list_attachments', 'upload_image'].every(n => names.includes(n));
+  result.hasCoreTools = ['list_folder', 'move_note', 'add_tags', 'replace_in_note', 'list_recent', 'today', 'list_attachments', 'upload_image', 'create_attachment_upload', 'complete_attachment_upload'].every(n => names.includes(n));
   result.annotationsPresent = listed.every(t => t.annotations && typeof t.annotations.readOnlyHint === 'boolean');
   result.trashHintedDestructive = listed.find(t => t.name === 'trash_note')?.annotations?.destructiveHint === true;
 
@@ -127,10 +128,24 @@ try {
   result.listSeesUpload = atts.attachments.some(a => a.id === uploaded.id);
   const still = await call(manage.secret, 'get_note', { id: created.id });
   result.uploadDoesNotRewriteBody = still.body_md === after.body_md;
+  const rawBytes = Buffer.from(png, 'base64');
+  const rawSha = createHash('sha256').update(rawBytes).digest('hex');
+  const uploadSession = await call(manage.secret, 'create_attachment_upload', { note_id: created.id, filename: 'dot-direct.png', mime: 'image/png', bytes: rawBytes.length, sha256: rawSha, client_request_id: crypto.randomUUID() });
+  const put = await fetch(uploadSession.upload_url, { method: uploadSession.method, headers: uploadSession.headers, body: rawBytes });
+  const completed = await call(manage.secret, 'complete_attachment_upload', { upload_id: uploadSession.upload_id, client_request_id: crypto.randomUUID() });
+  const completedAgain = await call(manage.secret, 'complete_attachment_upload', { upload_id: uploadSession.upload_id, client_request_id: crypto.randomUUID() });
+  result.binaryUploadCompletesOnce = put.ok && completed.id === completedAgain.id && completed.markdown.includes(completed.id);
+  const badBytes = Buffer.from('not a png');
+  const badSession = await call(manage.secret, 'create_attachment_upload', { note_id: created.id, filename: 'bad.png', mime: 'image/png', bytes: badBytes.length, sha256: createHash('sha256').update(badBytes).digest('hex') });
+  const badPut = await fetch(badSession.upload_url, { method: badSession.method, headers: badSession.headers, body: badBytes });
+  result.binaryUploadRejectsMimeSpoof = !badPut.ok;
   let oversizeBlocked = false;
-  try { await call(manage.secret, 'upload_image', { note_id: created.id, filename: 'huge.png', mime: 'image/png', data_base64: Buffer.alloc(6 * 1024 * 1024).toString('base64') }); }
-  catch (e) { oversizeBlocked = /超过|QUOTA/i.test(e.message) || e.data?.code === 'QUOTA' || e.data?.code === 'VALIDATION'; }
+  try { await call(manage.secret, 'upload_image', { note_id: created.id, filename: 'huge.png', mime: 'image/png', data_base64: Buffer.alloc(600 * 1024).toString('base64') }); }
+  catch (e) { oversizeBlocked = e.data?.code === 'PAYLOAD_TOO_LARGE'; }
   result.uploadRejectsOversize = oversizeBlocked;
+
+  const uploadLogs = (await api(`/workspaces/${me.personalWorkspaceId}/mcp-audit?tool=upload_image&limit=20`, {}, cookie)).data.logs;
+  result.auditOmitsBase64 = uploadLogs.some(l => /^\[已省略 Base64/.test(l.details?.arguments?.data_base64 || ''));
 
   const logs = (await api(`/workspaces/${me.personalWorkspaceId}/mcp-audit?tool=replace_in_note&limit=20`, {}, cookie)).data.logs;
   result.auditFilterable = logs.some(l => l.action === 'mcp.replace_in_note' && l.result === 'ok');

@@ -206,8 +206,11 @@ limit≤20，**默认 8**（不要一上来塞 20 条摘要）。出：`{ hits: 
 读档位。列出这篇的附件：id、filename、mime、bytes、markdown。不回文件字节。
 
 **`upload_image(note_id, filename, mime, data_base64)`**  
-须 write。只收 png / jpeg / webp / gif，过魔数。单张不超过实例设置 `mcp_image_max_bytes`（默认 5MB，管理员可改，硬顶 25MB）。计入钥匙日写入与用户存储。  
+须 write。仅保留为不超过 512KB 的小图兼容路径；超限返回 `PAYLOAD_TOO_LARGE` 并引导两阶段上传。Base64 正文不进入审计日志。
 **只存附件，不改正文。** 返回 `{ id, filename, mime, bytes, markdown }`，Agent 再用 `append_to_note` / `replace_in_note` 把 `markdown` 插到该放的位置。禁止去抓外链当图。
+
+**`create_attachment_upload(note_id, filename, mime, bytes, sha256, client_request_id?)`** / **`complete_attachment_upload(upload_id, client_request_id?)`**
+创建工具返回 15 分钟有效的专用 `upload_url`、`PUT` 方法与 headers；凭证只授权该 upload_id，客户端直接发送二进制。PUT 与完成阶段都校验大小、SHA-256 和魔数，完成时再次检查笔记编辑权限并计入写入/存储额度。重复 PUT 可覆盖重试，重复完成返回同一附件；未完成会话由 worker 定期删除。
 
 **`move_note(id, expected_version, notebook_id, folder_id?, dry_run?)`**
 须 manage。两端都要在范围内且 can_edit；版本不符返回 `CONFLICT_VERSION`。`dry_run=true` 只返回来源、目标与执行所需版本。

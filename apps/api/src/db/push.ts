@@ -299,6 +299,23 @@ const statements = [
     PRIMARY KEY(token_id, tool_name, idempotency_key)
   )`,
   `CREATE INDEX IF NOT EXISTS mcp_idempotency_expires_idx ON mcp_idempotency(expires_at)`,
+  `CREATE TABLE IF NOT EXISTS mcp_attachment_uploads (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    token_id uuid NOT NULL REFERENCES mcp_tokens(id) ON DELETE CASCADE,
+    note_id uuid NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    user_id uuid NOT NULL REFERENCES users(id),
+    filename text NOT NULL,
+    mime text NOT NULL,
+    expected_bytes bigint NOT NULL,
+    expected_sha256 text NOT NULL,
+    secret_hash text NOT NULL,
+    status text NOT NULL DEFAULT 'pending',
+    attachment_id uuid REFERENCES attachments(id),
+    expires_at timestamptz NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS mcp_attachment_uploads_expires_idx ON mcp_attachment_uploads(expires_at)`,
   `CREATE TABLE IF NOT EXISTS audit_logs (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid, workspace_id uuid, actor_type text NOT NULL, actor_id uuid, action text NOT NULL, target_type text, target_id uuid, result text NOT NULL DEFAULT 'ok', details jsonb, created_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS usage_accounts (owner_type text NOT NULL, owner_id uuid NOT NULL, bytes bigint NOT NULL DEFAULT 0, PRIMARY KEY(owner_type,owner_id))`,
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS default_user_storage_bytes bigint NOT NULL DEFAULT 1073741824`,

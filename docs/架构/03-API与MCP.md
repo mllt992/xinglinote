@@ -469,7 +469,7 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 → { id, filename, mime, bytes, markdown }
 ```
 
-只存附件，不改正文。超过实例 `mcp_image_max_bytes` → `QUOTA`。`data_base64` 可带 `data:image/…;base64,` 前缀。
+只存附件，不改正文。兼容路径硬限制 512KB，超出返回 `PAYLOAD_TOO_LARGE`。大文件使用 `create_attachment_upload` 创建 15 分钟会话，按返回 headers 向 `/api/v1/mcp/uploads/:id` 原始二进制 PUT，再调用 `complete_attachment_upload`。上传会话仅保存凭证哈希；PUT/完成均核验 bytes、SHA-256、MIME 魔数和归属权限，过期暂存由 worker 清理。
 
 ### move_note / add_tags / trash_note
 

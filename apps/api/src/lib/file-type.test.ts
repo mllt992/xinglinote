@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { assertAttachmentType } from "./file-type.ts";
 
-const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
-const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0]);
+const png = Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,13,0x49,0x48,0x44,0x52,0,0,0,1,0,0,0,1]);
+const jpeg = Buffer.from([0xff,0xd8,0xff,0xc0,0,17,8,0,1,0,1,3,1,0x11,0,2,0x11,0,3,0x11,0]);
 const pdf = Buffer.from("%PDF-1.7\n%aaa", "latin1");
 const zip = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0]);
 
@@ -44,4 +44,10 @@ test("mp4 / webm 按头识别", () => {
   assert.equal(assertAttachmentType("video/mp4", mp4), "video/mp4");
   assert.equal(assertAttachmentType("video/webm", webm), "video/webm");
   assert.throws(() => assertAttachmentType("video/mp4", png), /不符/);
+});
+
+test("图片尺寸异常或像素炸弹会被拒绝",()=>{
+  const huge=Buffer.from(png);huge.writeUInt32BE(50000,16);huge.writeUInt32BE(50000,20);
+  assert.throws(()=>assertAttachmentType("image/png",huge),/尺寸过大/);
+  assert.throws(()=>assertAttachmentType("image/png",png.subarray(0,12)),/尺寸信息/);
 });

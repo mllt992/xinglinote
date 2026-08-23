@@ -77,8 +77,8 @@ app.use(
   cors({
     origin: env.publicUrl,
     credentials: true,
-    allowHeaders: ["Content-Type", "X-Requested-With"],
-    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowHeaders: ["Authorization", "Content-Type", "Content-Length", "X-Content-SHA256", "X-Requested-With"],
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   }),
 );
 

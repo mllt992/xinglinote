@@ -42,6 +42,15 @@ function looksLikeMarkup(bytes: Uint8Array) {
   return head.startsWith("<!doctype html") || head.startsWith("<html") || head.startsWith("<svg") || head.startsWith("<?xml");
 }
 
+function imageDimensions(mime:string,bytes:Uint8Array):{width:number;height:number}|null{
+  const b=Buffer.from(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+  if(mime==="image/png"&&b.length>=24)return{width:b.readUInt32BE(16),height:b.readUInt32BE(20)};
+  if(mime==="image/gif"&&b.length>=10)return{width:b.readUInt16LE(6),height:b.readUInt16LE(8)};
+  if(mime==="image/jpeg")for(let i=2;i+8<b.length;){if(b[i]!==0xff){i++;continue;}const marker=b[i+1]!,sof=[0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf].includes(marker);i+=2;if(marker===0xd8||marker===0xd9)continue;if(i+2>b.length)break;const size=b.readUInt16BE(i);if(sof&&i+7<=b.length)return{height:b.readUInt16BE(i+3),width:b.readUInt16BE(i+5)};if(size<2)break;i+=size;}
+  if(mime==="image/webp"&&b.length>=30){const kind=b.toString("ascii",12,16);if(kind==="VP8X")return{width:1+b.readUIntLE(24,3),height:1+b.readUIntLE(27,3)};if(kind==="VP8 "&&b[23]===0x9d&&b[24]===0x01&&b[25]===0x2a)return{width:b.readUInt16LE(26)&0x3fff,height:b.readUInt16LE(28)&0x3fff};if(kind==="VP8L"&&b[20]===0x2f)return{width:1+b[21]!+((b[22]!&0x3f)<<8),height:1+(b[22]!>>6)+(b[23]!<<2)+((b[24]!&0x0f)<<10)};}
+  return null;
+}
+
 export function assertAttachmentType(declared: string, bytes: Uint8Array) {
   if (!ALLOWED_MIME.has(declared)) throw fail("VALIDATION", "不支持此文件类型");
   const actual = sniff(bytes);
@@ -52,5 +61,10 @@ export function assertAttachmentType(declared: string, bytes: Uint8Array) {
     return declared;
   }
   if (actual !== declared) throw fail("VALIDATION", `文件内容与声明的类型不符（实际看起来是 ${actual ?? "未知格式"}）`);
+  if(declared.startsWith("image/")){
+    const size=imageDimensions(declared,bytes);
+    if(!size||size.width<1||size.height<1)throw fail("VALIDATION","图片尺寸信息不合法");
+    if(size.width>32768||size.height>32768||size.width*size.height>100_000_000)throw fail("VALIDATION","图片像素尺寸过大");
+  }
   return declared;
 }

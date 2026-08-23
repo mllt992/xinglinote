@@ -17,6 +17,7 @@ import { extractPdfText } from "../../api/src/lib/pdf-text.ts";
 import { readStoredFile, releaseStoredFile } from "../../api/src/lib/blobs.ts";
 import { applyModeration } from "../../api/src/lib/moderation.ts";
 import { executeAgentReply } from "../../api/src/lib/agents.ts";
+import { cleanupExpiredMcpUploads } from "../../api/src/lib/mcp-upload.ts";
 import { AppError } from "@kb/shared";
 function shouldRetry(e:unknown){
   const msg=e instanceof Error?e.message:String(e);
@@ -45,6 +46,7 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
    await purgeNotes(oldNotes.map(n=>n.id));
    return;}
  if(job.type==="cleanup_tokens"){await db.delete(authTokens).where(lt(authTokens.expiresAt,new Date(Date.now()-86400000)));return;}
+ if(job.type==="cleanup_mcp_uploads"){await cleanupExpiredMcpUploads();await db.insert(backgroundJobs).values({type:"cleanup_mcp_uploads",payload:{},runAfter:new Date(Date.now()+15*60000)});return;}
  if(job.type==="expire_shares"){await db.update(shareLinks).set({status:"expired"}).where(and(eq(shareLinks.status,"active"),lt(shareLinks.expiresAt,new Date())));await db.delete(savedShares).where(and(eq(savedShares.status,"dismissed"),lt(savedShares.dismissedAt,new Date(Date.now()-180*86400000))));return;}
  if(job.type==="test_backup_target"){const targetId=String((job.payload as {targetId?:string}).targetId??''),[t]=await db.select().from(backupTargets).where(eq(backupTargets.id,targetId));if(!t)throw new Error('backup target missing');const credentials=JSON.parse(open(t.credentials)),path=`connection-test-${crypto.randomUUID()}.txt`;await upload(t,credentials,path,Buffer.from('knowledge backup target test'));await remove(t,credentials,path);return;}
   if(job.type==="backup_workspace"||job.type==="backup_instance"||job.type==="backup_run"){const{targetId,runId}=job.payload as {targetId:string;runId:string};const[t]=await db.select().from(backupTargets).where(eq(backupTargets.id,targetId));if(!t)throw new Error('backup target missing');await executeBackupRun(t,runId);return;}
@@ -161,7 +163,7 @@ async function scheduleBackups(){
     await db.insert(backgroundJobs).values({type,payload:{targetId:t.id,runId:r.id}});
   }
 }
-async function schedule(){await scheduleBackups();for(const type of["purge_trash","cleanup_tokens","expire_shares","prune_versions","calendar_rollover"]){const rows=await db.select().from(backgroundJobs).where(and(eq(backgroundJobs.type,type),or(eq(backgroundJobs.status,"pending"),eq(backgroundJobs.status,"running"))));if(!rows.length)await db.insert(backgroundJobs).values({type,payload:{},runAfter:new Date()});}
+async function schedule(){await scheduleBackups();for(const type of["purge_trash","cleanup_tokens","cleanup_mcp_uploads","expire_shares","prune_versions","calendar_rollover"]){const rows=await db.select().from(backgroundJobs).where(and(eq(backgroundJobs.type,type),or(eq(backgroundJobs.status,"pending"),eq(backgroundJobs.status,"running"))));if(!rows.length)await db.insert(backgroundJobs).values({type,payload:{},runAfter:new Date()});}
  // ICS 轮询自己续期，这里只负责点火：认「不带 subscriptionId」的那条才是轮询job，否则一条手动同步就能把轮询挡住
  const polls=await db.select().from(backgroundJobs).where(and(eq(backgroundJobs.type,"calendar_ics_sync"),or(eq(backgroundJobs.status,"pending"),eq(backgroundJobs.status,"running")),sql`payload->>'subscriptionId' IS NULL`));
  if(!polls.length)await db.insert(backgroundJobs).values({type:"calendar_ics_sync",payload:{},runAfter:new Date()});}

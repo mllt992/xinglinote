@@ -43,7 +43,7 @@ export const MCP_INSTRUCTIONS = [
   "读一篇用 get_note；默认最多回 6000 字，超长时 truncated=true，用 offset 翻页。改正文必须先拿到 version，再传 expected_version。",
   "只改一段请用 replace_in_note，日记补一行用 append_to_note，不要整篇重写，也不要为了改一段把长文读完。",
   "问「今天做什么」用 today；看最近改动用 list_recent。",
-  "配图用 upload_image（只收小图），把返回的 markdown 用 append_to_note 或 replace_in_note 插进正文，不要写外链，也不要整篇重写。",
+  "小于 512KB 的配图可用 upload_image；更大的文件先调 create_attachment_upload，按返回信息直传二进制，再调 complete_attachment_upload。把 markdown 用 append_to_note 或 replace_in_note 插进正文。",
   "被关掉 ai_index 或不在范围内的笔记对读工具等于不存在（NOT_FOUND），不要靠报错探测。",
 ].join("\n");
 
@@ -131,16 +131,37 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
   },
   upload_image: {
     tier: "write",
-    description: "把一张图存成这篇笔记的附件。只收 png/jpeg/webp/gif，体积受实例管理员配置的上限约束（默认 5MB）。只存文件，不改正文；把返回的 markdown 再用 append_to_note 或 replace_in_note 插进去。",
+    description: "兼容小图上传，仅限 512KB。更大的图片请使用 create_attachment_upload + 二进制 PUT + complete_attachment_upload。只存文件，不改正文。",
     properties: {
       note_id: UUID,
       filename: { type: "string", minLength: 1, maxLength: 180 },
       mime: { type: "string", enum: ["image/png", "image/jpeg", "image/webp", "image/gif"] },
-      data_base64: { type: "string", minLength: 1, description: "图片的 base64，可带 data:image/…;base64, 前缀" },
+      data_base64: { type: "string", minLength: 1, maxLength: 699200, description: "不超过 512KB 图片的 base64，可带 data:image/…;base64, 前缀" },
       client_request_id: CLIENT_REQUEST_ID,
     },
     required: ["note_id", "filename", "mime", "data_base64"],
     annotations: write("上传图片"),
+  },
+  create_attachment_upload: {
+    tier: "write",
+    description: "创建短期二进制上传会话。返回 upload_url、method 和所需 headers；不要把上传凭证写入日志。",
+    properties: {
+      note_id: UUID,
+      filename: { type: "string", minLength: 1, maxLength: 180 },
+      mime: { type: "string", enum: ["image/png", "image/jpeg", "image/webp", "image/gif"] },
+      bytes: { type: "integer", minimum: 1, maximum: 26214400 },
+      sha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+      client_request_id: CLIENT_REQUEST_ID,
+    },
+    required: ["note_id","filename","mime","bytes","sha256"],
+    annotations: write("创建附件上传"),
+  },
+  complete_attachment_upload: {
+    tier: "write",
+    description: "完成二进制上传，重新校验大小、SHA-256、文件类型和笔记权限后绑定附件。重复完成返回同一附件。",
+    properties: { upload_id: UUID, client_request_id: CLIENT_REQUEST_ID },
+    required: ["upload_id"],
+    annotations: write("完成附件上传"),
   },
   list_tasks: {
     tier: "read",
