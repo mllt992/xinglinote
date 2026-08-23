@@ -209,14 +209,17 @@ limit≤20，**默认 8**（不要一上来塞 20 条摘要）。出：`{ hits: 
 须 write。只收 png / jpeg / webp / gif，过魔数。单张不超过实例设置 `mcp_image_max_bytes`（默认 5MB，管理员可改，硬顶 25MB）。计入钥匙日写入与用户存储。  
 **只存附件，不改正文。** 返回 `{ id, filename, mime, bytes, markdown }`，Agent 再用 `append_to_note` / `replace_in_note` 把 `markdown` 插到该放的位置。禁止去抓外链当图。
 
-**`move_note(id, notebook_id, folder_id?)`**  
-须 manage。两端都要在范围内且 can_edit。
+**`move_note(id, expected_version, notebook_id, folder_id?, dry_run?)`**
+须 manage。两端都要在范围内且 can_edit；版本不符返回 `CONFLICT_VERSION`。`dry_run=true` 只返回来源、目标与执行所需版本。
 
 **`add_tags(id, tags[])`**  
 须 manage。
 
-**`trash_note(id)`**  
-仅 allow_delete。走 12。
+**`trash_note(id, expected_version, dry_run?)`**
+仅 allow_delete。走 12。版本不符不产生副作用；`dry_run=true` 只返回将进入回收站的笔记及当前位置。
+
+**`post_to_feed(body, scope?, confirm_public?, dry_run?)`**
+`scope=public` 的实际发布必须显式传 `confirm_public=true`，否则返回 `CONFIRMATION_REQUIRED`；`dry_run=true` 不发布并返回范围、正文摘要和所需确认参数。
 
 **`list_tasks(from?, to?, status?, assignee?, include_inbox?, limit?)`** / **`list_events(from?, to?, limit?)`**  
 读档位。窗口默认「今天起 14 天」，上限 200 条、最长 400 天。重复条目按窗口展开，每个实例带 `occurrence_start`。

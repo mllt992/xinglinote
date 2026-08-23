@@ -12,7 +12,7 @@ async function api(path, opt = {}, cookie = '') {
 const cookie = (await api('/auth/login', { method: 'POST', body: JSON.stringify({ email: KB_EMAIL, password: KB_PASSWORD }) })).cookie;
 const me = (await api('/me', {}, cookie)).data;
 const nb = (await api(`/workspaces/${me.personalWorkspaceId}/notebooks`, {}, cookie)).data.notebooks[0];
-const manage = (await api('/mcp/tokens', { method: 'POST', body: JSON.stringify({ name: '工具验收', workspaceId: me.personalWorkspaceId, rw: 'manage', allowDelete: true, allowPrivateNotebooks: true, dailyWriteLimitBytes: 1024 * 1024 }) }, cookie)).data;
+const manage = (await api('/mcp/tokens', { method: 'POST', body: JSON.stringify({ name: '工具验收', workspaceId: me.personalWorkspaceId, rw: 'manage', allowDelete: true, allowPrivateNotebooks: true, feedPublic: true, dailyWriteLimitBytes: 1024 * 1024 }) }, cookie)).data;
 const read = (await api('/mcp/tokens', { method: 'POST', body: JSON.stringify({ name: '只读验收', workspaceId: me.personalWorkspaceId, rw: 'read' }) }, cookie)).data;
 const write = (await api('/mcp/tokens', { method: 'POST', body: JSON.stringify({ name: '读写验收', workspaceId: me.personalWorkspaceId, rw: 'write' }) }, cookie)).data;
 
@@ -72,6 +72,21 @@ try {
   const replaced = await call(manage.secret, 'replace_in_note', { id: created.id, expected_version: fresh.version, old: '第一段', new: '首段' });
   const after = await call(manage.secret, 'get_note', { id: created.id });
   result.replaceWorks = replaced.replacements === 1 && after.body_md.includes('首段') && after.body_md.includes('第二段');
+
+  const movePreview = await call(manage.secret, 'move_note', { id: created.id, expected_version: after.version, notebook_id: nb.id, folder_id: null, dry_run: true });
+  const afterMovePreview = await call(manage.secret, 'get_note', { id: created.id });
+  result.moveDryRunHasNoEffect = movePreview.dry_run === true && movePreview.current_version === after.version && afterMovePreview.version === after.version;
+  const trashPreview = await call(manage.secret, 'trash_note', { id: created.id, expected_version: after.version, dry_run: true });
+  result.trashDryRunHasNoEffect = trashPreview.effect === 'move_to_trash' && (await call(manage.secret, 'get_note', { id: created.id })).version === after.version;
+  let versionConflict = false;
+  try { await call(manage.secret, 'trash_note', { id: created.id, expected_version: after.version - 1 }); }
+  catch (e) { versionConflict = e.data?.code === 'CONFLICT_VERSION'; }
+  result.trashRejectsStaleVersion = versionConflict;
+  const feedPreview = await call(manage.secret, 'post_to_feed', { body: '公开发布预览', scope: 'public', dry_run: true });
+  let confirmationRequired = false;
+  try { await call(manage.secret, 'post_to_feed', { body: '不应发布', scope: 'public' }); }
+  catch (e) { confirmationRequired = e.data?.code === 'CONFIRMATION_REQUIRED'; }
+  result.publicFeedHasPreviewAndConfirmation = feedPreview.required_confirmation?.confirm_public === true && confirmationRequired;
 
   const searched = await call(manage.secret, 'search_notes', { query: '首段', mode: 'keyword' });
   result.searchReturnsHits = Array.isArray(searched.hits) && searched.hits.some(h => h.id === created.id && h.snippet && h.path);

@@ -473,7 +473,7 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 
 ### move_note / add_tags / trash_note
 
-仅对应档位注册。`trash_note` 仅 `allow_delete`。
+仅对应档位注册。`trash_note` 仅 `allow_delete`。`move_note` 与 `trash_note` 必须带 `expected_version`，更新时也以版本作为 SQL 条件；二者均支持 `dry_run` 预览。公开 `post_to_feed` 必须带 `confirm_public=true`，缺少时返回 `CONFIRMATION_REQUIRED`。
 
 ---
 

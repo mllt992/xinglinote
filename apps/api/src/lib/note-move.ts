@@ -18,8 +18,10 @@ export async function relocateNote(input: {
   targetNotebook: { id: string; workspaceId: string };
   folderId: string | null;
   actorId: string;
+  expectedVersion?: number;
 }): Promise<{ id: string; notebookId: string; folderId: string | null; version: number }> {
-  const { note: n, targetNotebook: nb, folderId, actorId } = input;
+  const { note: n, targetNotebook: nb, folderId, actorId, expectedVersion = n.version } = input;
+  if (expectedVersion !== n.version) throw fail("CONFLICT_VERSION", "版本冲突", { version: String(n.version) });
   if (nb.workspaceId !== n.workspaceId) throw fail("VALIDATION", "不能跨工作区移动笔记");
   if (folderId) {
     const [folder] = await db.select({ id: folders.id })
@@ -50,7 +52,8 @@ export async function relocateNote(input: {
       version: n.version + 1,
       updatedBy: actorId,
       updatedAt: new Date(),
-    }).where(eq(notes.id, n.id)).returning();
+    }).where(and(eq(notes.id, n.id), eq(notes.version, expectedVersion))).returning();
+    if (!row) throw fail("CONFLICT_VERSION", "版本冲突", { version: String(n.version) });
     if (changedNotebook) {
       await tx.update(aiChunks).set({ notebookId: nb.id }).where(eq(aiChunks.noteId, n.id));
       await tx.update(calendarItems).set({ notebookId: nb.id }).where(eq(calendarItems.sourceNoteId, n.id));

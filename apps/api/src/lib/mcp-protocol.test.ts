@@ -52,6 +52,21 @@ test("每个列出的工具都带注解", () => {
   assert.equal(toolAllowed({ rw: "read", allowDelete: false, feedPublic: false, feedWorkspace: false }, "create_note"), false);
 });
 
+test("高影响写工具公开版本校验、确认和预览参数", () => {
+  const tools = toolsFor({ rw: "manage", allowDelete: true, feedPublic: true, feedWorkspace: true });
+  const move = tools.find(t => t.name === "move_note");
+  const trash = tools.find(t => t.name === "trash_note");
+  const feed = tools.find(t => t.name === "post_to_feed");
+  const complete = tools.find(t => t.name === "complete_task");
+  assert.ok(move?.inputSchema.required.includes("expected_version"));
+  assert.ok(trash?.inputSchema.required.includes("expected_version"));
+  assert.ok(move?.inputSchema.properties && "dry_run" in move.inputSchema.properties);
+  assert.ok(trash?.inputSchema.properties && "dry_run" in trash.inputSchema.properties);
+  assert.ok(feed?.inputSchema.properties && "confirm_public" in feed.inputSchema.properties);
+  assert.ok(feed?.inputSchema.properties && "dry_run" in feed.inputSchema.properties);
+  assert.ok(complete?.inputSchema.properties && "dry_run" in complete.inputSchema.properties);
+});
+
 test("ILIKE 通配符按字面量转义", () => {
   assert.equal(likeContains("100%_off\\x"), "%100\\%\\_off\\\\x%");
 });
