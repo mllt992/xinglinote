@@ -35,7 +35,11 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | POST | `/api/v1/auth/logout` | 登录 | |
 | POST | `/api/v1/auth/forgot` | 公开 | email |
 | POST | `/api/v1/auth/reset` | 公开 | token, password |
-| GET | `/api/v1/me` | 登录 | 资料、个人工作区 id、instanceRole、appearance、themeId、accent |
+| GET | `/api/v1/me` | 登录 | 资料、个人工作区 id、instanceRole、appearance、themeId、accent、storage |
+| GET | `/api/v1/me/storage` | 登录 | 用量拆分、是否可申请、当前 pending |
+| GET | `/api/v1/me/service-requests` | 登录 | 我的申请历史 |
+| POST | `/api/v1/me/service-requests` | 登录 | `{ kind, requestedBytes, reason? }` |
+| DELETE | `/api/v1/me/service-requests/:id` | 登录 | 取消自己的 pending |
 | GET | `/api/v1/themes` | 登录/公开 meta | 已安装主题列表 |
 | POST | `/api/v1/themes/import` | 视策略 | zip |
 | POST | `/api/v1/themes/:id/enable` | 登录 | 选用 |
@@ -47,7 +51,11 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | PATCH | `/api/v1/admin/settings` | 同上 | 注册策略、广场、限额、导航开关与文案 |
 | POST | `/api/v1/admin/smtp/test` | 同上 | |
 | CRUD | `/api/v1/admin/codes` | 同上 | 列表回完整码（`code_prefix`）；旧行只有前缀则 `code` 为空 |
-| GET/POST | `/api/v1/admin/users` | 同上 | 封禁、解封、升/降管理员、启动注销 |
+| GET | `/api/v1/admin/users` | 同上 | 列表带用量与 pending；`?hasPending=` |
+| GET | `/api/v1/admin/users/:id` | 同上 | 详情：用量拆分 + 申请历史 |
+| PATCH | `/api/v1/admin/users/:id` | 同上 | 封禁、解封、升/降管理员、分配 `storageQuotaBytes`（`null` 恢复默认） |
+| GET | `/api/v1/admin/service-requests` | 同上 | 服务申请队列 |
+| PATCH | `/api/v1/admin/service-requests/:id` | 同上 | `{ status: approved\|rejected, grantedQuotaBytes?, adminNote? }` |
 
 ### 2.2 工作区
 

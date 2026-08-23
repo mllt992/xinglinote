@@ -1,15 +1,17 @@
 import { Hono } from "hono";
-import { and, count, desc, eq, ilike, or } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, or } from "drizzle-orm";
 import { z } from "zod";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { instanceSettings, mcpTokens, moderationReviews, registrationCodes, sessions, users, workspaces } from "../db/schema.ts";
+import { instanceSettings, mcpTokens, moderationReviews, registrationCodes, serviceRequests, sessions, users, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { hashCode, registrationCode } from "../lib/tokens.ts";
 import { assertSafeOutboundUrl } from "../lib/net-guard.ts";
 import { seal } from "../lib/secrets.ts";
 import { normalizeCategories } from "../lib/moderation-verdict.ts";
+import { userStorageMany } from "../lib/quota.ts";
+import { assignStorage, pendingOf, storageDto } from "../lib/service-requests.ts";
 
 function pageQuery(c: { req: { query: (k: string) => string | undefined } }) {
   const page = Math.max(1, Number(c.req.query("page") ?? 1) || 1);
@@ -51,17 +53,18 @@ adminRoutes.get("/admin/overview", async c => {
   const [{ value: codeCount }] = await db.select({ value: count() }).from(registrationCodes);
   const [{ value: activeCodeCount }] = await db.select({ value: count() }).from(registrationCodes).where(eq(registrationCodes.status, "active"));
   const [{ value: pendingModerationCount }] = await db.select({ value: count() }).from(moderationReviews).where(eq(moderationReviews.status, "pending"));
+  const [{ value: pendingServiceRequestCount }] = await db.select({ value: count() }).from(serviceRequests).where(eq(serviceRequests.status, "pending"));
   const recent = await db.select().from(users).orderBy(desc(users.createdAt)).limit(6);
   const [settings] = await db.select().from(instanceSettings);
   return ok(c, {
-    userCount, workspaceCount, adminCount, codeCount, activeCodeCount, pendingModerationCount,
+    userCount, workspaceCount, adminCount, codeCount, activeCodeCount, pendingModerationCount, pendingServiceRequestCount,
     recentUsers: recent.map(publicUser),
     settings: maskSettings(settings),
   });
 });
 adminRoutes.patch("/admin/settings", async c => {
   await admin(c);
-  const body = z.object({ allowOpenRegistration: z.boolean().optional(), allowCodeRegistration: z.boolean().optional(), requireEmailVerification: z.boolean().optional(), allowUserCreateWorkspace: z.boolean().optional(), squareEnabled: z.boolean().optional(), aiEnabled: z.boolean().optional(), defaultUserStorageBytes: z.number().int().min(1048576).max(1099511627776).optional(),
+  const body = z.object({ allowOpenRegistration: z.boolean().optional(), allowCodeRegistration: z.boolean().optional(), requireEmailVerification: z.boolean().optional(), allowUserCreateWorkspace: z.boolean().optional(), squareEnabled: z.boolean().optional(), aiEnabled: z.boolean().optional(), defaultUserStorageBytes: z.number().int().min(1048576).max(1099511627776).optional(), allowStorageRequests: z.boolean().optional(),
     mcpImageMaxBytes: z.number().int().min(262144).max(26214400).optional(), smtpHost:z.string().nullable().optional(),smtpPort:z.number().int().min(1).max(65535).nullable().optional(),smtpUser:z.string().nullable().optional(),smtpPassword:z.string().nullable().optional(),smtpFrom:z.string().nullable().optional(),smtpSecure:z.boolean().optional(),
     moderationEnabled: z.boolean().optional(), moderationSquare: z.boolean().optional(), moderationCircle: z.boolean().optional(), moderationArticle: z.boolean().optional(),
     moderationBaseUrl: z.string().url().nullable().optional(), moderationModel: z.string().max(120).nullable().optional(), moderationApiKey: z.string().max(400).nullable().optional(),
@@ -98,14 +101,35 @@ adminRoutes.get("/admin/users", async c => {
   const like = likeContains(c.req.query("q"));
   const role = z.enum(["admin", "user"]).optional().catch(undefined).parse(c.req.query("role") || undefined);
   const status = z.enum(["active", "banned", "pending_verification", "pending_deletion"]).optional().catch(undefined).parse(c.req.query("status") || undefined);
+  const hasPending = c.req.query("hasPending") === "true";
+  const pendingUserIds = hasPending
+    ? [...new Set((await db.select({ userId: serviceRequests.userId }).from(serviceRequests).where(eq(serviceRequests.status, "pending"))).map(r => r.userId))]
+    : null;
+  if (hasPending && !pendingUserIds?.length) return ok(c, { users: [], total: 0, page, pageSize });
   const where = and(
     like ? or(ilike(users.displayName, like), ilike(users.handle, like), ilike(users.email, like)) : undefined,
     role ? eq(users.roleInstance, role) : undefined,
     status ? eq(users.status, status) : undefined,
+    pendingUserIds ? inArray(users.id, pendingUserIds) : undefined,
   );
   const rows = await db.select().from(users).where(where).orderBy(desc(users.createdAt)).limit(pageSize).offset(offset);
   const [{ value: total }] = await db.select({ value: count() }).from(users).where(where);
-  return ok(c, { users: rows.map(publicUser), total, page, pageSize });
+  const ids = rows.map(r => r.id);
+  const [usageMap, pending] = await Promise.all([userStorageMany(ids), pendingOf(ids)]);
+  const pendingBy = new Map(pending.map(p => [p.userId, p]));
+  return ok(c, {
+    users: rows.map(r => ({
+      ...publicUser(r),
+      storage: usageMap.has(r.id) ? storageDto(usageMap.get(r.id)!) : null,
+      pendingRequest: pendingBy.has(r.id) ? {
+        id: pendingBy.get(r.id)!.id,
+        kind: pendingBy.get(r.id)!.kind,
+        requestedBytes: pendingBy.get(r.id)!.requestedBytes,
+        createdAt: pendingBy.get(r.id)!.createdAt,
+      } : null,
+    })),
+    total, page, pageSize,
+  });
 });
 adminRoutes.patch("/admin/users/:id", async c => {
   const actor = await admin(c); const id = c.req.param("id");
@@ -117,9 +141,12 @@ adminRoutes.patch("/admin/users/:id", async c => {
     if (admins.length <= 1) throw fail("FORBIDDEN", "实例必须至少保留一个有效管理员");
   }
   if(body.status==="banned"){const owned=await db.select().from(workspaces).where(eq(workspaces.ownerId,id));const activeTeam=owned.filter(w=>w.kind!=="personal"&&!w.frozen);if(activeTeam.length)throw fail("VALIDATION","该用户仍是未冻结团队工作区的 Owner，请先转让所有权或冻结工作区");}
-  const [saved] = await db.update(users).set({ ...body, updatedAt: new Date() }).where(eq(users.id, id)).returning();
+  const { storageQuotaBytes, ...rest } = body;
+  const [saved] = await db.update(users).set({ ...rest, updatedAt: new Date() }).where(eq(users.id, id)).returning();
+  if (storageQuotaBytes !== undefined) await assignStorage(actor, id, storageQuotaBytes);
   if (body.status === "banned") await db.transaction(async tx=>{await tx.delete(sessions).where(eq(sessions.userId,id));await tx.update(mcpTokens).set({status:"revoked"}).where(eq(mcpTokens.userId,id));});
-  const { passwordHash: _, ...safe } = saved; return ok(c, safe);
+  const [fresh] = await db.select().from(users).where(eq(users.id, id));
+  const { passwordHash: _, ...safe } = fresh ?? saved; return ok(c, safe);
 });
 adminRoutes.post("/admin/registration-codes", async c => {
   const actor = await admin(c);

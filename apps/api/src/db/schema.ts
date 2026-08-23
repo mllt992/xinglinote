@@ -27,6 +27,8 @@ export const instanceSettings = pgTable("instance_settings", {
   allowUserInstallThemes: boolean("allow_user_install_themes").notNull().default(true),
   allowUserAccent: boolean("allow_user_accent").notNull().default(true),
   defaultUserStorageBytes: bigint("default_user_storage_bytes", { mode: "number" }).notNull().default(1073741824),
+  /** 关则用户不能在线申请扩容；已提交的 pending 管理员仍可批（设计 22）。 */
+  allowStorageRequests: boolean("allow_storage_requests").notNull().default(true),
   /** MCP upload_image 单张上限。默认 5MB，管理员可在实例后台改，硬顶 25MB。 */
   mcpImageMaxBytes: bigint("mcp_image_max_bytes", { mode: "number" }).notNull().default(5242880),
   smtpHost: text("smtp_host"), smtpPort: integer("smtp_port"), smtpUser: text("smtp_user"), smtpPassword: text("smtp_password"), smtpFrom: text("smtp_from"), smtpSecure: boolean("smtp_secure").notNull().default(false),
@@ -93,6 +95,27 @@ export const registrationCodeUsages = pgTable("registration_code_usages", {
   userId: uuid("user_id").notNull().references(() => users.id),
   usedAt: timestamp("used_at", { withTimezone: true }).defaultNow().notNull(),
 });
+
+/** 用户向实例管理员申请服务。一期只有 storage，表按可扩展写（设计 22）。 */
+export const serviceRequests = pgTable("service_requests", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  kind: text("kind").notNull().default("storage"),
+  requestedBytes: bigint("requested_bytes", { mode: "number" }),
+  currentQuotaBytes: bigint("current_quota_bytes", { mode: "number" }),
+  usedBytes: bigint("used_bytes", { mode: "number" }),
+  reason: text("reason"),
+  status: text("status").notNull().default("pending"),
+  adminNote: text("admin_note"),
+  decidedBy: uuid("decided_by").references(() => users.id),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+  grantedQuotaBytes: bigint("granted_quota_bytes", { mode: "number" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, t => [
+  index("service_requests_user_idx").on(t.userId, t.createdAt),
+  index("service_requests_status_idx").on(t.status, t.createdAt),
+]);
 
 export const authTokens = pgTable("auth_tokens", { id: uuid("id").defaultRandom().primaryKey(), userId: uuid("user_id").notNull().references(() => users.id), tokenHash: text("token_hash").notNull().unique(), purpose: text("purpose").notNull(), expiresAt: timestamp("expires_at", {withTimezone:true}).notNull(), usedAt: timestamp("used_at", {withTimezone:true}), createdAt: timestamp("created_at", {withTimezone:true}).defaultNow().notNull() });
 

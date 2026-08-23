@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type DragEvent } from "react";
 import { Download, FolderInput, GripVertical, Lock, Notebook, Pencil, Share2, Trash2, Upload } from "lucide-react";
 import { moveNoteId, sortNotes, type NoteSortMode } from "@kb/shared";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Tooltip } from "./ui/tooltip";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuLabel, ContextMenuSeparator, ContextMenuTrigger } from "./ui/context-menu";
+import { NOTE_MIME } from "./note-tree";
 
 export type NotebookItem = {
   id: string;
@@ -40,6 +41,7 @@ export function NotebookList({
   onExport,
   onShare,
   onDelete,
+  onDropNote,
   canShare,
 }: {
   notebooks: NotebookItem[];
@@ -59,11 +61,14 @@ export function NotebookList({
   onExport: (nb: NotebookItem) => void;
   onShare: (nb: NotebookItem) => void;
   onDelete: (nb: NotebookItem) => void;
+  /** 把侧栏里拖来的笔记落到这本的根上。当前本不接。 */
+  onDropNote?: (noteId: string, notebookId: string) => void;
   /** 对本有编辑权才能建分享。Viewer / 冻结工作区关掉。 */
   canShare: boolean;
 }) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+  const [noteOverId, setNoteOverId] = useState<string | null>(null);
   const visible = useMemo(() => sortNotes(notebooks, mode), [notebooks, mode]);
   const dragging = mode === "custom" && canReorder && visible.length > 1;
 
@@ -73,6 +78,10 @@ export function NotebookList({
     setDragId(null);
     setOverId(null);
     if (next) onReorder(next);
+  }
+
+  function isNoteDrag(e: DragEvent) {
+    return !!onDropNote && [...e.dataTransfer.types].includes(NOTE_MIME);
   }
 
   return (
@@ -89,17 +98,31 @@ export function NotebookList({
                 e.dataTransfer.setData("text/plain", n.id);
               }}
               onDragOver={e => {
+                if (isNoteDrag(e) && n.id !== activeId) {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  setNoteOverId(n.id);
+                  return;
+                }
                 if (!dragging || !dragId || dragId === n.id) return;
                 e.preventDefault();
                 e.dataTransfer.dropEffect = "move";
                 setOverId(n.id);
               }}
-              onDrop={e => { e.preventDefault(); dropOn(n.id); }}
-              onDragEnd={() => { setDragId(null); setOverId(null); }}
+              onDragLeave={() => { if (noteOverId === n.id) setNoteOverId(null); }}
+              onDrop={e => {
+                e.preventDefault();
+                const noteId = e.dataTransfer.getData(NOTE_MIME);
+                setNoteOverId(null);
+                if (noteId && onDropNote && n.id !== activeId) { onDropNote(noteId, n.id); return; }
+                dropOn(n.id);
+              }}
+              onDragEnd={() => { setDragId(null); setOverId(null); setNoteOverId(null); }}
               className={cn(
                 "group flex h-9 items-center rounded-lg transition",
                 n.id === activeId ? "bg-foreground text-background shadow-sm" : "text-muted-foreground hover:bg-muted hover:text-foreground",
                 overId === n.id && dragId !== n.id && "ring-1 ring-foreground/25",
+                noteOverId === n.id && "ring-1 ring-foreground/25",
                 dragId === n.id && "opacity-50",
               )}
             >

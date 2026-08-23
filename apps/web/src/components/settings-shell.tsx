@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
-  Archive, ArrowUpRight, BellRing, Bot, ChevronRight, CloudUpload, Download, FileClock, Link2,
+  Archive, ArrowUpRight, BellRing, Bot, ChevronRight, CloudUpload, Download, FileClock, HardDrive, Link2,
   Paintbrush, ShieldAlert, ShieldCheck, Snowflake, Sparkles, TriangleAlert, Users,
 } from "lucide-react";
 import { api } from "../api";
@@ -20,10 +20,10 @@ import { Button } from "./ui/button";
 
 export const cardCls = "rounded-xl border border-border bg-background";
 
-/** 设置壳认的所有落点。前八个是 /settings 内部的 ?tab=，后四个是独立路由。 */
+/** 设置壳认的所有落点。前八个是 /w/:id/settings 的 ?tab=，后面是独立路由。 */
 export type SettingsPlace =
   | "overview" | "members" | "shares" | "backup" | "transfer" | "audit" | "moderation" | "danger"
-  | "trash" | "feed" | "integrations" | "appearance" | "notifications";
+  | "trash" | "feed" | "integrations" | "appearance" | "notifications" | "account";
 
 type NavItem = {
   id: SettingsPlace;
@@ -65,6 +65,7 @@ export const SETTINGS_NAV: Array<{ title: string; items: NavItem[] }> = [
   {
     title: "账号",
     items: [
+      { id: "account", label: "存储与服务", hint: "看自己用了多少空间，向管理员申请扩容。", icon: HardDrive, to: () => "/settings/account" },
       { id: "appearance", label: "外观", hint: "选择明暗模式、强调色和已安装的主题包。", icon: Paintbrush, to: () => "/settings/appearance" },
       { id: "notifications", label: "通知与推送", hint: "日历提醒发到哪里；哪几台设备能收到推送。", icon: BellRing, to: () => "/settings/notifications" },
     ],

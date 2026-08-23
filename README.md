@@ -78,6 +78,7 @@ node scripts/verify-mcp-tools.mjs   # MCP 工具合同：动态减清单、搜�
 node scripts/verify-gaps.mjs        # 分享类型、分享总览、回收站销毁、搜索、标签
 node scripts/verify-saved-shares.mjs # 收到的分享：自动收下、移出不救活、手工再存
 node scripts/verify-notebook-move.mjs    # 笔记本跨工作区搬迁：内容、附件、搜索归属、双链、权限
+node scripts/verify-note-move.mjs        # 笔记换本：根目录/指定目录、同名拒绝、跨区拒绝、无权目标本
 node scripts/verify-folder-order.mjs     # 目录同级调序：新建排最后、整串重写、换父落到末尾
 node scripts/verify-site-review.mjs      # 文档站：编辑申请、管理员过审才上线
 node scripts/verify-feed.mjs        # 圈子动态、泄漏检查、转正、公开主页、评论
@@ -91,6 +92,7 @@ node --experimental-strip-types scripts/verify-push.mjs   # 推送投递闭环�
 node scripts/verify-collab.mjs      # 协同：两个客户端真收敛、落库、只读发不出更新、无权连不上
 node scripts/verify-hardening.mjs   # 安全加固：CSP 头、验证码、出站 SSRF 护栏、目录归属、搜索分页
 node scripts/verify-nav.mjs         # 导航页：公开读、管理员配置、站内路径、非法 URL、清理
+node scripts/verify-user-services.mjs # 用户配额：申请扩容、审批、直接分配、恢复默认
 node --experimental-strip-types scripts/verify-transfer.mjs   # 导入向导、zip 导出、版本裁剪（约 3 分钟）
 node scripts/verify-manage-cdp.mjs
 node scripts/verify-gaps-cdp.mjs

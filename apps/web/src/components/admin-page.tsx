@@ -1,16 +1,14 @@
 import { useEffect, useState, type ReactNode, type SelectHTMLAttributes } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import * as Avatar from "@radix-ui/react-avatar";
 import {
-  Ban, BellRing, Bot, Check, ChevronRight, CloudUpload, Compass, Copy, Download, HardDrive, Image, KeyRound, LayoutGrid, MoreHorizontal,
-  Plus, Search, Shield, ShieldCheck, Sparkles, Ticket, Trash2, UserCog, Users, X,
+  BellRing, Bot, Check, ChevronRight, CloudUpload, Compass, Copy, Download, Image, Inbox, KeyRound, LayoutGrid,
+  Plus, Search, Shield, ShieldCheck, Sparkles, Ticket, Trash2, Users, X,
 } from "lucide-react";
 import { api } from "../api";
 import { cn } from "../lib/utils";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { useConfirm } from "./ui/confirm";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { FormError } from "./ui/form-error";
 import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
@@ -21,13 +19,15 @@ import { PushConfig } from "./push-admin-panel";
 import { SmtpConfig } from "./smtp-panel";
 import { NavAdmin } from "./nav-admin";
 import { BackupPanel } from "./backup-panel";
+import { RequestRow, StorageBar, UserActions, UserDetailDialog, UserRow, type AdminRequest, type AdminUser } from "./admin-users";
+import { STORAGE_PRESETS } from "../lib/bytes";
 
-type Tab = "overview" | "registration" | "moderation" | "agents" | "notifications" | "codes" | "users" | "nav" | "backup";
-type AdminUser = { id: string; displayName: string; email: string; handle: string; roleInstance: string; status: string; createdAt?: string };
+type Tab = "overview" | "registration" | "moderation" | "agents" | "notifications" | "codes" | "users" | "requests" | "nav" | "backup";
 type AdminCode = { id: string; prefix: string; code?: string | null; usedCount: number; maxUses: number; status: string; note?: string | null; expiresAt?: string | null; createdAt?: string; skipEmailVerification?: boolean; bindRole?: string | null };
 type Overview = {
   userCount: number; workspaceCount: number; adminCount: number; codeCount: number; activeCodeCount: number;
-  recentUsers: AdminUser[]; settings: Record<string, boolean | number | string | null>; pendingModerationCount?: number;
+  recentUsers: AdminUser[]; settings: Record<string, boolean | number | string | null>;
+  pendingModerationCount?: number; pendingServiceRequestCount?: number;
 };
 type PageResult<T> = T & { total: number; page: number; pageSize: number };
 
@@ -40,7 +40,8 @@ const TABS: { id: Tab; label: string; hint: string; icon: typeof LayoutGrid }[] 
   { id: "nav", label: "导航", hint: "分组、站点与自动取图标", icon: Compass },
   { id: "backup", label: "实例备份", hint: "打包用户与配置，上传到 WebDAV 或 S3", icon: CloudUpload },
   { id: "codes", label: "注册码", hint: "批量发放一次性准入", icon: Ticket },
-  { id: "users", label: "用户", hint: "封禁、角色与状态", icon: Users },
+  { id: "users", label: "用户", hint: "配额、角色与封禁", icon: Users },
+  { id: "requests", label: "服务申请", hint: "审批扩容，直接看到用量", icon: Inbox },
 ];
 
 const SETTING_GROUPS: { title: string; items: { key: string; title: string; description: string }[] }[] = [
@@ -62,13 +63,7 @@ const SETTING_GROUPS: { title: string; items: { key: string; title: string; desc
   },
 ];
 
-const STORAGE_OPTIONS = [
-  { value: 536870912, label: "512 MB" },
-  { value: 1073741824, label: "1 GB" },
-  { value: 2147483648, label: "2 GB" },
-  { value: 5368709120, label: "5 GB" },
-  { value: 10737418240, label: "10 GB" },
-];
+const STORAGE_OPTIONS = STORAGE_PRESETS.filter(o => o.value <= 10_737_418_240);
 const MCP_IMAGE_OPTIONS = [1, 2, 3, 5, 8, 10, 15, 25].map(mb => ({ value: mb * 1048576, label: `${mb} MB` }));
 
 const STATUS_LABEL: Record<string, string> = {
@@ -170,6 +165,7 @@ export function AdminPage() {
   const status = params.get("status") ?? "";
   const bindRole = params.get("bindRole") ?? "";
   const skip = params.get("skip") ?? "";
+  const pendingOnly = params.get("pending") ?? "";
   const page = Math.max(1, Number(params.get("page") ?? 1) || 1);
   const pageSize = PAGE_SIZES.includes(Number(params.get("size"))) ? Number(params.get("size")) : 20;
 
@@ -187,6 +183,8 @@ export function AdminPage() {
 
   const [overview, setOverview] = useState<Overview | null>(null);
   const [usersList, setUsers] = useState<AdminUser[]>([]);
+  const [requests, setRequests] = useState<AdminRequest[]>([]);
+  const [detailId, setDetailId] = useState<string | null>(null);
   const [codes, setCodes] = useState<AdminCode[]>([]);
   const [total, setTotal] = useState(0);
   const [newCodes, setNewCodes] = useState<string[]>(readLastCodes);
@@ -225,31 +223,34 @@ export function AdminPage() {
   }, [qInput]);
 
   useEffect(() => {
-    if (tab !== "users" && tab !== "codes") return;
+    if (tab !== "users" && tab !== "codes" && tab !== "requests") return;
     let cancelled = false;
     setListLoading(true);
     setListError("");
     const path = tab === "users"
-      ? `/api/v1/admin/users${qs({ q, role, status, page, pageSize })}`
-      : `/api/v1/admin/registration-codes${qs({ q, status, bindRole, skipEmailVerification: skip || undefined, page, pageSize })}`;
-    api<PageResult<{ users?: AdminUser[]; codes?: AdminCode[] }>>(path)
+      ? `/api/v1/admin/users${qs({ q, role, status, hasPending: pendingOnly || undefined, page, pageSize })}`
+      : tab === "requests"
+        ? `/api/v1/admin/service-requests${qs({ q, status: ["pending", "approved", "rejected", "cancelled"].includes(status) ? status : "pending", page, pageSize })}`
+        : `/api/v1/admin/registration-codes${qs({ q, status, bindRole, skipEmailVerification: skip || undefined, page, pageSize })}`;
+    api<PageResult<{ users?: AdminUser[]; codes?: AdminCode[]; requests?: AdminRequest[] }>>(path)
       .then(d => {
         if (cancelled) return;
-        if (d.total > 0 && d.page > 1 && (d.users?.length ?? d.codes?.length ?? 0) === 0) {
+        if (d.total > 0 && d.page > 1 && (d.users?.length ?? d.codes?.length ?? d.requests?.length ?? 0) === 0) {
           patch({ page: String(Math.max(1, Math.ceil(d.total / d.pageSize))) });
           return;
         }
         setUsers(d.users ?? []);
         setCodes(d.codes ?? []);
+        setRequests(d.requests ?? []);
         setTotal(d.total);
       })
       .catch(e => { if (!cancelled) setListError((e as Error).message); })
       .finally(() => { if (!cancelled) setListLoading(false); });
     return () => { cancelled = true; };
-  }, [tab, q, role, status, bindRole, skip, page, pageSize, listTick]);
+  }, [tab, q, role, status, bindRole, skip, pendingOnly, page, pageSize, listTick]);
 
   const current = TABS.find(t => t.id === tab)!;
-  const filtering = !!(q || role || status || bindRole || skip);
+  const filtering = !!(q || role || status || bindRole || skip || pendingOnly);
   const pages = Math.max(1, Math.ceil(total / pageSize));
 
   async function patchSetting(body: Record<string, boolean | number>, key: string, okText?: string) {
@@ -369,17 +370,6 @@ export function AdminPage() {
     }
   }
 
-  async function patchUser(user: AdminUser, body: Record<string, string>, okText: string) {
-    try {
-      await api(`/api/v1/admin/users/${user.id}`, { method: "PATCH", body: JSON.stringify(body) });
-      toast.success(okText);
-      setListTick(n => n + 1);
-      await loadOverview();
-    } catch (e) {
-      toast.error("操作失败", (e as Error).message);
-    }
-  }
-
   return <div className="min-h-full bg-muted/25">
     <header className="sticky top-0 z-20 flex h-14 items-center border-b border-border bg-background/90 px-4 backdrop-blur">
       <Button variant="ghost" onClick={() => nav("/app")}><ChevronRight className="rotate-180" />返回工作区</Button>
@@ -427,7 +417,9 @@ export function AdminPage() {
             <Stat icon={<Users className="size-4" />} label="用户" value={overview?.userCount ?? 0} hint={`${overview?.adminCount ?? 0} 名管理员`} />
             <Stat icon={<LayoutGrid className="size-4" />} label="工作区" value={overview?.workspaceCount ?? 0} hint="含个人工作区" />
             <Stat icon={<Ticket className="size-4" />} label="有效注册码" value={overview?.activeCodeCount ?? 0} hint={`共发出 ${overview?.codeCount ?? 0} 组`} />
-            <Stat icon={<HardDrive className="size-4" />} label="默认容量" value={STORAGE_OPTIONS.find(o => o.value === Number(overview?.settings?.defaultUserStorageBytes ?? 1073741824))?.label ?? "1 GB"} hint="未单独覆盖的用户" />
+            <button type="button" className="text-left" onClick={() => go("requests")}>
+              <Stat icon={<Inbox className="size-4" />} label="待审批申请" value={overview?.pendingServiceRequestCount ?? 0} hint="点进去审批" />
+            </button>
           </div>
           <section className="rounded-xl border bg-background">
             <div className="flex items-center justify-between border-b px-5 py-3">
@@ -445,6 +437,7 @@ export function AdminPage() {
                 ["内容审核", !!overview?.settings?.moderationEnabled],
                 ["导航", overview?.settings?.navEnabled !== false],
                 ["导航公开", overview?.settings?.navPublic !== false],
+                ["申请扩容", overview?.settings?.allowStorageRequests !== false],
               ].map(([label, on]) => <div key={String(label)} className="flex items-center justify-between bg-background px-5 py-3.5">
                 <span className="text-sm">{label}</span>
                 <Badge className={on ? statusTone("active") : undefined}>{on ? "开" : "关"}</Badge>
@@ -490,15 +483,26 @@ export function AdminPage() {
                 onCheckedChange={v => void patchSetting({ [item.key]: v }, item.key)} />
             </div>)}
           </section>)}
-          <section className="flex flex-col gap-4 rounded-xl border bg-background p-5 sm:flex-row sm:items-center">
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium">默认用户存储容量</p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">新用户和未单独覆盖的账号使用此限制。已有覆盖不受影响。</p>
+          <section className="overflow-hidden rounded-xl border bg-background">
+            <h2 className="border-b bg-muted/40 px-5 py-3 text-sm font-semibold">存储</h2>
+            <div className="flex flex-col gap-4 px-5 py-4 sm:flex-row sm:items-center">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium">默认用户存储容量</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">新用户和未单独覆盖的账号使用此限制。已有覆盖不受影响。</p>
+              </div>
+              <Select className="w-full sm:w-36" disabled={pending === "storage"} value={Number(overview?.settings?.defaultUserStorageBytes ?? 1073741824)}
+                onChange={e => void patchSetting({ defaultUserStorageBytes: Number(e.target.value) }, "storage", "默认容量已更新")}>
+                {STORAGE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </Select>
             </div>
-            <Select className="w-full sm:w-36" disabled={pending === "storage"} value={Number(overview?.settings?.defaultUserStorageBytes ?? 1073741824)}
-              onChange={e => void patchSetting({ defaultUserStorageBytes: Number(e.target.value) }, "storage", "默认容量已更新")}>
-              {STORAGE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </Select>
+            <div className="flex items-start gap-4 border-t px-5 py-4">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium">允许用户申请扩容</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">关闭后用户看不到申请入口。已经提交的申请你仍可以批。</p>
+              </div>
+              <Switch checked={overview?.settings?.allowStorageRequests !== false} disabled={pending === "allowStorageRequests"} label="允许用户申请扩容"
+                onCheckedChange={v => void patchSetting({ allowStorageRequests: v }, "allowStorageRequests")} />
+            </div>
           </section>
           <section className="flex flex-col gap-4 rounded-xl border bg-background p-5 sm:flex-row sm:items-center">
             <span className="grid size-10 place-items-center rounded-lg bg-muted text-muted-foreground"><Image className="size-4"/></span>
@@ -610,44 +614,44 @@ export function AdminPage() {
             filters={[
               { label: "角色", value: role, options: USER_ROLES, onChange: v => patch({ role: v, page: undefined }) },
               { label: "状态", value: status, options: USER_STATUSES, onChange: v => patch({ status: v, page: undefined }) },
+              { label: "申请", value: pendingOnly, options: [{ value: "", label: "全部用户" }, { value: "true", label: "有待审批" }], onChange: v => patch({ pending: v, page: undefined }) },
             ]}
             filtering={filtering}
-            onClear={() => { setQInput(""); patch({ q: undefined, role: undefined, status: undefined, page: undefined }); }}
+            onClear={() => { setQInput(""); patch({ q: undefined, role: undefined, status: undefined, pending: undefined, page: undefined }); }}
           />
           <FormError>{listError}</FormError>
           {usersList.length === 0 && !listLoading ? <Empty icon={<Users />} title={filtering ? "没有匹配的用户" : "还没有用户"} text={filtering ? "换个关键词或筛选项再试。" : "第一个注册的人会成为实例管理员。"} />
             : <section className={cn("overflow-hidden rounded-xl border bg-background", listLoading && "opacity-60")}>
               {usersList.map((u, i) => <div key={u.id} className={cn("flex items-center gap-3 px-4 py-3.5", i && "border-t")}>
-                <UserRow user={u} />
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label={`${u.displayName} 的操作`}><MoreHorizontal /></Button></DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => {
-                      void (async () => {
-                        const promote = u.roleInstance !== "admin";
-                        if (!await askConfirm({
-                          title: promote ? `将 ${u.displayName} 提升为管理员？` : `将 ${u.displayName} 降为普通用户？`,
-                          description: promote ? "对方将能进入实例后台，管理注册策略、注册码和所有用户。" : "对方将失去实例后台权限。实例必须至少保留一名有效管理员。",
-                          confirmText: promote ? "提升" : "降级",
-                          destructive: !promote,
-                        })) return;
-                        await patchUser(u, { roleInstance: promote ? "admin" : "user" }, promote ? "已提升为管理员" : "已降为普通用户");
-                      })();
-                    }}><UserCog />{u.roleInstance === "admin" ? "降为普通用户" : "提升为管理员"}</DropdownMenuItem>
-                    <DropdownMenuItem className="text-destructive" onSelect={() => {
-                      void (async () => {
-                        const ban = u.status !== "banned";
-                        if (!await askConfirm({
-                          title: ban ? `封禁 ${u.displayName}？` : `解除 ${u.displayName} 的封禁？`,
-                          description: ban ? "对方会立刻被踢下线，无法再登录。其写过的共享笔记会留下。" : "对方可以重新登录，会话需要重新建立。",
-                          confirmText: ban ? "封禁" : "解封",
-                          destructive: ban,
-                        })) return;
-                        await patchUser(u, { status: ban ? "banned" : "active" }, ban ? "已封禁并踢出会话" : "已解除封禁");
-                      })();
-                    }}><Ban />{u.status === "banned" ? "解除封禁" : "封禁并踢出会话"}</DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                <button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => setDetailId(u.id)}>
+                  <UserRow user={u} extra={u.storage ? <StorageBar used={u.storage.usedBytes} quota={u.storage.quotaBytes} compact /> : undefined} />
+                </button>
+                <UserActions user={u} onChanged={() => { setListTick(n => n + 1); void loadOverview(); }} onOpen={() => setDetailId(u.id)} />
+              </div>)}
+            </section>}
+          <Pager page={page} pages={pages} pageSize={pageSize} total={total} loading={listLoading} onPage={p => patch({ page: String(p) })} onSize={s => patch({ size: String(s), page: undefined })} />
+          <UserDetailDialog userId={detailId} open={!!detailId} onOpenChange={v => { if (!v) setDetailId(null); }} onChanged={() => { setListTick(n => n + 1); void loadOverview(); }} />
+        </div>}
+
+        {!error && !loading && tab === "requests" && <div className="space-y-4">
+          <FilterBar
+            placeholder="搜索申请人显示名、用户名或邮箱"
+            value={qInput}
+            onChange={setQInput}
+            filters={[
+              { label: "状态", value: ["pending", "approved", "rejected", "cancelled"].includes(status) ? status : "pending", options: [
+                { value: "pending", label: "待审批" }, { value: "approved", label: "已通过" },
+                { value: "rejected", label: "未通过" }, { value: "cancelled", label: "已取消" },
+              ], onChange: v => patch({ status: v === "pending" ? undefined : v, page: undefined }) },
+            ]}
+            filtering={!!(q || (status && status !== "pending"))}
+            onClear={() => { setQInput(""); patch({ q: undefined, status: undefined, page: undefined }); }}
+          />
+          <FormError>{listError}</FormError>
+          {requests.length === 0 && !listLoading ? <Empty icon={<Inbox />} title={q || status ? "没有匹配的申请" : "没有待审批的申请"} text={q || status ? "换个关键词或状态再试。" : "用户在「存储与服务」里提交的扩容会出现在这里。"} />
+            : <section className={cn("overflow-hidden rounded-xl border bg-background", listLoading && "opacity-60")}>
+              {requests.map((r, i) => <div key={r.id} className={i ? "border-t" : undefined}>
+                <RequestRow request={r} onChanged={() => { setListTick(n => n + 1); void loadOverview(); }} />
               </div>)}
             </section>}
           <Pager page={page} pages={pages} pageSize={pageSize} total={total} loading={listLoading} onPage={p => patch({ page: String(p) })} onSize={s => patch({ size: String(s), page: undefined })} />
@@ -704,20 +708,6 @@ function Stat({ icon, label, value, hint }: { icon: ReactNode; label: string; va
     </div>
     <p className="mt-4 text-3xl font-semibold tracking-[-0.04em]">{value}</p>
     <p className="mt-1.5 text-xs text-muted-foreground">{hint}</p>
-  </div>;
-}
-
-function UserRow({ user }: { user: AdminUser }) {
-  return <div className="flex min-w-0 flex-1 items-center gap-3">
-    <Avatar.Root className="grid size-9 shrink-0 place-items-center rounded-full bg-foreground text-xs font-semibold text-background">
-      <Avatar.Fallback>{user.displayName.slice(0, 1)}</Avatar.Fallback>
-    </Avatar.Root>
-    <div className="min-w-0 flex-1">
-      <p className="truncate text-sm font-medium">{user.displayName} <span className="font-normal text-muted-foreground">@{user.handle}</span></p>
-      <p className="truncate text-xs text-muted-foreground">{user.email}</p>
-    </div>
-    <StatusBadge status={user.roleInstance} />
-    <StatusBadge status={user.status} />
   </div>;
 }
 

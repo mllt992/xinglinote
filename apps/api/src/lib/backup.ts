@@ -7,7 +7,7 @@ import {
   comments, contentReports, corrections, folders, instanceSettings, moderationReviews,
   navGroups, navLinks, notebookMembers, notebooks, notes, noteVersions, notifications,
   posts, postAssets, postReactions, registrationCodes, registrationCodeUsages,
-  savedShares, shareLinks, themes, users, workspaceMembers, workspaces,
+  savedShares, serviceRequests, shareLinks, themes, users, workspaceMembers, workspaces,
 } from "../db/schema.ts";
 import { applyRetention, upload, type BackupCred, type BackupTargetRef } from "./backup-transfer.ts";
 import { open } from "./secrets.ts";
@@ -79,6 +79,7 @@ export async function instanceSnapshot() {
     exportedAt: new Date().toISOString(),
     settings: settings ?? null,
     users: await db.select().from(users),
+    serviceRequests: await db.select().from(serviceRequests),
     registrationCodes: (await db.select().from(registrationCodes)).map(row => ({ ...row, codePrefix: row.codePrefix.slice(0, 9) })),
     registrationCodeUsages: await db.select().from(registrationCodeUsages),
     savedShares: await db.select().from(savedShares),

@@ -445,7 +445,10 @@ knowledge.post("/notes/:id/move", async (c) => {
   const { note } = await noteAccess(c.req.param("id"), user.id, "edit");
   const targetId = body.notebookId ?? note.notebookId;
   const { notebook: nb } = await notebookAccess(targetId, user.id, "edit");
-  const folderId = body.folderId === undefined ? (note.folderId ?? null) : body.folderId;
+  // 换本时旧目录不属于目标本，没指定 folderId 就落到目标本根上。
+  const folderId = body.folderId === undefined
+    ? (targetId === note.notebookId ? (note.folderId ?? null) : null)
+    : body.folderId;
   const moved = await relocateNote({ note, targetNotebook: nb, folderId, actorId: user.id });
   return ok(c, moved);
 });

@@ -571,6 +571,25 @@ const statements = [
   `CREATE UNIQUE INDEX IF NOT EXISTS agent_replies_source_idx ON agent_replies(agent_id, source_type, source_id)`,
   `CREATE INDEX IF NOT EXISTS comments_agent_idx ON comments(author_agent_id)`,
   `ALTER TABLE registration_codes ADD COLUMN IF NOT EXISTS code_enc text`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS allow_storage_requests boolean NOT NULL DEFAULT true`,
+  `CREATE TABLE IF NOT EXISTS service_requests (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES users(id),
+    kind text NOT NULL DEFAULT 'storage',
+    requested_bytes bigint,
+    current_quota_bytes bigint,
+    used_bytes bigint,
+    reason text,
+    status text NOT NULL DEFAULT 'pending',
+    admin_note text,
+    decided_by uuid REFERENCES users(id),
+    decided_at timestamptz,
+    granted_quota_bytes bigint,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS service_requests_user_idx ON service_requests(user_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS service_requests_status_idx ON service_requests(status, created_at DESC)`,
 ];
 
 async function main() {
