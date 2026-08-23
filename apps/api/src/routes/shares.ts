@@ -133,11 +133,23 @@ shareRoutes.post("/notebooks/:id/shares", async (c) => {
   return ok(c, publicShare(created), 201);
 });
 
+shareRoutes.get("/folders/:id/shares", async (c) => {
+  const { folder } = await manageableFolder(c, c.req.param("id"));
+  const rows = await db.select().from(shareLinks).where(eq(shareLinks.targetId, folder.id)).orderBy(desc(shareLinks.createdAt));
+  return ok(c, { shares: rows.filter(s => s.targetType === "folder").map(publicShare) });
+});
+
 shareRoutes.post("/folders/:id/shares", async (c) => {
   const { user, folder } = await manageableFolder(c, c.req.param("id"));
   const body = shareInput.parse(await c.req.json());
   const created = await issue(body, { workspaceId: folder.workspaceId, targetType: "folder", targetId: folder.id, createdBy: user.id });
   return ok(c, publicShare(created), 201);
+});
+
+shareRoutes.get("/attachments/:id/shares", async (c) => {
+  const { file } = await manageableAttachment(c, c.req.param("id"));
+  const rows = await db.select().from(shareLinks).where(eq(shareLinks.targetId, file.id)).orderBy(desc(shareLinks.createdAt));
+  return ok(c, { shares: rows.filter(s => s.targetType === "attachment").map(publicShare) });
 });
 
 shareRoutes.post("/attachments/:id/shares", async (c) => {

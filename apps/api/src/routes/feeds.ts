@@ -5,6 +5,7 @@ import { recencyBoost, scoreNote, tokenize } from "@kb/core";
 import { fail, isHashtag, normalizeHashtag, normalizeTitle, parseHashtags } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { agents, auditLogs, comments, contentReports, instanceSettings, moderationReviews, notebooks, notes, noteVersions, notifications, postFavorites, postReactions, posts, users, workspaceMembers, workspaces } from "../db/schema.ts";
+import { listPublicWikiBooks } from "../lib/share-catalog.ts";
 import { enqueueAgentMentions, listPendingAgentReplies } from "../lib/agents.ts";
 import { commentListedTo, feedPostHref } from "../lib/comments.ts";
 import { ok } from "../http.ts";
@@ -137,12 +138,15 @@ feedRoutes.get("/feed/public/catalog",async c=>{
   const spaces=spaceIds.length?await db.select({id:workspaces.id,slug:workspaces.slug,name:workspaces.name}).from(workspaces).where(inArray(workspaces.id,spaceIds)):[];
   const counts=bookIds.length?await db.select({notebookId:notes.notebookId,n:count(),last:max(notes.updatedAt)}).from(notes).where(and(inArray(notes.notebookId,bookIds),eq(notes.published,true),eq(notes.moderationStatus,"none"),isNull(notes.trashedAt))).groupBy(notes.notebookId):[];
   const articles=await db.select({id:notes.id,title:notes.title,bodyMd:notes.bodyMd,updatedAt:notes.updatedAt,notebookTitle:notebooks.title,notebookSlug:notebooks.slug,workspaceSlug:workspaces.slug,workspaceName:workspaces.name}).from(notes).innerJoin(notebooks,eq(notebooks.id,notes.notebookId)).innerJoin(workspaces,eq(workspaces.id,notebooks.workspaceId)).where(and(eq(notes.published,true),eq(notes.moderationStatus,"none"),isNull(notes.trashedAt),eq(notebooks.sitePublished,true),isNull(notebooks.trashedAt))).orderBy(desc(notes.updatedAt)).limit(40);
+  const sites=books.map(b=>{
+    const ws=spaces.find(s=>s.id===b.workspaceId);
+    const stat=counts.find(x=>x.notebookId===b.id);
+    return {id:b.id,title:b.title,workspace:ws?.name??"",url:ws?`/s/${ws.slug}/${b.slug}`:"",noteCount:asCount(stat?.n),updatedAt:stat?.last??b.createdAt,accent:b.accent,kind:"site" as const};
+  });
+  const wikis=await listPublicWikiBooks();
+  const listed=[...sites,...wikis].sort((a,b)=>new Date(b.updatedAt).getTime()-new Date(a.updatedAt).getTime()).slice(0,40);
   return ok(c,{
-    notebooks:books.map(b=>{
-      const ws=spaces.find(s=>s.id===b.workspaceId);
-      const stat=counts.find(x=>x.notebookId===b.id);
-      return {id:b.id,title:b.title,workspace:ws?.name??"",url:ws?`/s/${ws.slug}/${b.slug}`:"",noteCount:asCount(stat?.n),updatedAt:stat?.last??b.createdAt,accent:b.accent};
-    }),
+    notebooks:listed,
     articles:articles.map(a=>({id:a.id,title:a.title,notebook:a.notebookTitle,workspace:a.workspaceName,url:`/s/${a.workspaceSlug}/${a.notebookSlug}/${a.id}`,snippet:publicSnippet(a.bodyMd),updatedAt:a.updatedAt})),
   });
 });

@@ -97,8 +97,8 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | GET | `/api/v1/shares` | mine 或 workspaceId= 本区 |
 | GET/POST | `/api/v1/notes/:id/shares` | 单篇 / 单节 |
 | GET/POST | `/api/v1/notebooks/:id/shares` | 整本 |
-| POST | `/api/v1/folders/:id/shares` | 目录 |
-| POST | `/api/v1/attachments/:id/shares` | 附件 |
+| GET/POST | `/api/v1/folders/:id/shares` | 目录 |
+| GET/POST | `/api/v1/attachments/:id/shares` | 附件 |
 | PATCH/DELETE | `/api/v1/shares/:id` | 改密续期 / 取消 |
 | POST | `/api/v1/public/shares/:token/unlock` | password |
 | GET | `/api/v1/public/shares/:token` | 解锁后的内容 JSON（页面也可 SSR） |
@@ -123,7 +123,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | GET | `/api/v1/feed/public` | 广场时间线；`?tag=` 按标签筛；`?q=` 模糊搜正文 / 作者 / 标签；回 `posts` + `now` |
 | GET | `/api/v1/feed/public/tags` | 广场最近可见帖里出现次数最多的标签 |
 | GET | `/api/v1/feed/public/updates?since=` | 广场自 `since` 起的新帖数、有新回复的帖数；回 `newPosts` `repliedPosts` `now` |
-| GET | `/api/v1/feed/public/catalog` | 广场公开目录；回已发布笔记本 + 公开文章（标题、摘录、文档站 URL），不含正文 |
+| GET | `/api/v1/feed/public/catalog` | 广场公开目录；回已发布文档站 + 公开收录的目录/整本分享（`kind=site\|folder\|notebook`）+ 文档站公开文章，不含正文 |
 | GET | `/api/v1/feed/workspaces/:id` | 圈子时间线；成员；`?tag=` / `?q=` 同上 |
 | GET | `/api/v1/feed/workspaces/:id/tags` | 圈子热门标签 |
 | GET | `/api/v1/feed/workspaces/:id/updates?since=` | 圈子同上的增量计数；成员 |

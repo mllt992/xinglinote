@@ -44,6 +44,14 @@ try {
   const folderPage = (await anon(`/public/shares/${folderShare.token}`)).json.data;
   result.folderShareLists = folderPage.type === 'folder' && folderPage.notes.some(n => n.id === note.id) && folderPage.notes.some(n => n.id === later.id);
   result.folderShareExcludesOutside = !folderPage.notes.some(n => n.id === other.id);
+  const folderListed = (await q(`/folders/${folder.id}/shares`, {}, c)).data;
+  result.folderShareListApi = folderListed.shares.some(s => s.id === folderShare.id);
+  const publicFolderShare = (await q(`/folders/${folder.id}/shares`, { method: 'POST', body: JSON.stringify({ allowRobots: true }) }, c)).data;
+  const lockedFolderShare = (await q(`/folders/${folder.id}/shares`, { method: 'POST', body: JSON.stringify({ allowRobots: true, password: 'secret' }) }, c)).data;
+  const catalog = (await anon('/feed/public/catalog')).json.data;
+  result.catalogListsPublicFolderWiki = Array.isArray(catalog?.notebooks) && catalog.notebooks.some(x => x.id === publicFolderShare.id && x.url === `/p/${publicFolderShare.token}` && x.kind === 'folder');
+  result.catalogHidesPrivateFolderShare = !catalog?.notebooks?.some(x => x.id === folderShare.id);
+  result.catalogHidesPasswordFolderShare = !catalog?.notebooks?.some(x => x.id === lockedFolderShare.id);
 
   // 整本分享：含根上的笔记，之后新建的也在里面；不看 published
   const nbShare = (await q(`/notebooks/${nb.id}/shares`, { method: 'POST', body: JSON.stringify({}) }, c)).data;

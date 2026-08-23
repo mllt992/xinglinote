@@ -10,6 +10,7 @@ export type PublicNotebook = {
   noteCount: number;
   updatedAt: string;
   accent: string | null;
+  kind?: "site" | "folder" | "notebook";
 };
 export type PublicArticle = {
   id: string;
@@ -44,13 +45,13 @@ export function SquareCatalog({ kind }: { kind: "notebooks" | "articles" }) {
   const data = usePublicCatalog();
   if (!data) return <p className="py-10 text-center text-sm text-muted-foreground">加载中…</p>;
   if (kind === "notebooks") {
-    if (!data.notebooks.length) return <Empty title="还没有公开的笔记本" text="把笔记本发布成文档站后，会出现在这里。" />;
+    if (!data.notebooks.length) return <Empty title="还没有公开的笔记本" text="把笔记本发布成文档站，或把目录 / 整本公开收录后，会出现在这里。" />;
     return <ul className="space-y-3">{data.notebooks.map(nb => <li key={nb.id}>
       <a href={nb.url} className="flex items-start gap-3 rounded-2xl border bg-background p-4 hover:bg-muted/40">
         <span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-xl bg-muted text-muted-foreground"><Globe2 className="size-4" /></span>
         <span className="min-w-0">
           <b className="block truncate text-sm font-medium">{nb.title}</b>
-          <span className="mt-1 block text-xs text-muted-foreground">{nb.workspace} · {nb.noteCount} 篇公开文章</span>
+          <span className="mt-1 block text-xs text-muted-foreground">{nb.workspace} · {nb.noteCount} 篇{nb.kind === "folder" ? " · 目录分享" : nb.kind === "notebook" ? " · 整本分享" : "公开文章"}</span>
         </span>
       </a>
     </li>)}</ul>;
