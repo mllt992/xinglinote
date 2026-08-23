@@ -5,6 +5,8 @@ import {
   buildS3Request,
   joinRemotePath,
   parseBackupStamp,
+  parseDavObjects,
+  parseS3Objects,
   pickExpired,
   remoteObjectName,
 } from "./backup-transfer.ts";
@@ -75,4 +77,16 @@ test("S3 列举走 list-type=2 且查询串进签名", () => {
   assert.match(req.canonical, /^GET\n\/backups\n/);
   assert.match(req.canonical, /list-type=2/);
   assert.match(req.canonical, /prefix=knowledge%2F/);
+});
+
+test("S3 与 WebDAV 列举解析远端大小和时间", () => {
+  const s3 = parseS3Objects("<ListBucketResult><Contents><Key>knowledge/a.kbbackup</Key><LastModified>2026-08-24T01:02:03.000Z</LastModified><Size>42</Size></Contents></ListBucketResult>", "knowledge");
+  assert.equal(s3[0]?.name, "a.kbbackup");
+  assert.equal(s3[0]?.bytes, 42);
+  assert.equal(s3[0]?.updatedAt?.toISOString(), "2026-08-24T01:02:03.000Z");
+
+  const dav = parseDavObjects("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>/dav/knowledge/a.kbbackup</d:href><d:propstat><d:prop><d:getcontentlength>84</d:getcontentlength><d:getlastmodified>Mon, 24 Aug 2026 01:02:03 GMT</d:getlastmodified></d:prop></d:propstat></d:response></d:multistatus>", "knowledge");
+  assert.equal(dav[0]?.name, "a.kbbackup");
+  assert.equal(dav[0]?.bytes, 84);
+  assert.equal(dav[0]?.updatedAt?.toISOString(), "2026-08-24T01:02:03.000Z");
 });

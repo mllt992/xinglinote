@@ -12,7 +12,7 @@ export type BackupCred = {
 
 export type BackupTargetRef = { type: string; endpoint: string; prefix: string };
 
-export type RemoteObject = { name: string; bytes?: number };
+export type RemoteObject = { name: string; bytes?: number; updatedAt?: Date };
 
 const h = (alg: string, x: string | Buffer) => createHash(alg).update(x).digest("hex");
 const hm = (key: string | Buffer, x: string) => createHmac("sha256", key).update(x).digest();
@@ -90,6 +90,40 @@ function parseS3Keys(xml: string) {
     try { return decodeURIComponent(m[1]); }
     catch { return m[1]; }
   });
+}
+
+function xmlText(value: string) {
+  return value.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+}
+
+export function parseS3Objects(xml: string, prefix: string): RemoteObject[] {
+  const out: RemoteObject[] = [];
+  for (const block of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
+    const key = /<Key>([\s\S]*?)<\/Key>/.exec(block[1])?.[1];
+    if (!key) continue;
+    const name = remoteObjectName(xmlText(key), prefix);
+    if (!name || name.includes("/")) continue;
+    const bytes = Number(/<Size>(\d+)<\/Size>/.exec(block[1])?.[1]);
+    const updatedAt = new Date(xmlText(/<LastModified>([^<]+)<\/LastModified>/.exec(block[1])?.[1] ?? ""));
+    out.push({ name, ...(Number.isFinite(bytes) ? { bytes } : {}), ...(!Number.isNaN(updatedAt.getTime()) ? { updatedAt } : {}) });
+  }
+  return out;
+}
+
+export function parseDavObjects(xml: string, prefix: string): RemoteObject[] {
+  const out: RemoteObject[] = [];
+  for (const block of xml.matchAll(/<(?:[\w-]+:)?response\b[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?response>/gi)) {
+    const href = /<(?:[\w-]+:)?href[^>]*>([^<]+)<\/(?:[\w-]+:)?href>/i.exec(block[1])?.[1];
+    if (!href) continue;
+    let decoded = xmlText(href.trim());
+    try { decoded = decodeURIComponent(decoded); } catch { /* 保留服务端原文 */ }
+    const name = remoteObjectName(decoded.replace(/\/+$/, ""), prefix);
+    if (!name || name.includes("/")) continue;
+    const bytes = Number(/<(?:[\w-]+:)?getcontentlength[^>]*>(\d+)<\/(?:[\w-]+:)?getcontentlength>/i.exec(block[1])?.[1]);
+    const updatedAt = new Date(xmlText(/<(?:[\w-]+:)?getlastmodified[^>]*>([^<]+)<\/(?:[\w-]+:)?getlastmodified>/i.exec(block[1])?.[1] ?? ""));
+    out.push({ name, ...(Number.isFinite(bytes) ? { bytes } : {}), ...(!Number.isNaN(updatedAt.getTime()) ? { updatedAt } : {}) });
+  }
+  return out;
 }
 
 function parseS3Token(xml: string) {
@@ -199,12 +233,15 @@ export async function listRemote(t: BackupTargetRef, c: BackupCred): Promise<Rem
     const r = await safeFetch(davUrl(t), {
       method: "PROPFIND",
       headers: { authorization: basic(c), depth: "1", "content-type": "application/xml" },
-      body: `<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname/></d:prop></d:propfind>`,
+      body: `<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname/><d:getcontentlength/><d:getlastmodified/></d:prop></d:propfind>`,
     }, "备份目标地址");
     if (r.status === 404) return [];
     if (!r.ok) throw new Error(`WebDAV 列举失败 (${r.status})`);
+    const xml = await r.text();
+    const parsed = parseDavObjects(xml, prefix);
+    if (parsed.length) return [...new Map(parsed.map(item => [item.name, item])).values()];
     const names = new Set<string>();
-    for (const href of parseDavHrefs(await r.text())) {
+    for (const href of parseDavHrefs(xml)) {
       const name = remoteObjectName(href.replace(/\/+$/, ""), prefix);
       if (name && !name.includes("/")) names.add(name);
     }
@@ -219,7 +256,9 @@ export async function listRemote(t: BackupTargetRef, c: BackupCred): Promise<Rem
     const r = await s3(t, c, "", "GET", undefined, query, { bucketRoot: true });
     if (!r.ok) throw new Error(`S3 列举失败 (${r.status})`);
     const xml = await r.text();
-    for (const key of parseS3Keys(xml)) {
+    const objects = parseS3Objects(xml, prefix);
+    if (objects.length) out.push(...objects);
+    else for (const key of parseS3Keys(xml)) {
       const name = remoteObjectName(key, prefix);
       if (name && !name.includes("/")) out.push({ name });
     }
@@ -285,5 +324,6 @@ export async function applyRetention(
     .filter((f): f is { name: string; at: Date } => !!f.at);
   for (const name of pickExpired(dated, retainDaily, retainWeekly)) {
     await remove(t, c, name);
+    await remove(t, c, `${name}.manifest.json`);
   }
 }

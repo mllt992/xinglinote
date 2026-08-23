@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Archive, CloudUpload, FileClock, Pencil, Play, Plug, Plus, Trash2 } from "lucide-react";
+import { Archive, CloudDownload, CloudUpload, FileCheck2, FileClock, Pencil, Play, Plug, Plus, RotateCcw, Search, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -27,6 +27,20 @@ type Target = {
   id: string; name: string; type: string; endpoint: string; prefix: string; schedule: string;
   retainDaily: number; retainWeekly: number; enabled: boolean;
   encryptionFingerprint: string | null; lastRunAt: string | null;
+  lastRestoreTestAt: string | null; lastRestoreTestStatus: string | null;
+};
+type RemoteObject = {
+  remote_path: string; bytes: number | null; updated_at: string | null; checksum_sha256: string | null;
+  format: string | null; version: number | null; encrypted: boolean | null; locally_recorded: boolean;
+};
+type RestoreRun = {
+  id: string; targetId: string; status: string; mode: string; drill: boolean; error: string | null;
+  stats: Record<string, number>; warnings: string[]; createdAt: string; finishedAt: string | null;
+};
+type RestorePlan = {
+  restore_plan_id: string;
+  backup: { format: string; version: number; exported_at: string; checksum_sha256: string; checksum_verified: boolean; encrypted: boolean };
+  counts: Record<string, number>; conflicts: string[]; warnings: string[]; compatible: boolean; expires_at: string; confirmation_text: string;
 };
 type Run = {
   id: string; targetId: string; status: string; bytes: number | null; checksumSha256: string | null;
@@ -52,15 +66,25 @@ export function BackupPanel({ workspaceId }: Props) {
   const base = instance ? "/api/v1/admin/backups" : `/api/v1/workspaces/${workspaceId}/backups`;
   const [targets, setTargets] = useState<Target[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
+  const [restoreRuns, setRestoreRuns] = useState<RestoreRun[]>([]);
   const [err, setErr] = useState("");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [f, setF] = useState(emptyForm);
+  const [objectTarget, setObjectTarget] = useState<Target | null>(null);
+  const [objects, setObjects] = useState<RemoteObject[]>([]);
+  const [selectedObject, setSelectedObject] = useState<RemoteObject | null>(null);
+  const [restoreMode, setRestoreMode] = useState(instance ? "replace_instance_metadata" : "new_workspace");
+  const [restorePassphrase, setRestorePassphrase] = useState("");
+  const [allowMissing, setAllowMissing] = useState(false);
+  const [plan, setPlan] = useState<RestorePlan | null>(null);
+  const [confirmName, setConfirmName] = useState("");
 
-  const load = () => api<{ targets: Target[]; runs: Run[] }>(base).then(d => {
+  const load = () => api<{ targets: Target[]; runs: Run[]; restoreRuns: RestoreRun[] }>(base).then(d => {
     setTargets(d.targets);
     setRuns(d.runs);
+    setRestoreRuns(d.restoreRuns);
   });
   useEffect(() => { void load(); }, [base]);
   useEffect(() => {
@@ -158,6 +182,58 @@ export function BackupPanel({ workspaceId }: Props) {
     }
   }
 
+  async function showObjects(target: Target) {
+    setBusy(true);
+    setPlan(null);
+    setSelectedObject(null);
+    setObjectTarget(target);
+    try {
+      const data = await api<{ objects: RemoteObject[] }>(`/api/v1/backup-targets/${target.id}/objects`);
+      setObjects(data.objects);
+    } catch (e) {
+      toast.error("读取远端备份失败", (e as Error).message);
+      setObjects([]);
+    } finally { setBusy(false); }
+  }
+
+  async function inspectObject() {
+    if (!objectTarget || !selectedObject) return;
+    setBusy(true);
+    setErr("");
+    setPlan(null);
+    try {
+      const data = await api<RestorePlan>(`/api/v1/backup-targets/${objectTarget.id}/objects/inspect`, {
+        method: "POST",
+        body: JSON.stringify({ remote_path: selectedObject.remote_path, passphrase: restorePassphrase || undefined, mode: restoreMode, allow_missing_attachments: allowMissing }),
+      });
+      setPlan(data);
+      setConfirmName("");
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  async function executeRestore(drill: boolean) {
+    if (!plan) return;
+    if (!await askConfirm({
+      title: drill ? "执行隔离恢复演练？" : "执行恢复？",
+      description: drill ? "系统会在事务中完整恢复并验证，然后销毁临时数据。" : "高风险模式会先创建恢复前检查点；执行期间请勿关闭页面。",
+      confirmText: drill ? "开始演练" : "开始恢复",
+      destructive: !drill,
+    })) return;
+    setBusy(true);
+    setErr("");
+    try {
+      const result = await api<{ workspace_id: string | null; warnings: string[] }>(`/api/v1/backup-restore-plans/${plan.restore_plan_id}/${drill ? "drill" : "execute"}`, {
+        method: "POST",
+        body: JSON.stringify({ passphrase: restorePassphrase || undefined, confirm_name: confirmName }),
+      });
+      toast.success(drill ? "恢复演练通过" : "恢复完成", result.workspace_id ? `工作区 ${result.workspace_id}` : result.warnings.join("；"));
+      setPlan(null);
+      await load();
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
   const hint = instance
     ? "把用户、注册策略、广场和全局配置打包加密后上传到你自己的 WebDAV 或 S3。选每天/每周后由 worker 自动跑，不必一直开着这个页面。"
     : "备份包在服务端加密后再上传。频率选每天或每周，worker 会按上次成功时间自动再跑；凭据与口令不会回传前端。";
@@ -166,6 +242,9 @@ export function BackupPanel({ workspaceId }: Props) {
     <div className="flex items-center justify-between gap-3">
       <p className="text-sm text-muted-foreground">{hint}</p>
       <Button size="sm" onClick={() => { resetForm(); setOpen(true); }}><Plus />新增目标</Button>
+    </div>
+    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-muted-foreground">
+      内置实例快照只恢复用户与全局元数据，不等于 PostgreSQL + kbdata 的完整整机灾备。整机故障请按运维文档同时恢复数据库和数据卷。
     </div>
 
     {open && <div className={`${box} space-y-4 p-5`}>
@@ -223,13 +302,43 @@ export function BackupPanel({ workspaceId }: Props) {
         <span className="grid size-10 place-items-center rounded-lg bg-muted"><Archive className="size-4" /></span>
         <div className="min-w-0 flex-1">
           <p className="flex items-center gap-2 text-sm font-medium">{t.name}<Badge>{t.type === "s3" ? "S3" : "WebDAV"}</Badge>{t.encryptionFingerprint && <Badge>已加密</Badge>}{!t.enabled && <Badge>已停用</Badge>}</p>
-          <p className="truncate text-xs text-muted-foreground">{t.endpoint}/{t.prefix} · {t.schedule === "manual" ? "仅手动" : t.schedule === "daily" ? "每天自动" : "每周自动"} · 保留 {t.retainDaily} 天 / {t.retainWeekly} 周{t.lastRunAt ? ` · 上次成功 ${new Date(t.lastRunAt).toLocaleString()}` : " · 还没自动跑过"}</p>
+          <p className="truncate text-xs text-muted-foreground">{t.endpoint}/{t.prefix} · {t.schedule === "manual" ? "仅手动" : t.schedule === "daily" ? "每天自动" : "每周自动"} · 保留 {t.retainDaily} 天 / {t.retainWeekly} 周{t.lastRunAt ? ` · 上次成功 ${new Date(t.lastRunAt).toLocaleString()}` : " · 还没自动跑过"}{t.lastRestoreTestAt ? ` · 上次演练 ${t.lastRestoreTestStatus === "success" ? "通过" : "失败"} ${new Date(t.lastRestoreTestAt).toLocaleDateString()}` : " · 尚未演练"}</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => void act(`/api/v1/backup-targets/${t.id}/test`, "已提交连接测试，稍后看运行记录")}><Plug />测试连接</Button>
+        <Button variant="outline" size="sm" onClick={() => void showObjects(t)}><CloudDownload />远端备份</Button>
         <Button size="sm" onClick={() => void act(`/api/v1/backup-targets/${t.id}/run`, "已开始备份")}><Play />立即备份</Button>
         <Button variant="ghost" size="icon" aria-label="编辑" onClick={() => startEdit(t)}><Pencil /></Button>
         <Button variant="ghost" size="icon" aria-label="删除" className="text-destructive" onClick={() => void remove(t)}><Trash2 /></Button>
       </div>)}</div>}
+
+    {objectTarget && <section className={`${box} space-y-4 p-4`}>
+      <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-semibold">远端备份 · {objectTarget.name}</h3><p className="text-xs text-muted-foreground">即使本地运行记录已删除，这里仍直接从 WebDAV / S3 发现对象。</p></div><Button variant="ghost" size="sm" onClick={() => setObjectTarget(null)}>关闭</Button></div>
+      {objects.length === 0 ? <p className="py-5 text-center text-xs text-muted-foreground">{busy ? "正在读取…" : "没有发现 .kbbackup 文件"}</p> : <div className="divide-y rounded-lg border">{objects.map(object => <div key={object.remote_path} className="flex flex-wrap items-center gap-3 px-3 py-2.5">
+        <FileCheck2 className="size-4 text-muted-foreground" />
+        <div className="min-w-0 flex-1"><p className="truncate text-sm">{object.remote_path}</p><p className="text-xs text-muted-foreground">{mb(object.bytes)}{object.updated_at ? ` · ${new Date(object.updated_at).toLocaleString()}` : ""}{object.format ? ` · ${object.format} v${object.version}` : " · 待检查格式"}{object.encrypted === true ? " · 已加密" : object.encrypted === false ? " · 未加密" : ""}{!object.locally_recorded ? " · 仅远端" : ""}</p></div>
+        <a className="inline-flex h-8 items-center gap-1 rounded-md border px-3 text-xs hover:bg-muted" href={`/api/v1/backup-targets/${objectTarget.id}/objects/${encodeURIComponent(object.remote_path)}/download`}><CloudDownload className="size-3.5" />下载</a>
+        <Button size="sm" variant={selectedObject?.remote_path === object.remote_path ? "default" : "outline"} onClick={() => { setSelectedObject(object); setPlan(null); setErr(""); }}><Search />检查</Button>
+      </div>)}</div>}
+
+      {selectedObject && <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field title="恢复模式"><select className="h-9 rounded-lg border bg-background px-3 text-sm" value={restoreMode} onChange={e => { setRestoreMode(e.target.value); setPlan(null); }}>
+            {instance ? <><option value="replace_instance_metadata">替换实例元数据</option><option value="bootstrap_empty_instance">引导空实例</option></> : <><option value="new_workspace">恢复为新工作区（推荐）</option><option value="replace_workspace">替换当前工作区</option></>}
+          </select></Field>
+          <Field title="解密口令（未加密包留空）"><Input type="password" value={restorePassphrase} onChange={e => { setRestorePassphrase(e.target.value); setPlan(null); }} autoComplete="new-password" /></Field>
+        </div>
+        {!instance && <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={allowMissing} onChange={e => setAllowMissing(e.target.checked)} />允许恢复旧 v3 包并明确跳过缺少文件的附件元数据</label>}
+        <Button disabled={busy} onClick={() => void inspectObject()}><Search />{busy ? "检查中…" : "只读预检"}</Button>
+        {plan && <div className="space-y-3 rounded-lg border bg-background p-4 text-xs">
+          <p className="font-medium">{plan.backup.format} v{plan.backup.version} · {plan.backup.encrypted ? "已加密" : "未加密"} · checksum {plan.backup.checksum_sha256.slice(0, 16)}…</p>
+          <p className="text-muted-foreground">资源：{Object.entries(plan.counts).filter(([, count]) => count > 0).map(([key, count]) => `${key} ${count}`).join(" · ") || "空包"}</p>
+          {plan.warnings.map(warning => <p key={warning} className="text-amber-700 dark:text-amber-300">⚠ {warning}</p>)}
+          <p className={plan.compatible ? "text-emerald-600" : "text-destructive"}>{plan.compatible ? "预检通过，15 分钟内可执行" : "预检未通过，不能恢复"}</p>
+          {plan.compatible && <><Field title={`输入「${plan.confirmation_text}」确认`}><Input value={confirmName} onChange={e => setConfirmName(e.target.value)} /></Field><div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy || confirmName !== plan.confirmation_text} onClick={() => void executeRestore(true)}><RotateCcw />恢复演练</Button><Button disabled={busy || confirmName !== plan.confirmation_text} onClick={() => void executeRestore(false)}><Play />执行恢复</Button></div></>}
+        </div>}
+        <FormError>{err}</FormError>
+      </div>}
+    </section>}
 
     <section className={box}>
       <h3 className="border-b px-4 py-3 text-sm font-semibold">运行记录</h3>
@@ -245,6 +354,10 @@ export function BackupPanel({ workspaceId }: Props) {
             {r.error && <p className="mt-1 text-xs text-destructive">{r.error}</p>}
           </div>
         </div>)}</div>}
+    </section>
+    <section className={box}>
+      <h3 className="border-b px-4 py-3 text-sm font-semibold">恢复与演练记录</h3>
+      {restoreRuns.length === 0 ? <Hollow icon={<RotateCcw />} text="还没有恢复或演练记录。" /> : <div className="divide-y">{restoreRuns.map(r => <div key={r.id} className="flex flex-wrap items-center gap-3 px-4 py-3"><Badge>{r.drill ? "演练" : "恢复"} · {r.status}</Badge><div className="min-w-0 flex-1"><p className="text-sm">{r.mode} · {Object.entries(r.stats ?? {}).map(([key, count]) => `${key} ${count}`).join(" · ")}</p><p className="text-xs text-muted-foreground">{new Date(r.createdAt).toLocaleString()}{r.finishedAt ? ` → ${new Date(r.finishedAt).toLocaleTimeString()}` : ""}</p>{r.error && <p className="text-xs text-destructive">{r.error}</p>}</div></div>)}</div>}
     </section>
   </div>;
 }

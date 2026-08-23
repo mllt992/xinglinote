@@ -172,7 +172,11 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | PATCH/DELETE | `/api/v1/backup-targets/:id` | 对应管理员 | 改配置 / 删目标（顺带清运行记录） |
 | POST | `/api/v1/backup-targets/:id/test` | 同上 | 写一个小文件再删 |
 | POST | `/api/v1/backup-targets/:id/run` | 同上 | |
-| POST | `/api/v1/backup-jobs/:id/restore` | | 尚未实现 |
+| GET | `/api/v1/backup-targets/:id/objects` | 直接发现目标前缀下的远端包 | Owner/Admin |
+| POST | `/api/v1/backup-targets/:id/objects/inspect` | checksum、解密、格式、引用和附件预检，生成短期计划 | Owner/Admin |
+| GET | `/api/v1/backup-targets/:id/objects/:name/download` | 下载已列举的远端包 | Owner/Admin |
+| POST | `/api/v1/backup-restore-plans/:id/execute` | 按计划恢复；替换模式先建检查点 | Owner/实例 Admin |
+| POST | `/api/v1/backup-restore-plans/:id/drill` | 隔离事务恢复演练并自动销毁 | Owner/实例 Admin |
 | GET | `/api/v1/notifications` | |
 | POST | `/api/v1/notifications/read` | |
 

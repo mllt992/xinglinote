@@ -1,4 +1,3 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import {
@@ -10,7 +9,11 @@ import {
   savedShares, serviceRequests, shareLinks, themes, users, workspaceMembers, workspaces,
 } from "../db/schema.ts";
 import { applyRetention, upload, type BackupCred, type BackupTargetRef } from "./backup-transfer.ts";
+import { checksum, encryptPackage, fingerprint, WORKSPACE_BACKUP_VERSION } from "./backup-package.ts";
+import { readStoredFile } from "./blobs.ts";
 import { open } from "./secrets.ts";
+
+export { checksum, decryptPackage, encryptPackage, fingerprint } from "./backup-package.ts";
 
 /** `inArray` 传空数组在部分驱动上会生成 `in ()`，统一先挡掉。 */
 const byIds = async <T>(ids: string[], run: (ids: string[]) => Promise<T[]>) => (ids.length ? run(ids) : []);
@@ -38,22 +41,45 @@ export async function workspaceSnapshot(id: string) {
   const items = await db.select().from(calendarItems).where(eq(calendarItems.workspaceId, id));
   const itemIds = items.map(i => i.id);
 
+  const attachmentRows = await db.select().from(attachments).where(eq(attachments.workspaceId, id));
+  const attachmentFiles: Array<{ attachmentId: string; bytes: number; sha256: string; dataBase64: string }> = [];
+  for (const attachment of attachmentRows) {
+    const raw = await readStoredFile(attachment);
+    if (checksum(raw) !== attachment.sha256 || raw.length !== attachment.bytes) {
+      throw new Error(`附件 ${attachment.id} 的磁盘文件与元数据不一致`);
+    }
+    attachmentFiles.push({ attachmentId: attachment.id, bytes: raw.length, sha256: attachment.sha256, dataBase64: raw.toString("base64") });
+  }
+  const postAssetRows = await byIds(postIds, ids => db.select().from(postAssets).where(inArray(postAssets.postId, ids)));
+  const postAssetFiles: Array<{ postAssetId: string; bytes: number; sha256: string; dataBase64: string }> = [];
+  for (const asset of postAssetRows) {
+    const raw = await readStoredFile({ ...asset, postAssetId: asset.id });
+    if (checksum(raw) !== asset.sha256 || raw.length !== asset.bytes) {
+      throw new Error(`动态附件 ${asset.id} 的磁盘文件与元数据不一致`);
+    }
+    postAssetFiles.push({ postAssetId: asset.id, bytes: raw.length, sha256: asset.sha256, dataBase64: raw.toString("base64") });
+  }
+
   return {
     format: "knowledge-workspace-backup",
-    version: 3,
+    version: WORKSPACE_BACKUP_VERSION,
     exportedAt: new Date().toISOString(),
+    manifest: { applicationVersion: process.env.APP_VERSION ?? process.env.npm_package_version ?? "unknown", databaseSchemaVersion: 4, dataFileVersion: 1, schemaVersion: 4, capabilities: ["attachment_files", "strict_refs", "token_rotation"] },
     workspace: { id: workspace.id, slug: workspace.slug, name: workspace.name },
     members: await db.select().from(workspaceMembers).where(eq(workspaceMembers.workspaceId, id)),
     notebooks: nbs,
     notebookMembers: await byIds(nbIds, ids => db.select().from(notebookMembers).where(inArray(notebookMembers.notebookId, ids))),
     folders: await db.select().from(folders).where(eq(folders.workspaceId, id)),
     notes: ns,
-    attachments: await db.select().from(attachments).where(eq(attachments.workspaceId, id)),
+    attachments: attachmentRows,
+    attachmentFiles,
     versions: await byIds(noteIds, ids => db.select().from(noteVersions).where(inArray(noteVersions.noteId, ids))),
     shares: await db.select().from(shareLinks).where(eq(shareLinks.workspaceId, id)),
-    comments: await byIds(noteIds, ids => db.select().from(comments).where(inArray(comments.targetId, ids))),
+    comments: await byIds([...noteIds, ...postIds], ids => db.select().from(comments).where(inArray(comments.targetId, ids))),
     corrections: await byIds(noteIds, ids => db.select().from(corrections).where(inArray(corrections.noteId, ids))),
     posts: ps,
+    postAssets: postAssetRows,
+    postAssetFiles,
     reactions: await byIds(postIds, ids => db.select().from(postReactions).where(inArray(postReactions.postId, ids))),
     calendarItems: items,
     calendarOverrides: await byIds(itemIds, ids => db.select().from(calendarOverrides).where(inArray(calendarOverrides.itemId, ids))),
@@ -72,27 +98,41 @@ export async function instanceSnapshot() {
   const [settings] = await db.select().from(instanceSettings);
   const square = await db.select().from(posts).where(eq(posts.visibility, "public"));
   const squareIds = square.map(p => p.id);
+  const squareAssets = await byIds(squareIds, ids => db.select().from(postAssets).where(inArray(postAssets.postId, ids)));
+  const postAssetFiles: Array<{ postAssetId: string; bytes: number; sha256: string; dataBase64: string }> = [];
+  for (const asset of squareAssets) {
+    const raw = await readStoredFile({ ...asset, postAssetId: asset.id });
+    if (checksum(raw) !== asset.sha256 || raw.length !== asset.bytes) throw new Error(`广场附件 ${asset.id} 的磁盘文件与元数据不一致`);
+    postAssetFiles.push({ postAssetId: asset.id, bytes: raw.length, sha256: asset.sha256, dataBase64: raw.toString("base64") });
+  }
   const agentRows = await db.select().from(agents);
   return {
     format: "knowledge-instance-backup",
     version: 1,
     exportedAt: new Date().toISOString(),
-    settings: settings ?? null,
-    users: await db.select().from(users),
+    manifest: { applicationVersion: process.env.APP_VERSION ?? process.env.npm_package_version ?? "unknown", databaseSchemaVersion: 4, dataFileVersion: 1, schemaVersion: 4, capabilities: ["instance_metadata", "strict_refs", "secrets_omitted"] },
+    settings: settings ? {
+      ...settings,
+      smtpPassword: null,
+      moderationApiKey: null,
+      vapidPrivateKey: null,
+    } : null,
+    users: (await db.select().from(users)).map(user => ({ ...user, passwordHash: "!restore-requires-password-reset" })),
     serviceRequests: await db.select().from(serviceRequests),
     registrationCodes: (await db.select().from(registrationCodes)).map(row => ({ ...row, codePrefix: row.codePrefix.slice(0, 9) })),
     registrationCodeUsages: await db.select().from(registrationCodeUsages),
     savedShares: await db.select().from(savedShares),
     posts: square,
-    postAssets: await byIds(squareIds, ids => db.select().from(postAssets).where(inArray(postAssets.postId, ids))),
+    postAssets: squareAssets,
+    postAssetFiles,
     reactions: await byIds(squareIds, ids => db.select().from(postReactions).where(inArray(postReactions.postId, ids))),
     comments: await byIds(squareIds, ids => db.select().from(comments).where(inArray(comments.targetId, ids))),
-    moderationReviews: await db.select().from(moderationReviews),
-    contentReports: await db.select().from(contentReports),
+    moderationReviews: await byIds(squareIds, ids => db.select().from(moderationReviews).where(inArray(moderationReviews.targetId, ids))),
+    contentReports: await byIds(squareIds, ids => db.select().from(contentReports).where(inArray(contentReports.targetId, ids))),
     themes: await db.select().from(themes),
     navGroups: await db.select().from(navGroups),
     navLinks: await db.select().from(navLinks),
-    agents: agentRows.map(({ apiKey: _k, ...rest }) => rest),
+    agents: agentRows.map(({ apiKey: _k, ...rest }) => ({ ...rest, enabled: false })),
     workspaces: await db.select({
       id: workspaces.id,
       slug: workspaces.slug,
@@ -126,33 +166,6 @@ export function backupDue(input: {
   return now.getTime() - input.lastRunAt.getTime() >= interval;
 }
 
-export function checksum(x: Buffer) {
-  return createHash("sha256").update(x).digest("hex");
-}
-
-export function fingerprint(pass: string) {
-  return createHash("sha256").update(pass).digest("hex").slice(0, 16);
-}
-
-export function encryptPackage(raw: Buffer, pass: string) {
-  const salt = randomBytes(16);
-  const iv = randomBytes(12);
-  const key = scryptSync(pass, salt, 32);
-  const c = createCipheriv("aes-256-gcm", key, iv);
-  const body = Buffer.concat([c.update(raw), c.final()]);
-  return Buffer.concat([Buffer.from("KBENC1"), salt, iv, c.getAuthTag(), body]);
-}
-
-export function decryptPackage(raw: Buffer, pass: string) {
-  if (raw.subarray(0, 6).toString() !== "KBENC1") return raw;
-  const salt = raw.subarray(6, 22);
-  const iv = raw.subarray(22, 34);
-  const tag = raw.subarray(34, 50);
-  const d = createDecipheriv("aes-256-gcm", scryptSync(pass, salt, 32), iv);
-  d.setAuthTag(tag);
-  return Buffer.concat([d.update(raw.subarray(50)), d.final()]);
-}
-
 function stamp() {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
@@ -165,6 +178,9 @@ function redactUnencrypted(snapshot: Record<string, unknown>, encrypted: boolean
   }
   if (Array.isArray(next.calendarFeedTokens)) {
     next.calendarFeedTokens = next.calendarFeedTokens.map((s: { token?: string }) => ({ ...s, token: undefined }));
+  }
+  if (Array.isArray(next.calendarSubscriptions)) {
+    next.calendarSubscriptions = next.calendarSubscriptions.map((s: { url?: string }) => ({ ...s, url: undefined, enabled: false }));
   }
   return next;
 }
@@ -207,9 +223,6 @@ export async function executeBackupRun(target: TargetRow, runId: string) {
       : `workspace-${target.workspaceId}-${stamp()}.kbbackup`;
     const cred = JSON.parse(open(target.credentials)) as BackupCred;
     const ref: BackupTargetRef = { type: target.type, endpoint: target.endpoint, prefix: target.prefix };
-    await upload(ref, cred, path, data);
-    try { await applyRetention(ref, cred, target.retainDaily, target.retainWeekly); }
-    catch (e) { console.warn("备份保留策略未执行完:", e instanceof Error ? e.message : e); }
     const manifest = instance
       ? {
         format: packed.format,
@@ -217,6 +230,10 @@ export async function executeBackupRun(target: TargetRow, runId: string) {
         users: Array.isArray(packed.users) ? packed.users.length : 0,
         posts: Array.isArray(packed.posts) ? packed.posts.length : 0,
         encrypted,
+        bytes: data.length,
+        checksumSha256: sum,
+        remotePath: path,
+        exportedAt: packed.exportedAt,
       }
       : {
         format: packed.format,
@@ -225,7 +242,15 @@ export async function executeBackupRun(target: TargetRow, runId: string) {
         notes: Array.isArray(packed.notes) ? packed.notes.length : 0,
         attachments: Array.isArray(packed.attachments) ? packed.attachments.length : 0,
         encrypted,
+        bytes: data.length,
+        checksumSha256: sum,
+        remotePath: path,
+        exportedAt: packed.exportedAt,
       };
+    await upload(ref, cred, path, data);
+    await upload(ref, cred, `${path}.manifest.json`, Buffer.from(JSON.stringify(manifest)));
+    try { await applyRetention(ref, cred, target.retainDaily, target.retainWeekly); }
+    catch (e) { console.warn("备份保留策略未执行完:", e instanceof Error ? e.message : e); }
     await db.update(backupRuns).set({
       status: "success",
       bytes: data.length,

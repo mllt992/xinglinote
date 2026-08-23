@@ -1,6 +1,6 @@
 import { and,asc,desc,eq,inArray,lte,lt,or,sql } from "drizzle-orm";
 import { db } from "../../api/src/db/client.ts";
-import { aiChunks,aiProviders,aiUsage,attachments,backupRuns,backupTargets,auditLogs,authTokens,backgroundJobs,calendarFeedTokens,comments,calendarItems,calendarOverrides,calendarReminders,calendarSubscriptions,calendarTemplates,folders,mcpTokens,notebookMembers,notebooks,notes,notifications,posts,pushSubscriptions,savedShares,sessions,shareLinks,users,workspaceInvites,workspaceMembers,workspaces } from "../../api/src/db/schema.ts";
+import { aiChunks,aiProviders,aiUsage,attachments,backupRestoreRuns,backupRuns,backupTargets,auditLogs,authTokens,backgroundJobs,calendarFeedTokens,comments,calendarItems,calendarOverrides,calendarReminders,calendarSubscriptions,calendarTemplates,folders,mcpTokens,notebookMembers,notebooks,notes,notifications,posts,pushSubscriptions,savedShares,sessions,shareLinks,users,workspaceInvites,workspaceMembers,workspaces } from "../../api/src/db/schema.ts";
 import { nextOccurrence,reminderFireAt,rescheduleReminders,syncNoteTasks } from "../../api/src/lib/calendar.ts";
 import { pushToUser } from "../../api/src/lib/push.ts";
 import { syncSubscription } from "../../api/src/lib/ics.ts";
@@ -28,6 +28,7 @@ function shouldRetry(e:unknown){
   return true;
 }
 const interval=Number(process.env.WORKER_INTERVAL_MS??5000); // durable worker cadence
+async function restoring(workspaceId:string|null){const active=inArray(backupRestoreRuns.status,["restoring","verifying"]);const rows=workspaceId?await db.select({id:backupRestoreRuns.id}).from(backupRestoreRuns).where(and(eq(backupRestoreRuns.workspaceId,workspaceId),active)).limit(1):await db.select({id:backupRestoreRuns.id}).from(backupRestoreRuns).where(and(sql`${backupRestoreRuns.workspaceId} IS NULL`,active)).limit(1);return rows.length>0;}
 async function claim(){return db.transaction(async tx=>{const[job]=await tx.select().from(backgroundJobs).where(and(or(eq(backgroundJobs.status,"pending"),and(eq(backgroundJobs.status,"running"),lt(backgroundJobs.lockedAt,new Date(Date.now()-300000)))),lte(backgroundJobs.runAfter,new Date()))).orderBy(asc(backgroundJobs.createdAt)).limit(1).for("update",{skipLocked:true});if(!job)return null;const[claimed]=await tx.update(backgroundJobs).set({status:"running",lockedAt:new Date(),attempts:job.attempts+1}).where(eq(backgroundJobs.id,job.id)).returning();return claimed;});}
 async function execute(job:typeof backgroundJobs.$inferSelect){
   if(job.type==="extract_pdf"){const[a]=await db.select().from(attachments).where(eq(attachments.id,(job.payload as {attachmentId:string}).attachmentId));if(!a)return;
@@ -50,7 +51,7 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
  if(job.type==="expire_shares"){await db.update(shareLinks).set({status:"expired"}).where(and(eq(shareLinks.status,"active"),lt(shareLinks.expiresAt,new Date())));await db.delete(savedShares).where(and(eq(savedShares.status,"dismissed"),lt(savedShares.dismissedAt,new Date(Date.now()-180*86400000))));return;}
  if(job.type==="test_backup_target"){const targetId=String((job.payload as {targetId?:string}).targetId??''),[t]=await db.select().from(backupTargets).where(eq(backupTargets.id,targetId));if(!t)throw new Error('backup target missing');const credentials=JSON.parse(open(t.credentials)),path=`connection-test-${crypto.randomUUID()}.txt`;await upload(t,credentials,path,Buffer.from('knowledge backup target test'));await remove(t,credentials,path);return;}
   if(job.type==="backup_workspace"||job.type==="backup_instance"||job.type==="backup_run"){const{targetId,runId}=job.payload as {targetId:string;runId:string};const[t]=await db.select().from(backupTargets).where(eq(backupTargets.id,targetId));if(!t)throw new Error('backup target missing');await executeBackupRun(t,runId);return;}
- if(job.type==="index_note"){const noteId=String((job.payload as {noteId?:string}).noteId??"");const[n]=await db.select().from(notes).where(eq(notes.id,noteId));if(!n||!n.aiIndex||n.trashedAt){await db.delete(aiChunks).where(eq(aiChunks.noteId,noteId));return;}const p=await aiProvider(n.workspaceId);if(!p?.embeddingModel)return;   /* 没配 AI 就不是错误，等配好了再重建索引，别把队列堵死 */const pieces=chunks(n.title,n.bodyMd),vectors=await embed(p,pieces);if(vectors.length!==pieces.length)throw new Error("embedding result count mismatch");await db.transaction(async tx=>{await tx.delete(aiChunks).where(eq(aiChunks.noteId,n.id));for(let i=0;i<pieces.length;i++)await tx.insert(aiChunks).values({noteId:n.id,workspaceId:n.workspaceId,notebookId:n.notebookId,chunkIndex:i,content:pieces[i],embedding:vector(vectors[i])});});return;}
+ if(job.type==="index_note"){const noteId=String((job.payload as {noteId?:string}).noteId??"");const[n]=await db.select().from(notes).where(eq(notes.id,noteId));if(!n||!n.aiIndex||n.trashedAt){await db.delete(aiChunks).where(eq(aiChunks.noteId,noteId));return;}if(await restoring(n.workspaceId))throw new Error("workspace restore in progress");const p=await aiProvider(n.workspaceId);if(!p?.embeddingModel)return;   /* 没配 AI 就不是错误，等配好了再重建索引，别把队列堵死 */const pieces=chunks(n.title,n.bodyMd),vectors=await embed(p,pieces);if(vectors.length!==pieces.length)throw new Error("embedding result count mismatch");await db.transaction(async tx=>{await tx.delete(aiChunks).where(eq(aiChunks.noteId,n.id));for(let i=0;i<pieces.length;i++)await tx.insert(aiChunks).values({noteId:n.id,workspaceId:n.workspaceId,notebookId:n.notebookId,chunkIndex:i,content:pieces[i],embedding:vector(vectors[i])});});return;}
  if(job.type==="delete_workspace"){
    const workspaceId=String((job.payload as {workspaceId?:string}).workspaceId??"");
    const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,workspaceId));
@@ -93,7 +94,7 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
    const{itemId,reminderId,occurrenceStart}=job.payload as {itemId?:string;reminderId?:string;occurrenceStart?:string|null};
    const[item]=await db.select().from(calendarItems).where(eq(calendarItems.id,String(itemId??"")));
    const[reminder]=await db.select().from(calendarReminders).where(eq(calendarReminders.id,String(reminderId??"")));
-   if(!item||!reminder)return;
+   if(!item||!reminder)return;if(await restoring(item.workspaceId))throw new Error("workspace restore in progress");
    // 条目已完成/取消/删除：不发，置 skipped
    if(item.trashedAt||item.status!=="open"){await db.update(calendarReminders).set({status:"skipped"}).where(eq(calendarReminders.id,reminder.id));return;}
    const occurrence=occurrenceStart?new Date(occurrenceStart):undefined;
@@ -118,7 +119,7 @@ ${env.publicUrl}/w/${item.workspaceId}/calendar?item=${item.id}`);}
  }
  if(job.type==="calendar_ics_sync"){
    const subscriptionId=String((job.payload as {subscriptionId?:string}).subscriptionId??"");
-   if(subscriptionId){await syncSubscription(subscriptionId);return;}
+   if(subscriptionId){const[sub]=await db.select().from(calendarSubscriptions).where(eq(calendarSubscriptions.id,subscriptionId));if(sub&&await restoring(sub.workspaceId))throw new Error("workspace restore in progress");await syncSubscription(subscriptionId);return;}
    // 不带 id 的是定时轮询：只拉「距上次同步超过 30 分钟」的启用订阅（设计 16 §4.6）
    const subs=await db.select().from(calendarSubscriptions).where(eq(calendarSubscriptions.enabled,true));
    for(const s of subs){
@@ -155,7 +156,9 @@ async function one(){const job=await claim();if(!job)return false;try{await exec
  return true;}
 async function scheduleBackups(){
   const now=new Date();
+  const instanceRestoring=await restoring(null);
   for(const t of await db.select().from(backupTargets).where(eq(backupTargets.enabled,true))){
+    if(instanceRestoring||(t.workspaceId&&await restoring(t.workspaceId)))continue;
     const[latest]=await db.select({status:backupRuns.status,finishedAt:backupRuns.finishedAt}).from(backupRuns).where(eq(backupRuns.targetId,t.id)).orderBy(desc(backupRuns.createdAt)).limit(1);
     if(!backupDue({schedule:t.schedule,lastRunAt:t.lastRunAt,latest:latest??null},now))continue;
     const[r]=await db.insert(backupRuns).values({targetId:t.id,workspaceId:t.workspaceId}).returning();

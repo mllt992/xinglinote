@@ -90,6 +90,16 @@ try {
   const s3Files = await fetch("http://127.0.0.1:19094/_files").then(r => r.json());
   const list = (await q(`/workspaces/${me.personalWorkspaceId}/backups`, {}, c)).data;
   const adminList = (await q("/admin/backups", {}, c)).data;
+  const webObjects = (await q(`/backup-targets/${webdav.id}/objects`, {}, c)).data.objects;
+  const s3Objects = (await q(`/backup-targets/${s3.id}/objects`, {}, c)).data.objects;
+  let wrongPassRejected = false;
+  try {
+    await q(`/backup-targets/${webdav.id}/objects/inspect`, { method: 'POST', body: JSON.stringify({ remote_path: webResult.remotePath, passphrase: 'wrong-passphrase', mode: 'new_workspace' }) }, c);
+  } catch { wrongPassRejected = true; }
+  const plan = (await q(`/backup-targets/${webdav.id}/objects/inspect`, { method: 'POST', body: JSON.stringify({ remote_path: webResult.remotePath, passphrase: 'backup-passphrase', mode: 'new_workspace' }) }, c)).data;
+  const drill = (await q(`/backup-restore-plans/${plan.restore_plan_id}/drill`, { method: 'POST', body: JSON.stringify({ passphrase: 'backup-passphrase', confirm_name: plan.confirmation_text }) }, c)).data;
+  await db.delete(backupRuns).where(eq(backupRuns.id, webResult.id));
+  const rediscovered = (await q(`/backup-targets/${webdav.id}/objects`, {}, c)).data.objects.find(x => x.remote_path === webResult.remotePath);
   const serialized = JSON.stringify({ list, adminList });
 
   const out = {
@@ -102,6 +112,10 @@ try {
     encryptedRemote: davFiles.some(x => x.head === "KBENC1") && s3Files.some(x => x.head === "KBENC1"),
     credentialsRedacted: !serialized.includes("remote-secret") && !serialized.includes("backup-passphrase") && !serialized.includes("s3-secret"),
     instanceListedSeparately: adminList.targets.some(t => t.id === inst.id) && !list.targets.some(t => t.id === inst.id),
+    remoteDiscovery: webObjects.some(x => x.remote_path === webResult.remotePath && x.checksum_sha256 === webResult.checksumSha256) && s3Objects.some(x => x.remote_path === s3Result.remotePath),
+    wrongPassNoMutation: wrongPassRejected,
+    restoreDrill: drill.status === 'success' && drill.workspace_id === null,
+    remoteDiscoveryWithoutLocalRun: rediscovered?.locally_recorded === false && rediscovered?.checksum_sha256 === webResult.checksumSha256,
   };
   console.log(JSON.stringify(out, null, 2));
   if (!Object.values(out).every(Boolean)) process.exitCode = 1;
