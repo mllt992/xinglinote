@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode, type SelectHTMLAttributes } from "
 import { useNavigate, useSearchParams } from "react-router-dom";
 import * as Avatar from "@radix-ui/react-avatar";
 import {
-  Ban, BellRing, Bot, Check, ChevronRight, Compass, Copy, Download, HardDrive, Image, KeyRound, LayoutGrid, MoreHorizontal,
+  Ban, BellRing, Bot, Check, ChevronRight, CloudUpload, Compass, Copy, Download, HardDrive, Image, KeyRound, LayoutGrid, MoreHorizontal,
   Plus, Search, Shield, ShieldCheck, Sparkles, Ticket, Trash2, UserCog, Users, X,
 } from "lucide-react";
 import { api } from "../api";
@@ -20,8 +20,9 @@ import { ModerationConfig, ModerationQueue } from "./moderation-panel";
 import { PushConfig } from "./push-admin-panel";
 import { SmtpConfig } from "./smtp-panel";
 import { NavAdmin } from "./nav-admin";
+import { BackupPanel } from "./backup-panel";
 
-type Tab = "overview" | "registration" | "moderation" | "agents" | "notifications" | "codes" | "users" | "nav";
+type Tab = "overview" | "registration" | "moderation" | "agents" | "notifications" | "codes" | "users" | "nav" | "backup";
 type AdminUser = { id: string; displayName: string; email: string; handle: string; roleInstance: string; status: string; createdAt?: string };
 type AdminCode = { id: string; prefix: string; usedCount: number; maxUses: number; status: string; note?: string | null; expiresAt?: string | null; createdAt?: string; skipEmailVerification?: boolean; bindRole?: string | null };
 type Overview = {
@@ -37,6 +38,7 @@ const TABS: { id: Tab; label: string; hint: string; icon: typeof LayoutGrid }[] 
   { id: "agents", label: "智能体", hint: "创建可被动态 @ 的 AI 助手", icon: Bot },
   { id: "notifications", label: "通知与推送", hint: "SMTP、VAPID 密钥与推送总开关", icon: BellRing },
   { id: "nav", label: "导航", hint: "分组、站点与自动取图标", icon: Compass },
+  { id: "backup", label: "实例备份", hint: "打包用户与配置，上传到 WebDAV 或 S3", icon: CloudUpload },
   { id: "codes", label: "注册码", hint: "批量发放一次性准入", icon: Ticket },
   { id: "users", label: "用户", hint: "封禁、角色与状态", icon: Users },
 ];
@@ -377,6 +379,8 @@ export function AdminPage() {
         {!error && !loading && tab === "agents" && <AgentsPanel />}
 
         {!error && !loading && tab === "nav" && <NavAdmin settings={overview?.settings ?? {}} onSaved={loadOverview} />}
+
+        {!error && !loading && tab === "backup" && <BackupPanel />}
 
         {!error && !loading && tab === "registration" && <div className="space-y-5">
           {SETTING_GROUPS.map(group => <section key={group.title} className="overflow-hidden rounded-xl border bg-background">

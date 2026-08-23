@@ -64,6 +64,7 @@ pnpm test
 ```bash
 node scripts/mock-ai-provider.mjs   # verify-ai-index、verify-ai-write-review、verify-agents 要它（:19091）
 node scripts/mock-webdav.mjs        # verify-backup 要它（:19092）
+node scripts/mock-s3.mjs            # verify-backup 的 S3 通道（:19094）
 node scripts/mock-push-gateway.mjs  # verify-push 要它（:19093）
 ```
 

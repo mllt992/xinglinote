@@ -65,6 +65,14 @@ try {
   result.credentialsNeverReturned = !JSON.stringify(after).includes('verify-secret-value') && !JSON.stringify(after).includes('verify-passphrase');
   result.runEnqueued = !!(await q(`/backup-targets/${target.id}/run`, { method: 'POST' }, c)).data.runId;
   result.testEnqueued = !!(await q(`/backup-targets/${target.id}/test`, { method: 'POST' }, c)).data.jobId;
+  const s3 = (await q(`/workspaces/${ws.id}/backups/targets`, { method: 'POST', body: JSON.stringify({ name: '验收 S3', type: 's3', endpoint: 'https://s3.example.test', prefix: 'knowledge', schedule: 'weekly', credentials: { accessKey: 'AKIAEXAMPLE', secretKey: 'verify-s3-secret', bucket: 'kb-backups', region: 'auto' }, passphrase: 'verify-passphrase' }) }, c)).data;
+  result.s3TargetCreated = !!s3.id;
+  const inst = (await q('/admin/backups/targets', { method: 'POST', body: JSON.stringify({ name: '验收实例', type: 'webdav', endpoint: 'https://nas.example.test/dav', prefix: 'instance', schedule: 'weekly', credentials: { username: 'u', password: 'verify-secret-value' }, passphrase: 'verify-passphrase' }) }, c)).data;
+  result.instanceTargetCreated = !!inst.id;
+  const instList = (await q('/admin/backups', {}, c)).data;
+  result.instanceListed = instList.targets.some(t => t.id === inst.id && t.type === 'webdav');
+  result.instanceCredentialsRedacted = !JSON.stringify(instList).includes('verify-secret-value');
+  await q(`/backup-targets/${inst.id}`, { method: 'DELETE' }, c).catch(() => {});
 
   // 通知中心
   result.notificationsReadable = Array.isArray((await q('/notifications', {}, c)).data.notifications);

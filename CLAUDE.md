@@ -98,7 +98,7 @@ Redis 同样是可选件（`compose.redis.yml` / `pnpm redis:up`），只缓存 
 - 需要 `pnpm dev` 起着。
 - 带 `-cdp` 的还需要 Chrome 开 `--remote-debugging-port=9223` 且已登录。
 - 账号从环境变量取：`$env:KB_EMAIL` / `$env:KB_PASSWORD`（PowerShell）。
-- 少数脚本要先起假服务：`node scripts/mock-ai-provider.mjs`（:19091）、`node scripts/mock-webdav.mjs`（:19092）。
+- 少数脚本要先起假服务：`node scripts/mock-ai-provider.mjs`（:19091）、`node scripts/mock-webdav.mjs`（:19092）、`node scripts/mock-s3.mjs`（:19094）。
 
 对应关系见 [README.md](README.md#校验)。
 

@@ -155,9 +155,14 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | GET | `/api/v1/workspaces/:id/trash` | |
 | POST | `/api/v1/trash/:type/:id/restore` | |
 | DELETE | `/api/v1/trash/:type/:id` | purge |
-| CRUD | `/api/v1/backup-targets` | |
-| POST | `/api/v1/backup-targets/:id/run` | |
-| POST | `/api/v1/backup-jobs/:id/restore` | |
+| GET | `/api/v1/workspaces/:id/backups` | 工作区管理员 | 目标与最近 100 条运行记录（凭据/口令不回传） |
+| POST | `/api/v1/workspaces/:id/backups/targets` | 同上 | `{ type: webdav\|s3, endpoint, credentials, … }` |
+| GET | `/api/v1/admin/backups` | 实例管理员 | 实例级目标与运行记录 |
+| POST | `/api/v1/admin/backups/targets` | 同上 | 同上，scope=instance |
+| PATCH/DELETE | `/api/v1/backup-targets/:id` | 对应管理员 | 改配置 / 删目标（顺带清运行记录） |
+| POST | `/api/v1/backup-targets/:id/test` | 同上 | 写一个小文件再删 |
+| POST | `/api/v1/backup-targets/:id/run` | 同上 | |
+| POST | `/api/v1/backup-jobs/:id/restore` | | 尚未实现 |
 | GET | `/api/v1/notifications` | |
 | POST | `/api/v1/notifications/read` | |
 

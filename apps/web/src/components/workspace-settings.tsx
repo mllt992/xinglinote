@@ -53,7 +53,7 @@ const ROLE_HINT: Record<string, string> = {
 const AUDIT_LABEL: Record<string, string> = {
   "workspace.freeze": "冻结工作区", "workspace.unfreeze": "解冻工作区", "workspace.rename": "改工作区名字",
   "workspace.restore": "从导出文件恢复", "workspace.invite_revoke": "作废邀请链接", "workspace.member_leave": "成员主动退出",
-  "backup.run": "执行备份", "backup.test": "测试备份连接",
+  "backup.run": "执行备份", "backup.test": "测试备份连接", "backup.target_create": "新增备份目标",
 };
 
 const selectCls = "h-9 shrink-0 rounded-lg border border-border bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/20";

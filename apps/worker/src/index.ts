@@ -1,4 +1,4 @@
-import { and,asc,eq,inArray,lte,lt,or,sql } from "drizzle-orm";
+import { and,asc,desc,eq,inArray,lte,lt,or,sql } from "drizzle-orm";
 import { db } from "../../api/src/db/client.ts";
 import { aiChunks,aiProviders,aiUsage,attachments,backupRuns,backupTargets,auditLogs,authTokens,backgroundJobs,calendarFeedTokens,comments,calendarItems,calendarOverrides,calendarReminders,calendarSubscriptions,calendarTemplates,folders,mcpTokens,notebookMembers,notebooks,notes,notifications,posts,pushSubscriptions,savedShares,sessions,shareLinks,users,workspaceInvites,workspaceMembers,workspaces } from "../../api/src/db/schema.ts";
 import { nextOccurrence,reminderFireAt,rescheduleReminders,syncNoteTasks } from "../../api/src/lib/calendar.ts";
@@ -7,7 +7,7 @@ import { syncSubscription } from "../../api/src/lib/ics.ts";
 import { sendMail } from "../../api/src/lib/mail.ts";
 import { env } from "../../api/src/env.ts";
 import { aiProvider,chunks,embed,vector } from "../../api/src/lib/ai.ts";
-import { checksum,encryptPackage,workspaceSnapshot } from "../../api/src/lib/backup.ts";
+import { backupDue, executeBackupRun } from "../../api/src/lib/backup.ts";
 import { upload,remove } from "../../api/src/lib/backup-transfer.ts";
 import { open } from "../../api/src/lib/secrets.ts";
 import { pruneNoteVersions } from "../../api/src/lib/versions.ts";
@@ -47,7 +47,7 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
  if(job.type==="cleanup_tokens"){await db.delete(authTokens).where(lt(authTokens.expiresAt,new Date(Date.now()-86400000)));return;}
  if(job.type==="expire_shares"){await db.update(shareLinks).set({status:"expired"}).where(and(eq(shareLinks.status,"active"),lt(shareLinks.expiresAt,new Date())));await db.delete(savedShares).where(and(eq(savedShares.status,"dismissed"),lt(savedShares.dismissedAt,new Date(Date.now()-180*86400000))));return;}
  if(job.type==="test_backup_target"){const targetId=String((job.payload as {targetId?:string}).targetId??''),[t]=await db.select().from(backupTargets).where(eq(backupTargets.id,targetId));if(!t)throw new Error('backup target missing');const credentials=JSON.parse(open(t.credentials)),path=`connection-test-${crypto.randomUUID()}.txt`;await upload(t,credentials,path,Buffer.from('knowledge backup target test'));await remove(t,credentials,path);return;}
- if(job.type==="backup_workspace"){const{targetId,runId}=job.payload as {targetId:string;runId:string};const[t]=await db.select().from(backupTargets).where(eq(backupTargets.id,targetId));if(!t?.workspaceId)throw new Error('backup target missing');await db.update(backupRuns).set({status:'running',startedAt:new Date()}).where(eq(backupRuns.id,runId));try{const snapshot=await workspaceSnapshot(t.workspaceId),raw=Buffer.from(JSON.stringify(snapshot)),data=t.encryptionKey?encryptPackage(raw,open(t.encryptionKey)):raw,sum=checksum(data),path=`workspace-${t.workspaceId}-${new Date().toISOString().replace(/[:.]/g,'-')}.kbbackup`;await upload(t,JSON.parse(open(t.credentials)),path,data);await db.update(backupRuns).set({status:'success',bytes:data.length,checksumSha256:sum,remotePath:path,manifest:{format:snapshot.format,version:snapshot.version,notebooks:snapshot.notebooks.length,notes:snapshot.notes.length,attachments:snapshot.attachments.length,encrypted:!!t.encryptionKey},finishedAt:new Date()}).where(eq(backupRuns.id,runId));await db.update(backupTargets).set({lastRunAt:new Date()}).where(eq(backupTargets.id,t.id));}catch(e){await db.update(backupRuns).set({status:'failed',error:e instanceof Error?e.message:String(e),finishedAt:new Date()}).where(eq(backupRuns.id,runId));throw e;}return;}
+  if(job.type==="backup_workspace"||job.type==="backup_instance"||job.type==="backup_run"){const{targetId,runId}=job.payload as {targetId:string;runId:string};const[t]=await db.select().from(backupTargets).where(eq(backupTargets.id,targetId));if(!t)throw new Error('backup target missing');await executeBackupRun(t,runId);return;}
  if(job.type==="index_note"){const noteId=String((job.payload as {noteId?:string}).noteId??"");const[n]=await db.select().from(notes).where(eq(notes.id,noteId));if(!n||!n.aiIndex||n.trashedAt){await db.delete(aiChunks).where(eq(aiChunks.noteId,noteId));return;}const p=await aiProvider(n.workspaceId);if(!p?.embeddingModel)return;   /* 没配 AI 就不是错误，等配好了再重建索引，别把队列堵死 */const pieces=chunks(n.title,n.bodyMd),vectors=await embed(p,pieces);if(vectors.length!==pieces.length)throw new Error("embedding result count mismatch");await db.transaction(async tx=>{await tx.delete(aiChunks).where(eq(aiChunks.noteId,n.id));for(let i=0;i<pieces.length;i++)await tx.insert(aiChunks).values({noteId:n.id,workspaceId:n.workspaceId,notebookId:n.notebookId,chunkIndex:i,content:pieces[i],embedding:vector(vectors[i])});});return;}
  if(job.type==="delete_workspace"){
    const workspaceId=String((job.payload as {workspaceId?:string}).workspaceId??"");
@@ -151,7 +151,17 @@ const BATCH=10;                                        // 队列一堆积，一�
 async function tick(){for(let i=0;i<BATCH;i++)if(!await one())return;}
 async function one(){const job=await claim();if(!job)return false;try{await execute(job);await db.update(backgroundJobs).set({status:"done",finishedAt:new Date(),lastError:null}).where(eq(backgroundJobs.id,job.id));}catch(e){const retry=job.attempts<5&&shouldRetry(e);await db.update(backgroundJobs).set({status:retry?"pending":"failed",runAfter:new Date(Date.now()+Math.min(3600000,1000*2**job.attempts)),lastError:e instanceof Error?e.message:String(e)}).where(eq(backgroundJobs.id,job.id));}
  return true;}
-async function schedule(){const now=new Date();for(const t of await db.select().from(backupTargets).where(eq(backupTargets.enabled,true))){if(t.schedule==='manual')continue;const due=!t.lastRunAt||(t.schedule==='daily'?now.getTime()-t.lastRunAt.getTime()>=86400000:now.getTime()-t.lastRunAt.getTime()>=7*86400000);if(due){const active=await db.select().from(backupRuns).where(and(eq(backupRuns.targetId,t.id),or(eq(backupRuns.status,'pending'),eq(backupRuns.status,'running'))));if(!active.length){const[r]=await db.insert(backupRuns).values({targetId:t.id,workspaceId:t.workspaceId}).returning();await db.insert(backgroundJobs).values({type:'backup_workspace',payload:{targetId:t.id,runId:r.id}});}}}for(const type of["purge_trash","cleanup_tokens","expire_shares","prune_versions","calendar_rollover"]){const rows=await db.select().from(backgroundJobs).where(and(eq(backgroundJobs.type,type),or(eq(backgroundJobs.status,"pending"),eq(backgroundJobs.status,"running"))));if(!rows.length)await db.insert(backgroundJobs).values({type,payload:{},runAfter:new Date()});}
+async function scheduleBackups(){
+  const now=new Date();
+  for(const t of await db.select().from(backupTargets).where(eq(backupTargets.enabled,true))){
+    const[latest]=await db.select({status:backupRuns.status,finishedAt:backupRuns.finishedAt}).from(backupRuns).where(eq(backupRuns.targetId,t.id)).orderBy(desc(backupRuns.createdAt)).limit(1);
+    if(!backupDue({schedule:t.schedule,lastRunAt:t.lastRunAt,latest:latest??null},now))continue;
+    const[r]=await db.insert(backupRuns).values({targetId:t.id,workspaceId:t.workspaceId}).returning();
+    const type=t.scope==="instance"||!t.workspaceId?"backup_instance":"backup_workspace";
+    await db.insert(backgroundJobs).values({type,payload:{targetId:t.id,runId:r.id}});
+  }
+}
+async function schedule(){await scheduleBackups();for(const type of["purge_trash","cleanup_tokens","expire_shares","prune_versions","calendar_rollover"]){const rows=await db.select().from(backgroundJobs).where(and(eq(backgroundJobs.type,type),or(eq(backgroundJobs.status,"pending"),eq(backgroundJobs.status,"running"))));if(!rows.length)await db.insert(backgroundJobs).values({type,payload:{},runAfter:new Date()});}
  // ICS 轮询自己续期，这里只负责点火：认「不带 subscriptionId」的那条才是轮询job，否则一条手动同步就能把轮询挡住
  const polls=await db.select().from(backgroundJobs).where(and(eq(backgroundJobs.type,"calendar_ics_sync"),or(eq(backgroundJobs.status,"pending"),eq(backgroundJobs.status,"running")),sql`payload->>'subscriptionId' IS NULL`));
  if(!polls.length)await db.insert(backgroundJobs).values({type:"calendar_ics_sync",payload:{},runAfter:new Date()});}
@@ -167,5 +177,6 @@ async function safeTick(){
 console.log(`knowledge worker started (${interval}ms)`);
 await schedule();
 setInterval(()=>void safeTick(),interval);
+setInterval(()=>void scheduleBackups().catch(e=>console.error("backup schedule failed:",e)),5*60*1000);
 setInterval(()=>void schedule().catch(e=>console.error("schedule failed:",e)),86400000);
 void safeTick();
