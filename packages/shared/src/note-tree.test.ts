@@ -5,6 +5,7 @@ import {
   flattenFolders,
   folderAncestorIds,
   folderDepth,
+  folderDropZone,
   folderMoveExceedsDepth,
   FOLDER_DEPTH_LIMIT,
   isFolderDescendant,
@@ -85,4 +86,22 @@ test("folder move rejects cycles and over-deep nests", () => {
 test("flattenFolders walks depth-first and keeps orphans", () => {
   const flat = flattenFolders(folders, "name");
   assert.deepEqual(flat.map((r) => `${r.depth}:${r.folder.id}`), ["0:orphan", "0:vps", "1:cn"]);
+});
+
+test("created and custom modes order sibling folders by sortKey", () => {
+  const dirs = [
+    { id: "b", title: "B", parentId: null, sortKey: 1 },
+    { id: "a", title: "A", parentId: null, sortKey: 0 },
+  ];
+  assert.deepEqual(buildNoteTree(dirs, [], "custom").map((n) => n.id), ["a", "b"]);
+  assert.deepEqual(buildNoteTree(dirs, [], "created").map((n) => n.id), ["a", "b"]);
+  assert.deepEqual(buildNoteTree(dirs, [], "name").map((n) => n.id), ["a", "b"]);
+});
+
+test("folderDropZone splits a row into before / into / after", () => {
+  assert.equal(folderDropZone(0), "before");
+  assert.equal(folderDropZone(0.1), "before");
+  assert.equal(folderDropZone(0.5), "into");
+  assert.equal(folderDropZone(0.9), "after");
+  assert.equal(folderDropZone(1), "after");
 });

@@ -3,6 +3,15 @@ import { compareNotes, sortNotes, type NoteSortMode, type NoteSortable } from ".
 /** 设计 03 §5.3：目录深度一期上限 8。 */
 export const FOLDER_DEPTH_LIMIT = 8;
 
+export type FolderDropZone = "before" | "into" | "after";
+
+/** 目录行上半 / 中间 / 下半：同级插入 vs 移入。笔记拖到目录上始终走 `into`。 */
+export function folderDropZone(offsetRatio: number): FolderDropZone {
+  if (offsetRatio < 0.28) return "before";
+  if (offsetRatio > 0.72) return "after";
+  return "into";
+}
+
 export type TreeFolder = {
   id: string;
   title: string;

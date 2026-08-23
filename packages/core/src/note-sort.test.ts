@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { compareNotes, isNoteSortMode, moveNoteId, nextSortKey, sortNotes } from "@kb/shared";
+import { compareNotes, isNoteSortMode, moveNoteId, nextSortKey, placeId, sortNotes } from "@kb/shared";
 
 const notes = [
   { id: "c", title: "笔记10", createdAt: "2024-03-01T00:00:00.000Z", sortKey: 2 },
@@ -57,4 +57,12 @@ test("moveNoteId reorders and rejects unknown ids", () => {
   assert.deepEqual(moveNoteId(["a", "b", "c"], "a", "c"), ["b", "c", "a"]);
   assert.deepEqual(moveNoteId(["a", "b"], "a", "a"), ["a", "b"]);
   assert.equal(moveNoteId(["a", "b"], "z", "a"), null);
+});
+
+test("placeId inserts before or after and accepts an outsider", () => {
+  assert.deepEqual(placeId(["a", "b", "c"], "c", "a", "before"), ["c", "a", "b"]);
+  assert.deepEqual(placeId(["a", "b", "c"], "c", "a", "after"), ["a", "c", "b"]);
+  assert.deepEqual(placeId(["a", "b", "c"], "a", "c", "after"), ["b", "c", "a"]);
+  assert.deepEqual(placeId(["a", "b"], "z", "b", "after"), ["a", "b", "z"]);
+  assert.equal(placeId(["a", "b"], "z", "missing", "before"), null);
 });

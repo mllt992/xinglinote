@@ -60,3 +60,18 @@ export function moveNoteId(ids: readonly string[], fromId: string, toId: string)
   next.splice(to, 0, fromId);
   return next;
 }
+
+/** 把 `fromId` 插到 `toId` 前或后。`fromId` 可以原本不在列表里（跨父目录拖过来）。 */
+export function placeId(
+  ids: readonly string[],
+  fromId: string,
+  toId: string,
+  where: "before" | "after",
+): string[] | null {
+  if (fromId === toId) return ids.slice();
+  const next = ids.filter((id) => id !== fromId);
+  const to = next.indexOf(toId);
+  if (to < 0) return null;
+  next.splice(where === "before" ? to : to + 1, 0, fromId);
+  return next;
+}

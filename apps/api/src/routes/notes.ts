@@ -184,6 +184,25 @@ knowledge.patch("/notebooks/:id/notes/order", async (c) => {
   return ok(c, { noteIds: body.noteIds });
 });
 
+/**
+ * 目录的自定义顺序。规则与笔记完全一致：整串重写 `sort_key`。
+ * 前端只传同级那一串；别的父目录下的 key 不动。
+ */
+knowledge.patch("/notebooks/:id/folders/order", async (c) => {
+  const user = await requireUser(c);
+  const { notebook: nb } = await notebookAccess(c.req.param("id"), user.id, "edit");
+  const body = z.object({ folderIds: z.array(z.string().uuid()).min(1).max(2000) }).parse(await c.req.json());
+  if (new Set(body.folderIds).size !== body.folderIds.length) throw fail("VALIDATION", "目录顺序不能重复");
+  const rows = await db.select({ id: folders.id }).from(folders).where(and(eq(folders.notebookId, nb.id), isNull(folders.trashedAt), inArray(folders.id, body.folderIds)));
+  if (rows.length !== body.folderIds.length) throw fail("VALIDATION", "只能排列当前笔记本里的目录");
+  await db.transaction(async (tx) => {
+    for (let i = 0; i < body.folderIds.length; i++) {
+      await tx.update(folders).set({ sortKey: i }).where(eq(folders.id, body.folderIds[i]!));
+    }
+  });
+  return ok(c, { folderIds: body.folderIds });
+});
+
 knowledge.post("/notes", async (c) => {
   const user = await requireUser(c);
   const body = z.object({ notebookId: z.string().uuid(), folderId: z.string().uuid().nullish(), title: z.string().min(1).max(200).optional() }).parse(await c.req.json());
@@ -437,7 +456,19 @@ knowledge.post("/folders", async (c) => {
   const {notebook:nb,workspace:ws}=await notebookAccess(body.notebookId,user.id,"edit");
   await assertFolderInNotebook(body.parentId, nb.id);
   await assertFolderDepth(nb.id, body.parentId ?? null);
-  const [folder] = await db.insert(folders).values({ workspaceId: ws.id, notebookId: nb.id, parentId: body.parentId ?? null, title: body.title.trim() }).returning();
+  const parentId = body.parentId ?? null;
+  const siblingKeys = await db.select({ sortKey: folders.sortKey }).from(folders).where(and(
+    eq(folders.notebookId, nb.id),
+    isNull(folders.trashedAt),
+    parentId ? eq(folders.parentId, parentId) : isNull(folders.parentId),
+  ));
+  const [folder] = await db.insert(folders).values({
+    workspaceId: ws.id,
+    notebookId: nb.id,
+    parentId,
+    title: body.title.trim(),
+    sortKey: nextSortKey(siblingKeys.map((s) => s.sortKey)),
+  }).returning();
   return ok(c, folder, 201);
 });
 
@@ -452,7 +483,22 @@ knowledge.patch("/folders/:id", async (c) => {
     await assertNoFolderCycle(folder.id, body.parentId);
     await assertFolderDepth(folder.notebookId, body.parentId, folder.id);
   }
-  const [saved] = await db.update(folders).set({ title: body.title ?? folder.title, parentId: body.parentId === undefined ? folder.parentId : body.parentId }).where(eq(folders.id, folder.id)).returning();
+  const nextParent = body.parentId === undefined ? folder.parentId : body.parentId;
+  const parentChanged = (nextParent ?? null) !== (folder.parentId ?? null);
+  let sortKey = folder.sortKey;
+  if (parentChanged) {
+    const siblingKeys = await db.select({ sortKey: folders.sortKey }).from(folders).where(and(
+      eq(folders.notebookId, folder.notebookId),
+      isNull(folders.trashedAt),
+      nextParent ? eq(folders.parentId, nextParent) : isNull(folders.parentId),
+    ));
+    sortKey = nextSortKey(siblingKeys.map((s) => s.sortKey));
+  }
+  const [saved] = await db.update(folders).set({
+    title: body.title ?? folder.title,
+    parentId: nextParent,
+    sortKey,
+  }).where(eq(folders.id, folder.id)).returning();
   return ok(c, saved);
 });
 

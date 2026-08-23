@@ -71,8 +71,10 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | POST/PATCH/DELETE | `.../notebooks` | DELETE=trash |
 | POST | `/api/v1/notebooks/:nb/move` | workspaceId；整本跨工作区搬迁，两端都要 owner/admin |
 | GET | `.../notebooks/:nb/tree` | 目录树 |
+| PATCH | `/api/v1/notebooks/:nb/folders/order` | 整串重写目录 `sort_key`，要本的 `edit` |
+| PATCH | `/api/v1/notebooks/:nb/notes/order` | 整串重写笔记 `sort_key`，要本的 `edit` |
 | POST | `.../folders` | |
-| PATCH | `.../folders/:fid` | 改名/移动 |
+| PATCH | `.../folders/:fid` | 改名/移动；换父目录时新 `sort_key` 排到目标同级最后 |
 | DELETE | `.../folders/:fid` | trash |
 | POST | `/api/v1/notes` | notebookId, folderId, title? |
 | GET/PATCH | `/api/v1/notes/:id` | PATCH: bodyMd, title, published, aiIndex, expectedVersion, force? |

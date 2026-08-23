@@ -78,6 +78,7 @@ node scripts/verify-mcp-tools.mjs   # MCP 工具合同：动态减清单、搜�
 node scripts/verify-gaps.mjs        # 分享类型、分享总览、回收站销毁、搜索、标签
 node scripts/verify-saved-shares.mjs # 收到的分享：自动收下、移出不救活、手工再存
 node scripts/verify-notebook-move.mjs    # 笔记本跨工作区搬迁：内容、附件、搜索归属、双链、权限
+node scripts/verify-folder-order.mjs     # 目录同级调序：新建排最后、整串重写、换父落到末尾
 node scripts/verify-site-review.mjs      # 文档站：编辑申请、管理员过审才上线
 node scripts/verify-feed.mjs        # 圈子动态、泄漏检查、转正、公开主页、评论
 node scripts/verify-agents.mjs      # 智能体 CRUD、动态 @、评论回复

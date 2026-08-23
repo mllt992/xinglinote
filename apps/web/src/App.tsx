@@ -416,6 +416,34 @@ function Workspace() {
     try { await api(`/api/v1/notebooks/${nbId}/notes/order`, { method: "PATCH", body: JSON.stringify({ noteIds }) }); }
     catch (e) { toast.error("未能保存自定义顺序", (e as Error).message); void refreshTree(); }
   }
+  async function persistFolderOrder(folderIds: string[]) {
+    if (!nbId) return;
+    const rank = new Map(folderIds.map((id, i) => [id, i]));
+    setFolders((prev) => prev.map((f) => rank.has(f.id) ? { ...f, sortKey: rank.get(f.id)! } : f));
+    try { await api(`/api/v1/notebooks/${nbId}/folders/order`, { method: "PATCH", body: JSON.stringify({ folderIds }) }); }
+    catch (e) { toast.error("未能保存目录顺序", (e as Error).message); void refreshTree(); }
+  }
+  async function persistFolderPlace(folderId: string, parentId: string | null, siblingIds: string[]) {
+    if (!nbId) return;
+    const current = folders.find((f) => f.id === folderId);
+    if (!current) return;
+    const parentChanged = (current.parentId ?? null) !== parentId;
+    const rank = new Map(siblingIds.map((id, i) => [id, i]));
+    setFolders((prev) => prev.map((f) => {
+      if (f.id === folderId) return { ...f, parentId, sortKey: rank.get(f.id) ?? f.sortKey };
+      if (rank.has(f.id)) return { ...f, sortKey: rank.get(f.id)! };
+      return f;
+    }));
+    try {
+      if (parentChanged) {
+        await api(`/api/v1/folders/${folderId}`, { method: "PATCH", body: JSON.stringify({ parentId }) });
+      }
+      await api(`/api/v1/notebooks/${nbId}/folders/order`, { method: "PATCH", body: JSON.stringify({ folderIds: siblingIds }) });
+    } catch (e) {
+      toast.error("未能保存目录顺序", (e as Error).message);
+      void refreshTree();
+    }
+  }
   useEffect(() => { if (!noteId) { setNote(null); setAtts([]); return; } api<NoteDto>(`/api/v1/notes/${noteId}`).then(loaded => { setNote(loaded); noteRef.current = loaded; say(`已保存 · v${loaded.version}`); }); api<{ items: typeof backlinks }>(`/api/v1/notes/${noteId}/backlinks`).then(d => setBacklinks(d.items)); api<{ attachments: Att[] }>(`/api/v1/notes/${noteId}/attachments`).then(d => setAtts(d.attachments)).catch(() => setAtts([])); }, [noteId]);
   useEffect(() => { noteRef.current = note; }, [note]);
   /** 从搜索、快速打开或深链进来的笔记可能不在当前笔记本：侧栏跟着笔记走，面包屑才不会张冠李戴。 */
@@ -883,7 +911,7 @@ function Workspace() {
 {site?.canPublish && !site.published && site.pending && <DropdownMenuItem onSelect={() => void changeSite({ action: "approve" }, "已通过，文档站已上线")}><Globe2 />通过并上线文档站</DropdownMenuItem>}
 {site?.canPublish && !site.published && site.pending && <DropdownMenuItem onSelect={() => void changeSite({ action: "reject" }, "已驳回发布申请")}><Globe2 />驳回发布申请</DropdownMenuItem>}
 {site?.canPublish && <DropdownMenuItem onSelect={() => void changeSite({ published: !site.published }, site.published ? "已下线文档站" : "文档站已发布")}><Globe2 />{site.published ? "下线文档站" : "发布为文档站"}</DropdownMenuItem>}
-{site?.canRequest && !site.published && <DropdownMenuItem onSelect={() => void changeSite({ published: !site.pending }, site.pending ? "已撤回申请" : "已提交，等管理员审核")}><Globe2 />{site.pending ? "撤回发布申请" : "申请发布为文档站"}</DropdownMenuItem>}{canMoveNotebook && activeNb && <DropdownMenuItem onSelect={() => setMoveNb(activeNb)}><FolderInput />移动到其他工作区…</DropdownMenuItem>}<DropdownMenuItem onSelect={() => setShowImport(true)}><Upload />导入 Markdown 或 zip</DropdownMenuItem><DropdownMenuItem onSelect={() => { if (nbId) void downloadZip(`/api/v1/notebooks/${nbId}/export.zip`); }}><Download />导出这个笔记本</DropdownMenuItem>{canDeleteNotebook && activeNb && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onSelect={() => void deleteNotebook(activeNb)}><Trash2 />删除笔记本</DropdownMenuItem></>}</DropdownMenuContent></DropdownMenu><Tooltip content="新建文件夹"><Button variant="ghost" size="icon" className="size-8" onClick={() => setCreate("folder")}><FolderPlus /></Button></Tooltip><Tooltip content="新建笔记"><Button size="icon" className="size-8" onClick={() => void createNote()}><FilePlus2 /></Button></Tooltip></div><ScrollArea className="flex-1"><div className="p-2.5"><NoteTree folders={folders} notes={tree} noteId={noteId} wsId={wsId} notebookId={nbId} activeFolder={activeFolder} mode={noteSort} canEdit={treeCanEdit} onSelectFolder={setActiveFolder} onReorder={persistNoteOrder} onMoveNote={(id, folderId) => void moveNoteToFolder(id, folderId)} onMoveFolder={(id, parentId) => void moveFolderTo(id, parentId)} onRenameNote={treeCanEdit ? renameNote : undefined} onDeleteNote={treeCanEdit ? deleteNoteFromTree : undefined} onRenameFolder={treeCanEdit ? renameFolder : undefined} onDeleteFolder={treeCanEdit ? deleteFolder : undefined} onCreateNote={(folderId) => { setActiveFolder(folderId); void createNote(folderId); }} onCreateFolder={(parentId) => { setActiveFolder(parentId); setCreate("folder"); }} onShareFolder={f => setShareTarget({ kind: "folder", id: f.id, title: f.title })} /></div></ScrollArea></aside>}
+{site?.canRequest && !site.published && <DropdownMenuItem onSelect={() => void changeSite({ published: !site.pending }, site.pending ? "已撤回申请" : "已提交，等管理员审核")}><Globe2 />{site.pending ? "撤回发布申请" : "申请发布为文档站"}</DropdownMenuItem>}{canMoveNotebook && activeNb && <DropdownMenuItem onSelect={() => setMoveNb(activeNb)}><FolderInput />移动到其他工作区…</DropdownMenuItem>}<DropdownMenuItem onSelect={() => setShowImport(true)}><Upload />导入 Markdown 或 zip</DropdownMenuItem><DropdownMenuItem onSelect={() => { if (nbId) void downloadZip(`/api/v1/notebooks/${nbId}/export.zip`); }}><Download />导出这个笔记本</DropdownMenuItem>{canDeleteNotebook && activeNb && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onSelect={() => void deleteNotebook(activeNb)}><Trash2 />删除笔记本</DropdownMenuItem></>}</DropdownMenuContent></DropdownMenu><Tooltip content="新建文件夹"><Button variant="ghost" size="icon" className="size-8" onClick={() => setCreate("folder")}><FolderPlus /></Button></Tooltip><Tooltip content="新建笔记"><Button size="icon" className="size-8" onClick={() => void createNote()}><FilePlus2 /></Button></Tooltip></div><ScrollArea className="flex-1"><div className="p-2.5"><NoteTree folders={folders} notes={tree} noteId={noteId} wsId={wsId} notebookId={nbId} activeFolder={activeFolder} mode={noteSort} canEdit={treeCanEdit} onSelectFolder={setActiveFolder} onReorder={persistNoteOrder} onMoveNote={(id, folderId) => void moveNoteToFolder(id, folderId)} onMoveFolder={(id, parentId) => void moveFolderTo(id, parentId)} onReorderFolders={persistFolderOrder} onPlaceFolder={(id, parentId, ids) => void persistFolderPlace(id, parentId, ids)} onRenameNote={treeCanEdit ? renameNote : undefined} onDeleteNote={treeCanEdit ? deleteNoteFromTree : undefined} onRenameFolder={treeCanEdit ? renameFolder : undefined} onDeleteFolder={treeCanEdit ? deleteFolder : undefined} onCreateNote={(folderId) => { setActiveFolder(folderId); void createNote(folderId); }} onCreateFolder={(parentId) => { setActiveFolder(parentId); setCreate("folder"); }} onShareFolder={f => setShareTarget({ kind: "folder", id: f.id, title: f.title })} /></div></ScrollArea></aside>}
 
       <section ref={sectionRef} data-zen={zen ? "1" : undefined} className="relative flex min-h-0 min-w-0 flex-col bg-background">{note ? <>
         <input id="note-attachment-input" className="hidden" type="file" onChange={async e=>{const f=e.target.files?.[0];if(!f)return;const md=await uploadAttachment(f);const current=noteRef.current;if(md&&current)changeNote({bodyMd:`${current.bodyMd}\n\n${md}`});e.target.value=''}} />

@@ -1,22 +1,24 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { Link } from "react-router-dom";
 import {
-  ChevronDown, ChevronRight, FilePlus2, FileText, Folder, FolderInput, FolderOpen, FolderPlus,
-  GripVertical, Pencil, Share2, Trash2,
+  ArrowDown, ArrowUp, ChevronDown, ChevronRight, FilePlus2, FileText, Folder, FolderInput, FolderOpen, FolderPlus,
+  GripVertical, Notebook, Pencil, Share2, Trash2,
 } from "lucide-react";
 import {
-  buildNoteTree, flattenFolders, folderAncestorIds, folderMoveExceedsDepth, isFolderDescendant,
-  moveNoteId, sortNotes, type NoteSortMode, type NoteTreeNode, type TreeFolder,
+  buildNoteTree, flattenFolders, folderAncestorIds, folderDropZone, folderMoveExceedsDepth, isFolderDescendant,
+  moveNoteId, placeId, sortNotes, type FolderDropZone, type NoteSortMode, type NoteTreeNode, type TreeFolder,
 } from "@kb/shared";
+import { api } from "../api";
 import { loadOpenFolders, saveOpenFolders } from "../lib/note-sort-pref";
 import { cn } from "../lib/utils";
 import type { TreeNote } from "./note-list";
 import { Button } from "./ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuLabel, ContextMenuSeparator, ContextMenuTrigger } from "./ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
+import { FormError } from "./ui/form-error";
 import { Tooltip } from "./ui/tooltip";
 
-const NOTE_MIME = "application/x-kb-note";
+export const NOTE_MIME = "application/x-kb-note";
 const FOLDER_MIME = "application/x-kb-folder";
 
 export function MoveToFolderDialog({
@@ -76,6 +78,124 @@ export function MoveToFolderDialog({
   );
 }
 
+export function MoveToNotebookDialog({
+  open,
+  noteTitle,
+  currentNotebookId,
+  notebooks,
+  onOpenChange,
+  onPick,
+}: {
+  open: boolean;
+  noteTitle: string;
+  currentNotebookId?: string;
+  notebooks: Array<{ id: string; title: string }>;
+  onOpenChange: (v: boolean) => void;
+  onPick: (notebookId: string, folderId: string | null) => void;
+}) {
+  const options = notebooks.filter((n) => n.id !== currentNotebookId);
+  const firstId = options[0]?.id ?? "";
+  const [target, setTarget] = useState("");
+  const [folderId, setFolderId] = useState<string | null>(null);
+  const [folders, setFolders] = useState<TreeFolder[]>([]);
+  const [canEdit, setCanEdit] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const rows = useMemo(() => flattenFolders(folders, "name"), [folders]);
+
+  useEffect(() => {
+    if (!open) return;
+    setTarget(firstId);
+    setFolderId(null);
+    setFolders([]);
+    setCanEdit(true);
+    setErr("");
+  }, [open, currentNotebookId, firstId]);
+
+  useEffect(() => {
+    if (!open || !target) { setFolders([]); setCanEdit(true); return; }
+    let cancelled = false;
+    setLoading(true);
+    setErr("");
+    api<{ folders: TreeFolder[]; canEdit?: boolean }>(`/api/v1/notebooks/${target}/tree`)
+      .then((d) => {
+        if (cancelled) return;
+        setFolders(d.folders);
+        setCanEdit(!!d.canEdit);
+        setFolderId(null);
+        if (!d.canEdit) setErr("你不能编辑这个笔记本");
+      })
+      .catch((e) => { if (!cancelled) setErr((e as Error).message); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [open, target]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>移动《{noteTitle || "未命名笔记"}》</DialogTitle>
+          <DialogDescription>选一个你能编辑的笔记本。默认放到它的根上，也可以指定一个目录。</DialogDescription>
+        </DialogHeader>
+        {options.length === 0
+          ? <p className="rounded-xl border p-4 text-sm text-muted-foreground">这个工作区里没有其他笔记本。先新建一本，才能把笔记搬过去。</p>
+          : <>
+            <div className="grid gap-1.5">
+              {options.map((n) => (
+                <label key={n.id} className={cn("flex cursor-pointer items-center gap-3 rounded-xl border p-3", target === n.id ? "border-primary bg-primary/5" : "border-border")}>
+                  <input type="radio" name="move-note-notebook" checked={target === n.id} onChange={() => setTarget(n.id)} />
+                  <Notebook className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">{n.title}</span>
+                </label>
+              ))}
+            </div>
+            {target && (
+              <div className="max-h-52 space-y-0.5 overflow-y-auto rounded-xl border p-1.5">
+                <button
+                  type="button"
+                  disabled={loading || !canEdit}
+                  onClick={() => setFolderId(null)}
+                  className={cn(
+                    "flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm",
+                    folderId === null ? "bg-muted" : "hover:bg-muted",
+                    (loading || !canEdit) && "text-muted-foreground",
+                  )}
+                >
+                  <Folder className="size-4 shrink-0" />笔记本根目录
+                </button>
+                {rows.map(({ folder, depth }) => (
+                  <button
+                    key={folder.id}
+                    type="button"
+                    disabled={loading || !canEdit}
+                    onClick={() => setFolderId(folder.id)}
+                    style={{ paddingLeft: 10 + depth * 16 }}
+                    className={cn(
+                      "flex h-9 w-full items-center gap-2 rounded-lg pr-2.5 text-left text-sm",
+                      folderId === folder.id ? "bg-muted" : "hover:bg-muted",
+                      (loading || !canEdit) && "text-muted-foreground",
+                    )}
+                  >
+                    <Folder className="size-4 shrink-0" />
+                    <span className="truncate">{folder.title}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>}
+        <FormError>{err}</FormError>
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>取消</Button>
+          <Button
+            disabled={!target || loading || !canEdit}
+            onClick={() => { onPick(target, folderId); onOpenChange(false); }}
+          >移动</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function NoteTree({
   folders,
   notes,
@@ -87,8 +207,11 @@ export function NoteTree({
   canEdit,
   onSelectFolder,
   onReorder,
+  onReorderFolders,
   onMoveNote,
+  onMoveToNotebook,
   onMoveFolder,
+  onPlaceFolder,
   onRenameNote,
   onDeleteNote,
   onRenameFolder,
@@ -107,8 +230,11 @@ export function NoteTree({
   canEdit: boolean;
   onSelectFolder: (id: string | null) => void;
   onReorder: (noteIds: string[]) => void;
+  onReorderFolders: (folderIds: string[]) => void;
   onMoveNote: (noteId: string, folderId: string | null) => void;
+  onMoveToNotebook?: (note: TreeNote) => void;
   onMoveFolder: (folderId: string, parentId: string | null) => void;
+  onPlaceFolder: (folderId: string, parentId: string | null, siblingIds: string[]) => void;
   onRenameNote?: (note: TreeNote) => void;
   onDeleteNote?: (note: TreeNote) => void;
   onRenameFolder?: (folder: TreeFolder) => void;
@@ -215,10 +341,27 @@ export function NoteTree({
     }
   }
 
+  function siblingFolderIds(parentId: string | null): string[] {
+    const folderMode = mode === "created" ? "custom" : mode;
+    return sortNotes(
+      folders
+        .filter((f) => (f.parentId ?? null) === parentId)
+        .map((f) => ({ id: f.id, title: f.title, sortKey: f.sortKey ?? 0 })),
+      folderMode,
+    ).map((f) => f.id);
+  }
+
+  function zoneFromEvent(e: DragEvent): FolderDropZone {
+    const el = e.currentTarget as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    return folderDropZone((e.clientY - rect.top) / (rect.height || 1));
+  }
+
   function dropOnFolder(e: DragEvent, folderId: string) {
     e.preventDefault();
     e.stopPropagation();
     const drag = readDrag(e);
+    const zone = drag.note || mode === "name" ? "into" : zoneFromEvent(e);
     setOverKey(null);
     setDragNoteId(null);
     setDragFolderId(null);
@@ -228,10 +371,37 @@ export function NoteTree({
       expand(folderId);
       return;
     }
-    if (drag.folder && drag.folder !== folderId && !isFolderDescendant(folders, drag.folder, folderId) && !folderMoveExceedsDepth(folders, drag.folder, folderId)) {
-      onMoveFolder(drag.folder, folderId);
-      expand(folderId);
+    if (!drag.folder || drag.folder === folderId) return;
+    if (zone === "into") {
+      if (!isFolderDescendant(folders, drag.folder, folderId) && !folderMoveExceedsDepth(folders, drag.folder, folderId)) {
+        onMoveFolder(drag.folder, folderId);
+        expand(folderId);
+      }
+      return;
     }
+    const src = folders.find((f) => f.id === drag.folder);
+    const target = folders.find((f) => f.id === folderId);
+    if (!src || !target) return;
+    const newParent = target.parentId ?? null;
+    if (isFolderDescendant(folders, src.id, target.id)) return;
+    if (folderMoveExceedsDepth(folders, src.id, newParent)) return;
+    const next = placeId(siblingFolderIds(newParent), src.id, target.id, zone);
+    if (!next) return;
+    onPlaceFolder(src.id, newParent, next);
+  }
+
+  function shiftFolder(folderId: string, dir: -1 | 1) {
+    const src = folders.find((f) => f.id === folderId);
+    if (!src) return;
+    const ids = siblingFolderIds(src.parentId ?? null);
+    const i = ids.indexOf(folderId);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    const next = ids.slice();
+    const swap = next[i]!;
+    next[i] = next[j]!;
+    next[j] = swap;
+    onReorderFolders(next);
   }
 
   function dropOnNote(e: DragEvent, target: TreeNote) {
@@ -257,6 +427,7 @@ export function NoteTree({
   function allowDrop(e: DragEvent, key: string) {
     if (!canEdit || (!dragNoteId && !dragFolderId)) return;
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = "move";
     setOverKey(key);
   }
@@ -299,6 +470,7 @@ export function NoteTree({
             activeFolder={activeFolder}
             canEdit={canEdit}
             custom={mode === "custom"}
+            folderOrder={mode !== "name"}
             dragNoteId={dragNoteId}
             dragFolderId={dragFolderId}
             overKey={overKey}
@@ -318,13 +490,19 @@ export function NoteTree({
             onCreateFolder={(id) => { onSelectFolder(id); expand(id); onCreateFolder(id); }}
             onShareFolder={onShareFolder}
             onMoveNote={setMoving}
+            onMoveToNotebook={onMoveToNotebook}
+            onShiftFolder={shiftFolder}
           />
         ))}
       </div>
 
       {canEdit && (folders.length > 0 || notes.length > 1) && (
         <p className="mt-2 px-2.5 text-[11px] text-muted-foreground">
-          {mode === "custom" ? "拖笔记调整同级顺序，或拖到文件夹上移入" : "拖笔记到文件夹上即可移入"}
+          {mode === "name"
+            ? "拖笔记或文件夹到目录上即可移入"
+            : mode === "custom"
+              ? "拖笔记或文件夹调整同级顺序；拖到目录中间则移入"
+              : "拖文件夹到边缘可调序，拖到中间则移入；拖笔记到目录上即可移入"}
         </p>
       )}
 
@@ -349,6 +527,7 @@ function TreeRow({
   activeFolder,
   canEdit,
   custom,
+  folderOrder,
   dragNoteId,
   dragFolderId,
   overKey,
@@ -368,6 +547,8 @@ function TreeRow({
   onCreateFolder,
   onShareFolder,
   onMoveNote,
+  onMoveToNotebook,
+  onShiftFolder,
 }: {
   node: NoteTreeNode;
   depth: number;
@@ -377,6 +558,7 @@ function TreeRow({
   activeFolder: string | null;
   canEdit: boolean;
   custom: boolean;
+  folderOrder: boolean;
   dragNoteId: string | null;
   dragFolderId: string | null;
   overKey: string | null;
@@ -396,11 +578,14 @@ function TreeRow({
   onCreateFolder: (parentId: string) => void;
   onShareFolder: (folder: TreeFolder) => void;
   onMoveNote: (note: TreeNote) => void;
+  onMoveToNotebook?: (note: TreeNote) => void;
+  onShiftFolder: (folderId: string, dir: -1 | 1) => void;
 }) {
   const pad = { paddingLeft: 8 + depth * 16 };
   if (node.kind === "folder") {
     const open = openIds.has(node.id);
-    const over = overKey === `folder:${node.id}`;
+    const overPrefix = `folder:${node.id}:`;
+    const overZone = overKey?.startsWith(overPrefix) ? overKey.slice(overPrefix.length) : null;
     const dragging = dragFolderId === node.id;
     return (
       <div>
@@ -415,14 +600,24 @@ function TreeRow({
                 e.dataTransfer.setData(FOLDER_MIME, node.id);
                 e.dataTransfer.setData("text/plain", node.id);
               }}
-              onDragOver={(e) => onAllowDrop(e, `folder:${node.id}`)}
+              onDragOver={(e) => {
+                if (dragNoteId || !folderOrder) {
+                  onAllowDrop(e, `folder:${node.id}:into`);
+                  return;
+                }
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                const zone = folderDropZone((e.clientY - rect.top) / (rect.height || 1));
+                onAllowDrop(e, `folder:${node.id}:${zone}`);
+              }}
               onDrop={(e) => onDropFolder(e, node.id)}
               onDragEnd={onDragEnd}
               style={pad}
               className={cn(
-                "group mb-0.5 flex h-8 items-center gap-0.5 rounded-lg pr-1 text-sm",
+                "group relative mb-0.5 flex h-8 items-center gap-0.5 rounded-lg pr-1 text-sm",
                 activeFolder === node.id ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/70",
-                over && "ring-1 ring-foreground/25",
+                overZone === "into" && "ring-1 ring-foreground/25",
+                overZone === "before" && "before:absolute before:inset-x-2 before:-top-px before:h-0.5 before:rounded-full before:bg-foreground/50",
+                overZone === "after" && "after:absolute after:inset-x-2 after:-bottom-px after:h-0.5 after:rounded-full after:bg-foreground/50",
                 dragging && "opacity-50",
               )}
             >
@@ -454,6 +649,8 @@ function TreeRow({
             <ContextMenuLabel>{node.folder.title}</ContextMenuLabel>
             <ContextMenuItem disabled={!canEdit} onSelect={() => onCreateNote(node.id)}><FilePlus2 />在此新建笔记</ContextMenuItem>
             <ContextMenuItem disabled={!canEdit} onSelect={() => onCreateFolder(node.id)}><FolderPlus />新建子目录</ContextMenuItem>
+            <ContextMenuItem disabled={!canEdit || !folderOrder} onSelect={() => onShiftFolder(node.id, -1)}><ArrowUp />上移</ContextMenuItem>
+            <ContextMenuItem disabled={!canEdit || !folderOrder} onSelect={() => onShiftFolder(node.id, 1)}><ArrowDown />下移</ContextMenuItem>
             <ContextMenuItem disabled={!onRenameFolder} onSelect={() => onRenameFolder?.(node.folder)}><Pencil />重命名</ContextMenuItem>
             <ContextMenuItem onSelect={() => onShareFolder(node.folder)}><Share2 />分享此目录</ContextMenuItem>
             <ContextMenuSeparator />
@@ -471,6 +668,7 @@ function TreeRow({
             activeFolder={activeFolder}
             canEdit={canEdit}
             custom={custom}
+            folderOrder={folderOrder}
             dragNoteId={dragNoteId}
             dragFolderId={dragFolderId}
             overKey={overKey}
@@ -490,6 +688,8 @@ function TreeRow({
             onCreateFolder={onCreateFolder}
             onShareFolder={onShareFolder}
             onMoveNote={onMoveNote}
+            onMoveToNotebook={onMoveToNotebook}
+            onShiftFolder={onShiftFolder}
           />
         ))}
       </div>
@@ -536,6 +736,7 @@ function TreeRow({
           <ContextMenuLabel>{n.title || "未命名笔记"}</ContextMenuLabel>
           <ContextMenuItem disabled={!onRenameNote} onSelect={() => onRenameNote?.(n)}><Pencil />重命名</ContextMenuItem>
           <ContextMenuItem disabled={!canEdit} onSelect={() => onMoveNote(n)}><FolderInput />移动到目录…</ContextMenuItem>
+          {onMoveToNotebook && <ContextMenuItem disabled={!canEdit} onSelect={() => onMoveToNotebook(n)}><Notebook />移动到其他笔记本…</ContextMenuItem>}
           <ContextMenuSeparator />
           <ContextMenuItem className="text-destructive" disabled={!onDeleteNote} onSelect={() => onDeleteNote?.(n)}><Trash2 />移到回收站</ContextMenuItem>
         </ContextMenuContent>
