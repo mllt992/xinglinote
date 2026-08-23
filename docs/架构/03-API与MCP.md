@@ -46,7 +46,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | GET | `/api/v1/admin/settings` | 实例管理员 | |
 | PATCH | `/api/v1/admin/settings` | 同上 | 注册策略、广场、限额、导航开关与文案 |
 | POST | `/api/v1/admin/smtp/test` | 同上 | |
-| CRUD | `/api/v1/admin/codes` | 同上 | 列表回明文（由 `code_enc` 解密）；旧码无密文则只有前缀 |
+| CRUD | `/api/v1/admin/codes` | 同上 | 列表回完整码（`code_prefix`）；旧行只有前缀则 `code` 为空 |
 | GET/POST | `/api/v1/admin/users` | 同上 | 封禁、解封、升/降管理员、启动注销 |
 
 ### 2.2 工作区

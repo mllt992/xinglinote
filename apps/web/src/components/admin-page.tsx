@@ -88,6 +88,36 @@ const CODE_STATUSES = [
 const CODE_SKIP = [{ value: "", label: "验证要求不限" }, { value: "true", label: "免邮箱验证" }, { value: "false", label: "需验证邮箱" }];
 const CODE_ROLES = [{ value: "", label: "绑定角色不限" }, { value: "admin", label: "Admin" }, { value: "editor", label: "Editor" }, { value: "viewer", label: "Viewer" }];
 const PAGE_SIZES = [20, 50];
+const CODE_CACHE_KEY = "kb:registration-codes";
+const LAST_CODES_KEY = "kb:last-registration-codes";
+
+function isFullRegistrationCode(value: string) {
+  return /^[A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){4}$/.test(value);
+}
+
+function readCodeCache(): Record<string, string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CODE_CACHE_KEY) ?? "{}") as Record<string, string>;
+    return Object.fromEntries(Object.entries(raw).filter(([, v]) => isFullRegistrationCode(v)));
+  } catch {
+    return {};
+  }
+}
+
+function readLastCodes(): string[] {
+  try {
+    return (JSON.parse(sessionStorage.getItem(LAST_CODES_KEY) ?? "[]") as unknown[])
+      .filter((v): v is string => typeof v === "string" && isFullRegistrationCode(v));
+  } catch {
+    return [];
+  }
+}
+
+function resolveCode(c: AdminCode, cache: Record<string, string>) {
+  if (c.code && isFullRegistrationCode(c.code)) return c.code;
+  if (isFullRegistrationCode(c.prefix)) return c.prefix;
+  return cache[c.prefix] ?? "";
+}
 
 function isTab(value: string | null): value is Tab {
   return TABS.some(t => t.id === value);
@@ -159,7 +189,8 @@ export function AdminPage() {
   const [usersList, setUsers] = useState<AdminUser[]>([]);
   const [codes, setCodes] = useState<AdminCode[]>([]);
   const [total, setTotal] = useState(0);
-  const [newCodes, setNewCodes] = useState<string[]>([]);
+  const [newCodes, setNewCodes] = useState<string[]>(readLastCodes);
+  const [knownCodes, setKnownCodes] = useState<Record<string, string>>(readCodeCache);
   const [qInput, setQInput] = useState(q);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -182,6 +213,10 @@ export function AdminPage() {
   }, []);
 
   useEffect(() => { setQInput(q); }, [q, tab]);
+
+  useEffect(() => {
+    cacheCodes(codes.flatMap(c => c.code ? [c.code] : []));
+  }, [codes]);
 
   useEffect(() => {
     if (qInput === q) return;
@@ -240,6 +275,25 @@ export function AdminPage() {
     }
   }
 
+  function cacheCodes(codesToKeep: string[]) {
+    const full = codesToKeep.filter(isFullRegistrationCode);
+    if (!full.length) return full;
+    setKnownCodes(prev => {
+      const next = { ...prev };
+      for (const code of full) next[code.slice(0, 9)] = code;
+      localStorage.setItem(CODE_CACHE_KEY, JSON.stringify(next));
+      return next;
+    });
+    return full;
+  }
+
+  function rememberCodes(codesToKeep: string[]) {
+    const full = cacheCodes(codesToKeep);
+    if (!full.length) return;
+    setNewCodes(full);
+    sessionStorage.setItem(LAST_CODES_KEY, JSON.stringify(full));
+  }
+
   async function generate() {
     setFormErr("");
     setPending("codes");
@@ -253,13 +307,51 @@ export function AdminPage() {
           note: form.note.trim() || "后台生成",
         }),
       });
-      setNewCodes(d.codes);
-      toast.success(`已生成 ${d.codes.length} 个注册码`, "可在下方列表随时复制。");
+      rememberCodes(d.codes);
+      toast.success(`已生成 ${d.codes.length} 个注册码`, "可立即复制。刷新后仍可在本浏览器复制。");
       patch({ page: undefined, q: undefined, status: undefined, bindRole: undefined, skip: undefined });
       setListTick(n => n + 1);
       await loadOverview();
     } catch (e) {
       setFormErr((e as Error).message);
+    } finally {
+      setPending(null);
+    }
+  }
+
+  async function replaceCodes(targets: AdminCode[]) {
+    const rows = targets.filter(c => c.status === "active" && !resolveCode(c, knownCodes));
+    if (!rows.length) return;
+    if (!await askConfirm({
+      title: rows.length === 1 ? `作废 ${rows[0]!.prefix}… 并换一张新码？` : `把 ${rows.length} 条旧码换成可复制的新码？`,
+      description: "旧码立刻失效，已经用过的账号不受影响。新码会显示完整明文，可直接复制。",
+      confirmText: "换新码",
+    })) return;
+    setPending("replace");
+    try {
+      const fresh: string[] = [];
+      for (const row of rows) {
+        const days = row.expiresAt ? Math.max(1, Math.ceil((new Date(row.expiresAt).getTime() - Date.now()) / 86400000)) : form.expiresInDays;
+        const d = await api<{ codes: string[] }>("/api/v1/admin/registration-codes", {
+          method: "POST",
+          body: JSON.stringify({
+            quantity: 1,
+            maxUses: row.maxUses,
+            expiresInDays: days || null,
+            note: row.note || "后台生成",
+            bindRole: row.bindRole || undefined,
+            skipEmailVerification: !!row.skipEmailVerification,
+          }),
+        });
+        fresh.push(...d.codes);
+        await api(`/api/v1/admin/registration-codes/${row.id}`, { method: "DELETE" });
+      }
+      rememberCodes(fresh);
+      toast.success(fresh.length === 1 ? `新码 ${fresh[0]}` : `已换出 ${fresh.length} 个新码`, "可以复制了。");
+      setListTick(n => n + 1);
+      await loadOverview();
+    } catch (e) {
+      toast.error("换新失败", (e as Error).message);
     } finally {
       setPending(null);
     }
@@ -467,19 +559,28 @@ export function AdminPage() {
           <FormError>{listError}</FormError>
           {codes.length === 0 && !listLoading ? <Empty icon={<Ticket />} title={filtering ? "没有匹配的注册码" : "还没有注册码"} text={filtering ? "换个关键词或筛选项再试。" : "关掉开放注册后，用注册码把家人或同事请进来。"} />
             : <section className={cn("overflow-hidden rounded-xl border bg-background", listLoading && "opacity-60")}>
-              {codes.some(c => c.code) && <div className="flex justify-end border-b px-5 py-2">
-                <Button variant="ghost" size="sm" onClick={() => void copyText(codes.flatMap(c => c.code ? [c.code] : []).join("\n"), "page")}>{copied === "page" ? <Check /> : <Copy />}{copied === "page" ? "已复制本页" : "复制本页"}</Button>
+              {(() => {
+                const rows = codes.map(c => ({ c, full: resolveCode(c, knownCodes) }));
+                const stale = rows.filter(x => x.c.status === "active" && !x.full).map(x => x.c);
+                const copyable = rows.flatMap(x => x.full ? [x.full] : []);
+                return <>
+              {(copyable.length > 0 || stale.length > 0) && <div className="flex flex-wrap items-center justify-end gap-2 border-b px-5 py-2">
+                {stale.length > 0 && <Button variant="outline" size="sm" disabled={pending === "replace"} onClick={() => void replaceCodes(stale)}>{pending === "replace" ? "更换中…" : `把 ${stale.length} 条旧码换成可复制的新码`}</Button>}
+                {copyable.length > 0 && <Button variant="ghost" size="sm" onClick={() => void copyText(copyable.join("\n"), "page")}>{copied === "page" ? <Check /> : <Copy />}{copied === "page" ? "已复制本页" : "复制本页"}</Button>}
               </div>}
+              {stale.length > 0 && <p className="border-b px-5 py-2 text-xs text-muted-foreground">这几条是升级前发的，库里只剩前缀，完整明文补不回来。换新后即可复制。</p>}
               <div className="hidden grid-cols-[minmax(0,1.6fr)_72px_80px_1fr_40px] gap-3 border-b bg-muted/40 px-5 py-2.5 text-xs font-medium text-muted-foreground sm:grid">
                 <span>注册码</span><span>用量</span><span>状态</span><span>备注</span><span />
               </div>
-              {codes.map((c, i) => {
-                const full = c.code || "";
-                return <div key={c.id} className={cn("grid items-center gap-2 px-5 py-3.5 sm:grid-cols-[minmax(0,1.6fr)_72px_80px_1fr_40px] sm:gap-3", i && "border-t")}>
+              {rows.map(({ c, full }, i) => <div key={c.id} className={cn("grid items-center gap-2 px-5 py-3.5 sm:grid-cols-[minmax(0,1.6fr)_72px_80px_1fr_40px] sm:gap-3", i && "border-t")}>
                 <div className="min-w-0">
                   <div className="flex items-center gap-1">
                     <code className="min-w-0 flex-1 break-all font-mono text-sm">{full || `${c.prefix}…`}</code>
-                    {full ? <Button variant="ghost" size="icon" className="size-8" aria-label={`复制 ${full}`} onClick={() => void copyText(full, c.id)}>{copied === c.id ? <Check /> : <Copy />}</Button> : null}
+                    {full
+                      ? <Button variant="ghost" size="icon" className="size-8" aria-label={`复制 ${full}`} onClick={() => void copyText(full, c.id)}>{copied === c.id ? <Check /> : <Copy />}</Button>
+                      : c.status === "active"
+                        ? <Button variant="outline" size="sm" disabled={pending === "replace"} onClick={() => void replaceCodes([c])}>换新码</Button>
+                        : null}
                   </div>
                   <p className="mt-0.5 text-xs text-muted-foreground sm:hidden">{c.usedCount}/{c.maxUses} · {STATUS_LABEL[c.status] ?? c.status}</p>
                 </div>
@@ -494,8 +595,9 @@ export function AdminPage() {
                 {c.status === "active"
                   ? <Button variant="ghost" size="icon" className="text-destructive" aria-label={`作废 ${full || c.prefix}`} onClick={() => void revoke(c)}><Trash2 /></Button>
                   : <span />}
-              </div>;
-              })}
+              </div>)}
+                </>;
+              })()}
             </section>}
           <Pager page={page} pages={pages} pageSize={pageSize} total={total} loading={listLoading} onPage={p => patch({ page: String(p) })} onSize={s => patch({ size: String(s), page: undefined })} />
         </div>}

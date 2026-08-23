@@ -79,7 +79,7 @@ export async function instanceSnapshot() {
     exportedAt: new Date().toISOString(),
     settings: settings ?? null,
     users: await db.select().from(users),
-    registrationCodes: (await db.select().from(registrationCodes)).map(({ codeEnc: _enc, ...rest }) => rest),
+    registrationCodes: (await db.select().from(registrationCodes)).map(row => ({ ...row, codePrefix: row.codePrefix.slice(0, 9) })),
     registrationCodeUsages: await db.select().from(registrationCodeUsages),
     savedShares: await db.select().from(savedShares),
     posts: square,
