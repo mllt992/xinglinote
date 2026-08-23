@@ -172,7 +172,7 @@ target notes:
 出：子目录与笔记标题、id。不含正文。
 
 **`search_notes(query, notebook_id?, workspace_id?, tag?, mode=keyword|semantic|hybrid, limit?)`**  
-limit≤20，**默认 8**（不要一上来塞 20 条摘要）。出：`{ hits: [{ id, title, path, snippet }] }`，snippet≤240。默认搜全部勾选区；传了 `workspace_id` 只搜那一区。keyword 走转义后的 ILIKE；semantic / hybrid 复用 10 的 `retrieve()`，但仍要过钥匙范围，不得绕开 `require_ai_index`。查询里的 `%` `_` 当字面量，不当通配符。
+limit≤20，**默认 8**（不要一上来塞 20 条摘要）。出：`{ hits: [source], retrieval_metadata }`。`source` 统一为 `{ note_id, title, notebook_id, path, version, updated_at, excerpt, relevance_score? }`，excerpt≤360；`note_id` 可直接传给 `get_note` 核验，`relevance_score` 仅用于当前结果集内部排序。`retrieval_metadata` 含 mode / hit_count / truncated，不暴露向量。默认搜全部勾选区；传了 `workspace_id` 只搜那一区。keyword 走转义后的 ILIKE；semantic / hybrid 复用 10 的 `retrieve()`，但仍要过钥匙范围，不得绕开 `require_ai_index`。查询里的 `%` `_` 当字面量，不当通配符。标题、路径和摘录只在整条笔记通过钥匙权限检查后返回。
 
 **`get_note(id, offset?, max_chars?)`**  
 出：id、title、path（笔记本 → 目录 → 标题）、body_md、version、tags、ai_index、published、links[{raw,target_id,state}]、`offset`、`total_chars`、`truncated`。  
@@ -182,7 +182,7 @@ limit≤20，**默认 8**（不要一上来塞 20 条摘要）。出：`{ hits: 
 出：from id/title/snippet，仅 can_read 的 from。
 
 **`ask_knowledge(question, notebook_id?, workspace_id?)`**  
-复用 10 的 5.2。多区时默认跨勾选区检索再答；传了 `notebook_id` / `workspace_id` 则收窄。出：answer、citations[{note_id,title,excerpt}]。
+复用 10 的 5.2。多区时默认跨勾选区检索再答；传了 `notebook_id` / `workspace_id` 则收窄。`citations` 复用 `search_notes` 的统一 `source`，并增加 `citation_number`、`current_version`、`version_matches_current`；答案中的 `[#n]` 必须回指 `citation_number=n`。模型生成后重新读取源版本，任一源被更新或移入回收站时返回 `source_version_changed=true`，客户端应重新 `get_note` 后再决定是否采信。另返回不含内部向量的 `retrieval_metadata`。
 
 **`create_note(notebook_id, folder_id?, title, content, tags?)`**  
 须 write。ai_index/published 跟本默认。出：id、version。

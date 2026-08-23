@@ -378,7 +378,11 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 ```
 { query: string, notebook_id?: string, tag?: string,
   mode?: "keyword"|"semantic"|"hybrid", limit?: number }
-→ { hits: [{ id, title, path, snippet }] }   // 默认 8，≤20，snippet≤240
+→ {
+    hits: [{ note_id, title, notebook_id, path, version, updated_at,
+             excerpt, relevance_score? }],
+    retrieval_metadata: { mode, hit_count, truncated }
+  }   // 默认 8，≤20，excerpt≤360；note_id 可直接传给 get_note
 ```
 
 ### get_note
@@ -405,8 +409,17 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 
 ```
 { question: string, notebook_id?: string }
-→ { answer: string, citations: [{ note_id, title, excerpt }] }
+→ {
+    answer: string,
+    citations: [{ note_id, title, notebook_id, path, version, updated_at,
+                  excerpt, relevance_score?, citation_number,
+                  current_version, version_matches_current }],
+    source_version_changed: boolean,
+    retrieval_metadata: { mode, hit_count, source_count, truncated }
+  }
 ```
+
+答案里的 `[#n]` 对应 `citation_number=n`。回答生成后会重新读取源版本；若引用的版本已变化或来源已进入回收站，逐条 `version_matches_current=false`，同时顶层 `source_version_changed=true`。
 
 ### create_note
 

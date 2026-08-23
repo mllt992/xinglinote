@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { askNeedsNotes, formatAskUserMessage, hitsSupportQuestion, keywordNeedles, packAskContext, rankKeywordNotes, snippetAround } from "./knowledge-ai.ts";
+import { askNeedsNotes, formatAskUserMessage, hitsSupportQuestion, keywordNeedles, markCitationVersions, packAskContext, rankKeywordNotes, snippetAround } from "./knowledge-ai.ts";
 import { tokenize } from "@kb/core";
 
 test("中文问句拆成 2-gram，而不是整句去 ILIKE", () => {
@@ -68,4 +68,24 @@ test("问答 prompt 不带 note UUID", () => {
   );
   assert.match(msg, /\[#1\] 《灯塔》/);
   assert.equal(msg.includes("11111111-1111-1111-1111-111111111111"), false);
+});
+
+test("问答引用能发现生成期间的笔记版本变化", () => {
+  const updatedAt = new Date("2026-08-24T00:00:00.000Z");
+  const packed = [{
+    noteId: "a",
+    title: "版本测试",
+    workspaceId: "w",
+    notebookId: "n",
+    folderId: null,
+    version: 3,
+    updatedAt,
+    excerpt: "支撑答案的摘录",
+    score: 1,
+  }];
+  const [citation] = markCitationVersions(packed, [0], new Map([["a", 4]]));
+  assert.equal(citation?.citationNumber, 1);
+  assert.equal(citation?.version, 3);
+  assert.equal(citation?.currentVersion, 4);
+  assert.equal(citation?.versionMatchesCurrent, false);
 });

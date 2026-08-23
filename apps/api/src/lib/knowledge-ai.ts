@@ -18,6 +18,18 @@ type RetrieveInput = {
 };
 
 export type KnowledgeHit = { noteId: string; title: string; excerpt: string; score: number };
+export type KnowledgeSourceHit = KnowledgeHit & {
+  workspaceId: string;
+  notebookId: string;
+  folderId: string | null;
+  version: number;
+  updatedAt: Date;
+};
+export type KnowledgeCitation = KnowledgeSourceHit & {
+  citationNumber: number;
+  currentVersion: number | null;
+  versionMatchesCurrent: boolean;
+};
 
 export const ASK_MAX_HITS = 6;
 export const ASK_MAX_EXCERPT = 360;
@@ -113,8 +125,8 @@ function likeAny(needles: string[]) {
 }
 
 /** 把检索命中压进问答预算：每篇最多 2 段、合计字数封顶。 */
-export function packAskContext(rows: KnowledgeHit[]): KnowledgeHit[] {
-  const kept: KnowledgeHit[] = [];
+export function packAskContext<T extends KnowledgeHit>(rows: T[]): T[] {
+  const kept: T[] = [];
   const perNote = new Map<string, number>();
   let used = 0;
   for (const row of rows) {
@@ -166,7 +178,7 @@ export function askNeedsNotes(question: string): boolean {
 }
 
 /** 语义近邻经常捞到无关篇。问句词面完全对不上的命中丢掉。 */
-export function hitsSupportQuestion(question: string, hits: KnowledgeHit[]): KnowledgeHit[] {
+export function hitsSupportQuestion<T extends KnowledgeHit>(question: string, hits: T[]): T[] {
   const needles = questionNeedles(question);
   if (!needles.length) return [];
   return hits.filter(h => {
@@ -200,7 +212,7 @@ const GENERAL_SYSTEM = [
   "不要编造用户笔记里的内容。换算、计算、翻译、常识可以直接答，不要说「片段里没有所以不知道」。",
 ].join("\n");
 
-export async function retrieve(input: RetrieveInput): Promise<KnowledgeHit[]> {
+export async function retrieve(input: RetrieveInput): Promise<KnowledgeSourceHit[]> {
   const p = await aiProvider(input.workspaceId, input.userId);
   const mode = input.mode ?? "hybrid";
   const limit = Math.min(20, input.limit ?? 8);
@@ -272,13 +284,25 @@ export async function retrieve(input: RetrieveInput): Promise<KnowledgeHit[]> {
   if (!sorted.length) return [];
   const ids = [...new Set(sorted.map(x => x.noteId))];
   const found = await db.select({
-    id: notes.id, title: notes.title, aiIndex: notes.aiIndex, trashedAt: notes.trashedAt,
+    id: notes.id, title: notes.title, workspaceId: notes.workspaceId, notebookId: notes.notebookId,
+    folderId: notes.folderId, version: notes.version, updatedAt: notes.updatedAt,
+    aiIndex: notes.aiIndex, trashedAt: notes.trashedAt,
   }).from(notes).where(inArray(notes.id, ids));
   const byId = new Map(found.map(n => [n.id, n]));
-  const out: KnowledgeHit[] = [];
+  const out: KnowledgeSourceHit[] = [];
   for (const x of sorted) {
     const n = byId.get(x.noteId);
-    if (n?.aiIndex && !n.trashedAt) out.push({ noteId: n.id, title: n.title, excerpt: x.excerpt.slice(0, ASK_MAX_EXCERPT), score: x.score });
+    if (n?.aiIndex && !n.trashedAt) out.push({
+      noteId: n.id,
+      title: n.title,
+      workspaceId: n.workspaceId,
+      notebookId: n.notebookId,
+      folderId: n.folderId,
+      version: n.version,
+      updatedAt: n.updatedAt,
+      excerpt: x.excerpt.slice(0, ASK_MAX_EXCERPT),
+      score: x.score,
+    });
   }
   return out;
 }
@@ -311,7 +335,7 @@ export async function askKnowledgeAcross(input: {
   history?: AskHistoryTurn[];
 }) {
   if (input.workspaceIds.length === 1) return askKnowledge({ ...input, workspaceId: input.workspaceIds[0]! });
-  const hits: KnowledgeHit[] = [];
+  const hits: KnowledgeSourceHit[] = [];
   if (askNeedsNotes(input.question)) {
     for (const workspaceId of input.workspaceIds) {
       hits.push(...await retrieve({ workspaceId, userId: input.userId, query: input.question, mode: "hybrid", limit: 6, notebookId: input.notebookId, filterNoteId: input.filterNoteId }));
@@ -325,7 +349,24 @@ export async function askKnowledgeAcross(input: {
   return answerFromHits(providerWs, input.userId, input.question, rows, input.history);
 }
 
-async function answerFromHits(workspaceId: string, userId: string, question: string, rows: KnowledgeHit[], history?: AskHistoryTurn[]) {
+export function markCitationVersions(
+  packed: KnowledgeSourceHit[],
+  citedIndexes: number[],
+  currentVersions: ReadonlyMap<string, number>,
+): KnowledgeCitation[] {
+  return citedIndexes.map(i => {
+    const hit = packed[i]!;
+    const currentVersion = currentVersions.get(hit.noteId) ?? null;
+    return {
+      ...hit,
+      citationNumber: i + 1,
+      currentVersion,
+      versionMatchesCurrent: currentVersion === hit.version,
+    };
+  });
+}
+
+async function answerFromHits(workspaceId: string, userId: string, question: string, rows: KnowledgeSourceHit[], history?: AskHistoryTurn[]) {
   const packed = packAskContext(rows);
   const p = await aiProvider(workspaceId, userId);
   if (!p) throw fail("AI_NOT_CONFIGURED", "请先配置 AI 提供商");
@@ -338,7 +379,24 @@ async function answerFromHits(workspaceId: string, userId: string, question: str
   const cited = grounded
     ? new Set([...out.content.matchAll(/\[#(\d+)\]/g)].map(m => Number(m[1]) - 1).filter(i => i >= 0 && i < packed.length))
     : new Set<number>();
-  const citations = [...cited].map(i => packed[i]!);
+  const citedIndexes = [...cited];
+  const currentRows = citedIndexes.length
+    ? await db.select({ id: notes.id, version: notes.version }).from(notes)
+      .where(and(inArray(notes.id, citedIndexes.map(i => packed[i]!.noteId)), isNull(notes.trashedAt)))
+    : [];
+  const citations = markCitationVersions(packed, citedIndexes, new Map(currentRows.map(n => [n.id, n.version])));
+  const sourceVersionChanged = citations.some(c => !c.versionMatchesCurrent);
   await db.insert(aiUsage).values({ userId, workspaceId, action: "ask", model: p.chatModel, inputTokens: out.usage.prompt_tokens ?? 0, outputTokens: out.usage.completion_tokens ?? 0 });
-  return { answer: out.content, citations, grounded };
+  return {
+    answer: out.content,
+    citations,
+    grounded,
+    sourceVersionChanged,
+    retrievalMetadata: {
+      mode: "hybrid" as const,
+      hitCount: rows.length,
+      sourceCount: packed.length,
+      truncated: rows.length > packed.length,
+    },
+  };
 }

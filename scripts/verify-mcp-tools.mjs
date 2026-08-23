@@ -71,6 +71,8 @@ try {
   let missing = false;
   try { await call(manage.secret, 'get_note', { id: created.id }); } catch (e) { missing = /不存在|NOT_FOUND/i.test(e.message) || e.data?.code === 'NOT_FOUND'; }
   result.aiIndexHiddenAsNotFound = missing;
+  const hiddenSearch = await call(manage.secret, 'search_notes', { query: 'alpha', mode: 'keyword' });
+  result.aiIndexHiddenFromSearch = !hiddenSearch.hits.some(h => h.note_id === created.id);
   await api(`/notes/${created.id}`, { method: 'PATCH', body: JSON.stringify({ aiIndex: true, expectedVersion: hidden.data.version }) }, cookie);
   const fresh = await call(manage.secret, 'get_note', { id: created.id });
 
@@ -94,7 +96,15 @@ try {
   result.publicFeedHasPreviewAndConfirmation = feedPreview.required_confirmation?.confirm_public === true && confirmationRequired;
 
   const searched = await call(manage.secret, 'search_notes', { query: '首段', mode: 'keyword' });
-  result.searchReturnsHits = Array.isArray(searched.hits) && searched.hits.some(h => h.id === created.id && h.snippet && h.path);
+  const source = searched.hits.find(h => h.note_id === created.id);
+  result.searchReturnsVerifiableSources = Array.isArray(searched.hits)
+    && !!source?.excerpt
+    && typeof source.path === 'string'
+    && source.version === after.version
+    && source.notebook_id === nb.id
+    && searched.retrieval_metadata?.mode === 'keyword';
+  const verifiedSource = source ? await call(manage.secret, 'get_note', { id: source.note_id }) : null;
+  result.searchSourceCanGetNote = verifiedSource?.id === created.id && verifiedSource.version === source.version;
 
   const recent = await call(manage.secret, 'list_recent', { limit: 10 });
   result.listRecentHasNote = recent.notes.some(n => n.id === created.id && n.version && n.path);

@@ -68,7 +68,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
   },
   search_notes: {
     tier: "read",
-    description: "检索笔记。mode=keyword 只做关键词；semantic 语义；hybrid（默认）两者融合。只回标题和 ≤240 字摘要，不回全文。默认 8 条，需要更多再调高 limit。",
+    description: "检索笔记。mode=keyword 只做关键词；semantic 语义；hybrid（默认）两者融合。每条返回 note_id、路径、版本和 ≤360 字摘录，可用 note_id 调 get_note 核验。默认 8 条。",
     properties: {
       query: { type: "string", minLength: 1, maxLength: 200 },
       notebook_id: UUID,
@@ -100,7 +100,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
   },
   ask_knowledge: {
     tier: "read",
-    description: "基于知识库内容问答，返回答案与引用来源。不要用它代替 search_notes 做浏览。",
+    description: "基于知识库内容问答，答案中的 [#n] 对应 citations[].citation_number；引用含 note_id、路径、版本、摘录及版本一致性标记。不要用它代替 search_notes 做浏览。",
     properties: { question: { type: "string", minLength: 1, maxLength: 2000 }, notebook_id: UUID, workspace_id: UUID },
     required: ["question"],
     annotations: read("知识问答", { openWorldHint: true }),

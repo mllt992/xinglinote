@@ -2,6 +2,8 @@ import { and, desc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import { folders, notebooks, notes } from "../db/schema.ts";
 import { retrieve, snippetAround } from "./knowledge-ai.ts";
+import { toMcpSource } from "./mcp-source.ts";
+import type { KnowledgeSourceHit } from "./knowledge-ai.ts";
 import { tokenize } from "@kb/core";
 import { likeContains } from "./like.ts";
 
@@ -55,20 +57,21 @@ export async function searchNotesInScope(input: {
   limit: number;
   accept: (noteId: string) => Promise<boolean>;
 }) {
-  const hits = new Map<string, { id: string; title: string; snippet: string; notebookId: string; folderId: string | null; score: number }>();
+  const hits = new Map<string, KnowledgeSourceHit>();
   if (!input.workspaceIds.length) return [];
 
-  const take = async (id: string, title: string, snippet: string, notebookId: string, folderId: string | null, score: number) => {
-    if (input.notebookId && notebookId !== input.notebookId) return;
-    if (!(await input.accept(id))) return;
-    const old = hits.get(id);
-    if (!old || score > old.score) hits.set(id, { id, title, snippet: snippet.slice(0, 240), notebookId, folderId, score });
+  const take = async (hit: KnowledgeSourceHit) => {
+    if (input.notebookId && hit.notebookId !== input.notebookId) return;
+    if (!(await input.accept(hit.noteId))) return;
+    const old = hits.get(hit.noteId);
+    if (!old || hit.score > old.score) hits.set(hit.noteId, { ...hit, excerpt: hit.excerpt.slice(0, 360) });
   };
 
   if (input.mode !== "semantic") {
     const rows = await db.select({
       id: notes.id, title: notes.title, bodyMd: notes.bodyMd, tags: notes.tags,
-      notebookId: notes.notebookId, folderId: notes.folderId,
+      workspaceId: notes.workspaceId, notebookId: notes.notebookId, folderId: notes.folderId,
+      version: notes.version, updatedAt: notes.updatedAt,
     }).from(notes).where(and(
       inArray(notes.workspaceId, input.workspaceIds),
       isNull(notes.trashedAt),
@@ -79,7 +82,17 @@ export async function searchNotesInScope(input: {
     for (const n of rows) {
       const tags = n.tags as string[];
       if (input.tag && !tags.includes(input.tag)) continue;
-      await take(n.id, n.title, snippetAround(n.bodyMd, parts), n.notebookId, n.folderId, 1 / (60 + rank++));
+      await take({
+        noteId: n.id,
+        title: n.title,
+        workspaceId: n.workspaceId,
+        notebookId: n.notebookId,
+        folderId: n.folderId,
+        version: n.version,
+        updatedAt: n.updatedAt,
+        excerpt: snippetAround(n.bodyMd, parts),
+        score: 1 / (60 + rank++),
+      });
     }
   }
 
@@ -99,14 +112,15 @@ export async function searchNotesInScope(input: {
         if (!n || n.trashedAt) continue;
         const tags = n.tags as string[];
         if (input.tag && !tags.includes(input.tag)) continue;
-        await take(n.id, n.title, r.excerpt, n.notebookId, n.folderId, 1 + r.score);
+        await take({ ...r, title: n.title, excerpt: r.excerpt, score: 1 + r.score });
       }
     }
   }
 
   const sorted = [...hits.values()].sort((a, b) => b.score - a.score).slice(0, input.limit);
-  const paths = await buildNotePaths(input.workspaceIds, sorted);
-  return sorted.map(h => ({ id: h.id, title: h.title, path: paths.get(h.id) ?? [h.title], snippet: h.snippet }));
+  const pathRows = sorted.map(h => ({ id: h.noteId, title: h.title, notebookId: h.notebookId, folderId: h.folderId }));
+  const paths = await buildNotePaths(input.workspaceIds, pathRows);
+  return sorted.map(h => toMcpSource(h, paths.get(h.noteId) ?? [h.title]));
 }
 
 export async function listRecentNotes(input: {
