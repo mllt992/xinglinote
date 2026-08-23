@@ -67,6 +67,15 @@ test("高影响写工具公开版本校验、确认和预览参数", () => {
   assert.ok(complete?.inputSchema.properties && "dry_run" in complete.inputSchema.properties);
 });
 
+test("创建类工具公开 UUID 幂等键", () => {
+  const tools = toolsFor({ rw: "manage", allowDelete: true, feedPublic: true, feedWorkspace: true });
+  for (const name of ["create_note", "create_task", "post_to_feed", "upload_image"]) {
+    const tool = tools.find(t => t.name === name);
+    const prop = (tool?.inputSchema.properties as { client_request_id?: { format?: string } } | undefined)?.client_request_id;
+    assert.equal(prop?.format, "uuid", `${name} 缺少 client_request_id`);
+  }
+});
+
 test("ILIKE 通配符按字面量转义", () => {
   assert.equal(likeContains("100%_off\\x"), "%100\\%\\_off\\\\x%");
 });

@@ -124,7 +124,7 @@ Owner/Admin 看本区：时间、token 名、user、tool、target note、结果�
 9. 用户被移出某个勾选区：从这把钥匙的 `workspace_ids` 里拿掉该区（白名单里属于该区的本一并拿掉）；一个都不剩则整把吊销。封禁、注销、钥匙吊销：立即失败。缓存 TTL ≤ 30s，吊销走主动失效。
 10. 动态工具仅当 feed_* 打开才注册，默认清单里没有。`tools/list` 必须按钥匙 rw / `allow_delete` / feed 减工具，不要列出再 403。
 11. 对外文档站、分享页不跑 MCP。
-12. 写工具可带 HTTP 头 `Idempotency-Key` 或参数 `client_request_id`。同一把钥匙、同一个键在 10 分钟内只执行第一次成功写入，之后原样返回那次结果——MCP 是 POST，断线重试不能再落一篇。
+12. 创建类工具公开可选 UUID 参数 `client_request_id`，所有写工具也认 HTTP 头 `Idempotency-Key`。幂等作用域为「钥匙 + 工具名 + 键」，数据库保留首次成功结果 10 分钟：相同参数重试原样返回，参数不同返回 `IDEMPOTENCY_KEY_REUSED`；并发相同请求等待首次结果，不重复落库。
 13. `last_used_at` 最多 30 秒写一次，避免每次工具调用都抢钥匙行。
 
 ---

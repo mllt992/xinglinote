@@ -97,10 +97,17 @@ try {
   const today = await call(manage.secret, 'today');
   result.todayShape = typeof today.date === 'string' && Array.isArray(today.items) && Array.isArray(today.overdue) && Array.isArray(today.notes);
 
-  const key = `verify-${Date.now()}`;
-  const first = await call(manage.secret, 'create_note', { notebook_id: nb.id, title: '幂等笔记' }, { idem: key });
-  const second = await call(manage.secret, 'create_note', { notebook_id: nb.id, title: '幂等笔记-不该再建' }, { idem: key });
+  const requestId = crypto.randomUUID();
+  const idemArgs = { notebook_id: nb.id, title: '幂等笔记', client_request_id: requestId };
+  const [first, second] = await Promise.all([
+    call(manage.secret, 'create_note', idemArgs),
+    call(manage.secret, 'create_note', idemArgs),
+  ]);
   result.idempotentCreate = first.id === second.id;
+  let reusedRejected = false;
+  try { await call(manage.secret, 'create_note', { ...idemArgs, title: '幂等键不应换参数' }); }
+  catch (e) { reusedRejected = e.data?.code === 'IDEMPOTENCY_KEY_REUSED'; }
+  result.idempotencyRejectsChangedArgs = reusedRejected;
 
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
   const uploaded = await call(manage.secret, 'upload_image', { note_id: created.id, filename: 'dot.png', mime: 'image/png', data_base64: `data:image/png;base64,${png}` });

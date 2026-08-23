@@ -21,6 +21,7 @@ export type ToolDef = {
 const UUID = { type: "string", format: "uuid" } as const;
 const NUL_UUID = { type: ["string", "null"], format: "uuid" } as const;
 const TAGS = { type: "array", items: { type: "string", minLength: 1, maxLength: 50 }, maxItems: 50 } as const;
+const CLIENT_REQUEST_ID = { type: "string", format: "uuid", description: "同一次逻辑操作重试时保持不变；服务端保留首次成功结果 10 分钟" } as const;
 const EDIT_PROPS = {
   id: UUID,
   expected_version: { type: "integer", minimum: 1 },
@@ -134,6 +135,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
       filename: { type: "string", minLength: 1, maxLength: 180 },
       mime: { type: "string", enum: ["image/png", "image/jpeg", "image/webp", "image/gif"] },
       data_base64: { type: "string", minLength: 1, description: "图片的 base64，可带 data:image/…;base64, 前缀" },
+      client_request_id: CLIENT_REQUEST_ID,
     },
     required: ["note_id", "filename", "mime", "data_base64"],
     annotations: write("上传图片"),
@@ -175,6 +177,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
       title: { type: "string", minLength: 1, maxLength: 200 },
       content: { type: "string", default: "" },
       tags: TAGS,
+      client_request_id: CLIENT_REQUEST_ID,
     },
     required: ["notebook_id", "title"],
     annotations: write("新建笔记"),
@@ -216,6 +219,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
       priority: { type: "integer", minimum: 0, maximum: 3, default: 0 },
       note: { type: "string", maxLength: 2000, default: "" },
       workspace_id: UUID,
+      client_request_id: CLIENT_REQUEST_ID,
     },
     required: ["title"],
     annotations: write("新建任务"),
@@ -263,6 +267,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
       workspace_id: UUID,
       confirm_public: { type: "boolean", default: false, description: "scope=public 时必须显式为 true" },
       dry_run: { type: "boolean", default: false, description: "仅预览影响，不修改数据" },
+      client_request_id: CLIENT_REQUEST_ID,
     },
     required: ["body"],
     annotations: write("发动态"),

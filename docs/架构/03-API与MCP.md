@@ -316,7 +316,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 - 初始化后 `tools/list` 按钥匙 rw/feed/delete **动态减工具**，不要列出再 403（减少 Agent 胡调）。每个工具带 `annotations`（`readOnlyHint` / `destructiveHint` / `idempotentHint`）。
 - `initialize.result.instructions` 写清用法：先 `get_me`，搜用 `search_notes`，改正文先 `get_note` 拿 version。
 - 协议方法：`initialize`、`ping`（回 `{}`）、`tools/list`、`tools/call`。未知 `notifications/*` 回 204。其它未知方法记失败审计，`action` 用 `mcp.{method}`，`details` 写 `VALIDATION` +「不支持的方法：{method}」，不要一律写成 `mcp.request`。`ping` / `initialize` / `tools/list` 成功不写审计，否则客户端保活会把日志刷满。
-- 写工具认 HTTP 头 `Idempotency-Key` 或参数 `client_request_id`，10 分钟内同一把钥匙同一键只落一次。
+- 创建类工具公开 UUID 参数 `client_request_id`，所有写工具也认 HTTP 头 `Idempotency-Key`。`mcp_idempotency` 以钥匙、工具名和键为主键，保存参数哈希及首次成功结果 10 分钟；同键不同参数返回 `IDEMPOTENCY_KEY_REUSED`，并发同参请求等待首个结果。
 - 错误：JSON-RPC `error.data` 为 `{ code, message, ...fields }`，`code` 同 HTTP。`CONFLICT_VERSION` 带当前 `version`。
 
 鉴权链严格按 [设计 11 §5.1](../设计/11-MCP.md)。
