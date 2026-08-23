@@ -49,6 +49,8 @@ Viewer 只能建 `rw=read`。只要勾选的区里有一个是 Viewer，这把�
 列表：名称、区（多个用顿号）、范围摘要、档、每日额度、最后使用、过期。**只列 active**；轮换掉的旧钥匙与吊销的钥匙不再占位，查历史用 `?includeRevoked=1`。
 操作：编辑、轮换、吊销。
 
+列表下方「最近 MCP 调用」：时间、钥匙名、工具（或 JSON-RPC 方法名）、成败。失败时必须展示 `details.code` 与 `details.message`，不要只给一个 `error` 徽章——否则用户无法排查。握手 / 保活（`initialize` / `ping` / `tools/list` / `notifications/*`）成功不占这条列表。
+
 编辑：改工作区勾选、档位、笔记本范围、过期、额度与三个高级开关，校验与新建同一套（不能超过本人 ACL，allow_delete 仅 manage）。
 **不换明文**，客户端配置继续可用。工作区可以加减，至少留一个。
 
@@ -103,8 +105,8 @@ OAuth 签发的钥匙在设置页和手工建的并排显示（`source='oauth'`�
 
 ### 3.4 审计页
 
-Owner/Admin 看本区：时间、token 名、user、tool、target note、结果码。本人看自己的。保留 90 天。  
-接口 `GET /api/v1/workspaces/:id/mcp-audit`，可按 `tokenId` / `tool` / `result` 筛；工作区总审计页同样能按「仅 MCP」过滤。
+Owner/Admin 看本区：时间、token 名、user、tool、target note、结果码、失败原因（`details.message`）。本人看自己的。保留 90 天。  
+接口 `GET /api/v1/workspaces/:id/mcp-audit`，可按 `tokenId` / `tool` / `result` 筛；工作区总审计页同样能按「仅 MCP」过滤。失败行的徽章用业务码（`VALIDATION` / `FORBIDDEN` / `QUOTA`…），旁边写人话原因。
 
 ---
 

@@ -7,6 +7,7 @@ function tokenWorkspaceIds(t:McpToken){return t.workspaceIds?.length?t.workspace
 const RW=[{v:"read",title:"只读",desc:"检索、读取、问答。不能改任何内容。"},{v:"write",title:"读写",desc:"在只读之上，可新建、追加、修改笔记。"},{v:"manage",title:"全部",desc:"在读写之上，可移动、打标签；勾选后还能删到回收站。"}] as const;
 const rwLabel=(v:string)=>RW.find(x=>x.v===v)?.title??v;
 const box="rounded-xl border bg-background";
+function auditFail(details:unknown){if(!details||typeof details!=="object"||Array.isArray(details))return{};const d=details as Record<string,unknown>;return{code:typeof d.code==="string"?d.code:undefined,message:typeof d.message==="string"?d.message:undefined};}
 
 function Field({title,hint,children}:{title:string;hint?:string;children:ReactNode}){return <label className="grid gap-1.5"><span className="text-xs font-medium text-muted-foreground">{title}</span>{children}{hint&&<span className="text-[11px] text-muted-foreground">{hint}</span>}</label>;}
 function Check2({checked,onChange,title,desc,disabled}:{checked:boolean;onChange:(v:boolean)=>void;title:string;desc:string;disabled?:boolean}){
@@ -20,7 +21,7 @@ const fromToken=(t:McpToken):Draft=>({name:t.name,workspaceIds:tokenWorkspaceIds
 /** 设置 → MCP 钥匙。一把钥匙可勾选多个工作区，范围、档位、过期、写入额度都在这里定。 */
 export function McpPanel({workspaces,defaultWorkspaceId}:{workspaces:Array<{id:string;name:string}>;defaultWorkspaceId?:string}){
   const askConfirm=useConfirm();const toast=useToast();
-  type AuditRow={id:string;tokenName:string|null;action:string;result:string;createdAt:string};
+  type AuditRow={id:string;tokenName:string|null;action:string;result:string;details?:unknown;createdAt:string};
   const[tokens,setTokens]=useState<McpToken[]>([]);const[err,setErr]=useState("");const[busy,setBusy]=useState(false);
   const[audit,setAudit]=useState<AuditRow[]>([]);
   const[draft,setDraft]=useState<Draft|null>(null);const[editing,setEditing]=useState<McpToken|null>(null);
@@ -81,7 +82,7 @@ export function McpPanel({workspaces,defaultWorkspaceId}:{workspaces:Array<{id:s
       <Button variant="ghost" size="icon" aria-label="吊销" onClick={()=>void revoke(t)}><Trash2/></Button>
     </div>)}</div>}
 
-    {audit.length>0&&<div className={box}><p className="border-b px-4 py-2.5 text-xs font-medium text-muted-foreground">最近 MCP 调用</p><div className="divide-y">{audit.map(l=><div key={l.id} className="flex flex-wrap items-center gap-2 px-4 py-2"><span className="font-mono text-xs">{l.action.replace(/^mcp\./,"")}</span><span className="text-[11px] text-muted-foreground">{l.tokenName??"钥匙"} · {new Date(l.createdAt).toLocaleString()}</span>{l.result!=="ok"&&<Badge>{l.result}</Badge>}</div>)}</div></div>}
+    {audit.length>0&&<div className={box}><p className="border-b px-4 py-2.5 text-xs font-medium text-muted-foreground">最近 MCP 调用</p><div className="divide-y">{audit.map(l=>{const fail=auditFail(l.details);return <div key={l.id} className="flex flex-wrap items-start gap-2 px-4 py-2"><div className="min-w-0 flex-1"><p className="flex flex-wrap items-center gap-2"><span className="font-mono text-xs">{l.action.replace(/^mcp\./,"")}</span><span className="text-[11px] text-muted-foreground">{l.tokenName??"钥匙"} · {new Date(l.createdAt).toLocaleString()}</span></p>{fail.message&&<p className="mt-0.5 break-words text-[11px] text-destructive" title={fail.message}>{fail.message}</p>}</div>{l.result!=="ok"&&<Badge className="border-destructive/40 text-destructive">{fail.code??l.result}</Badge>}</div>;})}</div></div>}
 
     <Dialog open={!!draft} onOpenChange={v=>{if(!v){setDraft(null);setEditing(null)}}}><DialogContent className="max-h-[86vh] max-w-2xl overflow-auto">
       <DialogHeader><DialogTitle className="flex items-center gap-2"><KeyRound className="size-5"/>{editing?"编辑钥匙":"新建 MCP 钥匙"}</DialogTitle><DialogDescription>{editing?"改权限和工作区即时生效，明文不变。":"明文只在创建后显示一次，关掉就看不到了。"}</DialogDescription></DialogHeader>

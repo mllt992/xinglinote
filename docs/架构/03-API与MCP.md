@@ -77,7 +77,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | POST | `/api/v1/notes` | notebookId, folderId, title? |
 | GET/PATCH | `/api/v1/notes/:id` | PATCH: bodyMd, title, published, aiIndex, expectedVersion, force? |
 | DELETE | `/api/v1/notes/:id` | trash |
-| POST | `/api/v1/notes/:id/move` | `notebookId?`, `folderId?`；同工作区内改目录或换本。目标目录已有同名笔记则拒绝 |
+| POST | `/api/v1/notes/:id/move` | `notebookId?`, `folderId?`；同工作区内改目录或换本。换本且未给 `folderId` 时落到目标本根。目标目录已有同名笔记则拒绝 |
 | GET | `/api/v1/notes/:id/versions` | |
 | POST | `/api/v1/notes/:id/versions/:v/restore` | |
 | POST | `/api/v1/notes/:id/presence` | heartbeat |
@@ -305,6 +305,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 - 备选：同镜像提供 `knowledge-mcp-stdio`，从 stdin 读，把请求转到该端点，给只支持 stdio 的客户端。
 - 初始化后 `tools/list` 按钥匙 rw/feed/delete **动态减工具**，不要列出再 403（减少 Agent 胡调）。每个工具带 `annotations`（`readOnlyHint` / `destructiveHint` / `idempotentHint`）。
 - `initialize.result.instructions` 写清用法：先 `get_me`，搜用 `search_notes`，改正文先 `get_note` 拿 version。
+- 协议方法：`initialize`、`ping`（回 `{}`）、`tools/list`、`tools/call`。未知 `notifications/*` 回 204。其它未知方法记失败审计，`action` 用 `mcp.{method}`，`details` 写 `VALIDATION` +「不支持的方法：{method}」，不要一律写成 `mcp.request`。`ping` / `initialize` / `tools/list` 成功不写审计，否则客户端保活会把日志刷满。
 - 写工具认 HTTP 头 `Idempotency-Key` 或参数 `client_request_id`，10 分钟内同一把钥匙同一键只落一次。
 - 错误：JSON-RPC `error.data` 为 `{ code, message, ...fields }`，`code` 同 HTTP。`CONFLICT_VERSION` 带当前 `version`。
 
@@ -335,6 +336,8 @@ Caddy 另外配了 `lb_try_duration 5s`：api 容器重启的那几秒里拨号�
 正文在 `notes` 与 `note_versions` 里已经各存了一份，审计再存第三份，批量导入时会把库撑大
 好几倍，大 jsonb 的插入本身也会把这次写请求拖慢。短字段（id、标题、标签）原样保留，
 足够回答「谁在什么时候调了什么」。
+
+失败行的 `details` 是 `{ code, message }`（业务码 + 人话），设置页「最近 MCP 调用」和审计页都要露出来，不能只渲染 `result=error`。
 
 审计写失败**不回滚、也不影响本次调用的返回值**：笔记已经落库了还回一个错，会自动重试的
 Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了只在进程日志里喊一声。

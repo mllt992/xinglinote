@@ -101,6 +101,13 @@ try {
 
   const logs = (await api(`/workspaces/${me.personalWorkspaceId}/mcp-audit?tool=replace_in_note&limit=20`, {}, cookie)).data.logs;
   result.auditFilterable = logs.some(l => l.action === 'mcp.replace_in_note' && l.result === 'ok');
+
+  const ping = await rpc(manage.secret, 'ping');
+  result.pingOk = !!ping.result && !ping.error;
+  const unknown = await rpc(manage.secret, 'resources/list');
+  result.unknownMethodNamed = unknown.error?.data?.code === 'VALIDATION' && /不支持的方法：resources\/list/.test(unknown.error?.message || '');
+  const errLogs = (await api(`/workspaces/${me.personalWorkspaceId}/mcp-audit?result=error&limit=20`, {}, cookie)).data.logs;
+  result.errorAuditHasReason = errLogs.some(l => l.action === 'mcp.resources/list' && l.details?.code === 'VALIDATION' && /不支持的方法/.test(l.details?.message || ''));
 } finally {
   for (const t of [manage.id, read.id, write.id]) await api(`/mcp/tokens/${t}`, { method: 'DELETE' }, cookie).catch(() => {});
 }

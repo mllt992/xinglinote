@@ -2,6 +2,7 @@ import{useEffect,useState}from'react';import type{ReactNode}from'react';import{C
 export{BackupPanel}from'./backup-panel';
 const box="rounded-xl border bg-background";
 function Hollow({icon,text}:{icon:ReactNode;text:string}){return <div className="py-12 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground">{icon}</span><p className="mt-3 text-xs text-muted-foreground">{text}</p></div>;}
+function auditFail(details:unknown){if(!details||typeof details!=="object"||Array.isArray(details))return{};const d=details as Record<string,unknown>;return{code:typeof d.code==="string"?d.code:undefined,message:typeof d.message==="string"?d.message:undefined};}
 
 /** 工作区审计流水：成员变更、备份、MCP 写入都落在这里。MCP 可按钥匙 / 工具 / 成败筛。 */
 export function AuditPanel({workspaceId}:{workspaceId:string}){
@@ -26,11 +27,11 @@ export function AuditPanel({workspaceId}:{workspaceId:string}){
       </>}
     </div>
     {!logs.length?<div className={box}><Hollow icon={<FileClock/>} text="还没有审计记录。成员变更、备份、MCP 写入都会记在这里。"/></div>
-    :<div className={box}><div className="divide-y">{logs.map(l=><div key={l.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+    :<div className={box}><div className="divide-y">{logs.map(l=>{const fail=auditFail(l.details);return <div key={l.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
       <Badge>{l.actorType==="mcp"||scope==="mcp"?"MCP":l.actorType==="system"?"系统":"用户"}</Badge>
-      <div className="min-w-0 flex-1"><p className="font-mono text-sm">{l.action}</p><p className="truncate text-xs text-muted-foreground">{new Date(l.createdAt).toLocaleString()}{l.tokenName?` · ${l.tokenName}`:""}{l.targetType?` · ${l.targetType}`:""}{l.details?` · ${JSON.stringify(l.details)}`:""}</p></div>
-      {l.result!=="ok"&&<Badge>{l.result}</Badge>}
-    </div>)}</div><p className="border-t px-4 py-2.5 text-xs text-muted-foreground">只显示最近 {scope==="mcp"?50:200} 条。</p></div>}
+      <div className="min-w-0 flex-1"><p className="font-mono text-sm">{l.action}</p><p className="truncate text-xs text-muted-foreground">{new Date(l.createdAt).toLocaleString()}{l.tokenName?` · ${l.tokenName}`:""}{l.targetType?` · ${l.targetType}`:""}</p>{fail.message?<p className="mt-0.5 break-words text-[11px] text-destructive" title={fail.message}>{fail.message}</p>:l.result==="ok"&&l.details?<p className="truncate text-[11px] text-muted-foreground">{JSON.stringify(l.details)}</p>:null}</div>
+      {l.result!=="ok"&&<Badge className="border-destructive/40 text-destructive">{fail.code??l.result}</Badge>}
+    </div>;})}</div><p className="border-t px-4 py-2.5 text-xs text-muted-foreground">只显示最近 {scope==="mcp"?50:200} 条。</p></div>}
   </div>;
 }
 
