@@ -364,13 +364,13 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 
 ### list_notebooks
 
-无参。`{ notebooks: [{ id, title, slug, visibility }] }`
+`{ limit?: number, cursor?: string }`。返回 `{ items, notebooks: items, next_cursor, has_more }`，按 `title ASC, id ASC` 稳定排序。
 
 ### list_folder
 
 ```
-{ notebook_id: string, folder_id?: string }
-→ { folders: [{id,title}], notes: [{id,title}] }
+{ notebook_id: string, folder_id?: string, limit?: number, cursor?: string }
+→ { items: [{type,id,title}], folders: [...], notes: [...], next_cursor, has_more }
 ```
 
 ### search_notes
@@ -446,8 +446,8 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 ### list_recent
 
 ```
-{ since?: string, limit?: number }   // 默认 20，上限 50
-→ { notes: [{ id, title, path, version, updated_at }] }
+{ since?: string, limit?: number, cursor?: string }   // 默认 20，上限 50
+→ { items, notes: items, next_cursor, has_more }
 ```
 
 ### today
@@ -480,16 +480,17 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 ### list_tasks / list_events
 
 ```
-list_tasks  { from?: string, to?: string, status?: 'open'|'done'|'all',
+list_tasks  { from?: string, to?: string, status?: 'open'|'done'|'all', cursor?: string,
               assignee?: 'me'|'any'|handle, include_inbox?: boolean, limit?: number }
 → { items: [{ id, title, due_at, occurrence_start, status, priority, all_day,
               recurring, source, link_state, source_note_id?, note_title?, url }] }
 
-list_events { from?: string, to?: string, limit?: number }
+list_events { from?: string, to?: string, limit?: number, cursor?: string }
 → { items: [{ id, title, starts_at, ends_at, all_day, recurring, url, ... }] }
 ```
 
 窗口默认「今天起 14 天」（当地日历日 00:00 起），单次上限 200 条，最长 400 天。
+五个列表工具的 cursor 均为 HMAC 签名的短期不透明值，绑定工具、筛选条件和钥匙授权范围；无效返回 `INVALID_CURSOR`，15 分钟过期返回 `CURSOR_EXPIRED`。
 `list_tasks` 默认只给 `open`，并额外带上收件箱里没期限的任务（`include_inbox`，默认 true）——问「我要做什么」的人不会希望漏掉没排期的那些。
 重复条目按窗口展开，每个实例带 `occurrence_start`，写操作必须带回。
 来源笔记不可见的条目直接不返回（不是 403），且钥匙的笔记本范围、`require_ai_index`、私密笔记本开关全部继承自笔记本身的判定。

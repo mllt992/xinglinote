@@ -76,6 +76,14 @@ test("创建类工具公开 UUID 幂等键", () => {
   }
 });
 
+test("所有列表工具使用统一 cursor 协议", () => {
+  const tools=toolsFor({rw:"read",allowDelete:false,feedPublic:false,feedWorkspace:false});
+  for(const name of ["list_notebooks","list_folder","list_recent","list_tasks","list_events"]){
+    const props=tools.find(t=>t.name===name)?.inputSchema.properties;
+    assert.ok(props&&"limit" in props&&"cursor" in props,`${name} 缺少 limit/cursor`);
+  }
+});
+
 test("ILIKE 通配符按字面量转义", () => {
   assert.equal(likeContains("100%_off\\x"), "%100\\%\\_off\\\\x%");
 });

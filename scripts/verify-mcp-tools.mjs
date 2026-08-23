@@ -54,6 +54,7 @@ try {
   result.getMeHasImageCap = typeof meInfo.image_max_bytes === 'number' && meInfo.image_max_bytes >= 262144;
 
   const created = await call(manage.secret, 'create_note', { notebook_id: nb.id, title: 'MCP 新工具验收', content: 'alpha 第一段\nalpha 第二段', tags: ['初始'] });
+  const createdForPaging = await call(manage.secret, 'create_note', { notebook_id: nb.id, title: 'MCP 分页验收', content: 'pagination' });
   const tagged = await call(manage.secret, 'add_tags', { id: created.id, tags: ['知识', '测试'] });
   const listedFolder = await call(manage.secret, 'list_folder', { notebook_id: nb.id });
   const note = await call(manage.secret, 'get_note', { id: created.id });
@@ -61,6 +62,9 @@ try {
   result.tagsPersisted = tagged.tags.includes('知识') && note.tags.includes('知识');
   result.folderListsNote = listedFolder.notes.some(x => x.id === created.id);
   result.getNoteHasPath = Array.isArray(note.path) && note.path.includes(note.title);
+  const folderPage1 = await call(manage.secret, 'list_folder', { notebook_id: nb.id, limit: 1 });
+  const folderPage2 = await call(manage.secret, 'list_folder', { notebook_id: nb.id, limit: 1, cursor: folderPage1.next_cursor });
+  result.folderCursorPaginates = folderPage1.has_more === true && folderPage1.items.length === 1 && folderPage2.items.length === 1 && folderPage1.items[0].id !== folderPage2.items[0].id;
 
   const hidden = await api(`/notes/${created.id}`, { method: 'PATCH', body: JSON.stringify({ aiIndex: false, expectedVersion: note.version }) }, cookie);
   let missing = false;
@@ -93,6 +97,13 @@ try {
 
   const recent = await call(manage.secret, 'list_recent', { limit: 10 });
   result.listRecentHasNote = recent.notes.some(n => n.id === created.id && n.version && n.path);
+  const recentPage1 = await call(manage.secret, 'list_recent', { limit: 1 });
+  const recentPage2 = await call(manage.secret, 'list_recent', { limit: 1, cursor: recentPage1.next_cursor });
+  result.recentCursorPaginates = recentPage1.has_more === true && recentPage1.items.length === 1 && recentPage2.items.length === 1 && recentPage1.items[0].id !== recentPage2.items[0].id;
+  let cursorBound = false;
+  try { await call(manage.secret, 'list_recent', { since: '2026-01-01T00:00:00.000Z', limit: 1, cursor: recentPage1.next_cursor }); }
+  catch (e) { cursorBound = e.data?.code === 'INVALID_CURSOR'; }
+  result.cursorBindsFilters = cursorBound && !!createdForPaging.id;
 
   const today = await call(manage.secret, 'today');
   result.todayShape = typeof today.date === 'string' && Array.isArray(today.items) && Array.isArray(today.overdue) && Array.isArray(today.notes);

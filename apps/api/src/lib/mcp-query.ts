@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import { folders, notebooks, notes } from "../db/schema.ts";
 import { retrieve, snippetAround } from "./knowledge-ai.ts";
@@ -113,20 +113,22 @@ export async function listRecentNotes(input: {
   workspaceIds: string[];
   since?: Date;
   limit: number;
+  after?: { updatedAt: Date; id: string };
   accept: (noteId: string) => Promise<boolean>;
 }) {
   if (!input.workspaceIds.length) return [];
   const conds = [inArray(notes.workspaceId, input.workspaceIds), isNull(notes.trashedAt)];
   if (input.since) conds.push(gte(notes.updatedAt, input.since));
-  const rows = await db.select({
-    id: notes.id, title: notes.title, notebookId: notes.notebookId, folderId: notes.folderId,
-    version: notes.version, updatedAt: notes.updatedAt,
-  }).from(notes).where(and(...conds)).orderBy(desc(notes.updatedAt)).limit(Math.min(200, input.limit * 6));
-  const kept = [];
-  for (const n of rows) {
-    if (!(await input.accept(n.id))) continue;
-    kept.push(n);
-    if (kept.length >= input.limit) break;
+  let after=input.after;
+  const kept:Array<{id:string;title:string;notebookId:string;folderId:string|null;version:number;updatedAt:Date}>=[];
+  while(kept.length<input.limit){
+    const pageConds=[...conds];
+    if(after)pageConds.push(or(lt(notes.updatedAt,after.updatedAt),and(eq(notes.updatedAt,after.updatedAt),lt(notes.id,after.id)))!);
+    const batch=Math.min(200,Math.max(40,(input.limit-kept.length)*4));
+    const rows=await db.select({id:notes.id,title:notes.title,notebookId:notes.notebookId,folderId:notes.folderId,version:notes.version,updatedAt:notes.updatedAt}).from(notes).where(and(...pageConds)).orderBy(desc(notes.updatedAt),desc(notes.id)).limit(batch);
+    for(const n of rows){if(await input.accept(n.id)){kept.push(n);if(kept.length>=input.limit)break;}}
+    if(rows.length<batch)break;
+    const last=rows.at(-1)!;after={updatedAt:last.updatedAt,id:last.id};
   }
   const paths = await buildNotePaths(input.workspaceIds, kept);
   return kept.map(n => ({

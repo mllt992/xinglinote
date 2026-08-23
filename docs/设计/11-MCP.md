@@ -165,10 +165,10 @@ target notes:
 **`get_me`**  
 出：user handle、workspace（第一个，兼容旧客户端）、workspaces[{id,name}]、rw、notebook_mode、notebooks[{id,title,slug,visibility,workspace_id}]（inherit 则列当前能读且过 private 过滤的本）、expires_at、require_ai_index、allow_private_notebooks、allow_delete、image_max_bytes（实例当前的 MCP 单张图上限）。
 
-**`list_notebooks`**  
-出：过范围过滤的本。
+**`list_notebooks(limit?, cursor?)`**
+出：过范围过滤的本，按 `title ASC, id ASC` 稳定排序。
 
-**`list_folder(notebook_id, path?)`**  
+**`list_folder(notebook_id, folder_id?, limit?, cursor?)`**
 出：子目录与笔记标题、id。不含正文。
 
 **`search_notes(query, notebook_id?, workspace_id?, tag?, mode=keyword|semantic|hybrid, limit?)`**  
@@ -196,7 +196,7 @@ limit≤20，**默认 8**（不要一上来塞 20 条摘要）。出：`{ hits: 
 **`replace_in_note(id, expected_version, old, new, replace_all?)`**  
 须 write。只替换一段正文，避免 Agent 整篇重写把后半截吃掉。`old` 找不到 → VALIDATION；出现多次且未 `replace_all` → VALIDATION，让调用方补更长上下文。
 
-**`list_recent(since?, limit?)`**  
+**`list_recent(since?, limit?, cursor?)`**
 读档位。按 `updated_at` 倒序，默认 20、上限 50。只回 id / title / path / version / updated_at，不回正文。
 
 **`today`**  
@@ -221,10 +221,12 @@ limit≤20，**默认 8**（不要一上来塞 20 条摘要）。出：`{ hits: 
 **`post_to_feed(body, scope?, confirm_public?, dry_run?)`**
 `scope=public` 的实际发布必须显式传 `confirm_public=true`，否则返回 `CONFIRMATION_REQUIRED`；`dry_run=true` 不发布并返回范围、正文摘要和所需确认参数。
 
-**`list_tasks(from?, to?, status?, assignee?, include_inbox?, limit?)`** / **`list_events(from?, to?, limit?)`**  
+**`list_tasks(from?, to?, status?, assignee?, include_inbox?, limit?, cursor?)`** / **`list_events(from?, to?, limit?, cursor?)`**
 读档位。窗口默认「今天起 14 天」，上限 200 条、最长 400 天。重复条目按窗口展开，每个实例带 `occurrence_start`。
 `source=note` 的条目**完全继承来源笔记的判定**：钥匙的笔记本范围、`require_ai_index`、私密笔记本开关一并适用，不可见的直接不返回。
 `list_tasks` 默认只给 `open`，并带上收件箱里没期限的任务。
+
+上述五个列表工具统一返回 `{ items, next_cursor, has_more }`；兼容字段 `notebooks`、`folders`、`notes` 仍对应当前页。cursor 是服务端签名的不透明字符串，有效期 15 分钟，绑定工具、筛选条件、工作区与钥匙范围；篡改或跨查询复用返回 `INVALID_CURSOR`，过期返回 `CURSOR_EXPIRED`。
 
 **`create_task(title, due_at?, all_day?, priority?, note?, workspace_id?)`**  
 须 write。只能建 `source=mcp` 的独立任务，**不能写笔记正文**——否则一把「只读笔记」的钥匙能靠建任务绕道改正文。绑了多个区时 `workspace_id` 必填。
