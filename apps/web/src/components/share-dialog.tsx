@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { outlineOf } from "@kb/shared/markdown";
 import { Check, Copy, Link2, Lock, Share2, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { Button } from "./ui/button";
@@ -12,8 +13,6 @@ import { FormError } from "./ui/form-error";
 export type ShareDto = { id: string; token: string; targetType: string; targetId: string; headingAnchor: string | null; hasPassword: boolean; expiresAt: string | null; allowRobots: boolean; commentsEnabled: boolean; correctionsEnabled: boolean; showBacklinks: boolean; status: string; createdAt: string };
 export type ShareTarget = { kind: "note" | "folder" | "attachment" | "notebook"; id: string; title: string; bodyMd?: string };
 const typeLabel: Record<string, string> = { note: "整篇", heading: "某一节", folder: "目录", attachment: "附件", notebook: "整本" };
-/** 和后端 headingSlug 同一套规则，锚点两边要能对上。 */
-const slug = (t: string) => t.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^\p{L}\p{N}_-]/gu, "");
 
 function ShareRow({ s, url, copied, onCopy, onRevoke }: { s: ShareDto; url: string; copied?: boolean; onCopy?: () => void; onRevoke?: () => void }) {
   const expired = !!s.expiresAt && new Date(s.expiresAt).getTime() < Date.now();
@@ -54,7 +53,7 @@ export function ShareDialog({ target, open, onOpenChange }: { target: ShareTarge
   const toast = useToast();
   const [anchor, setAnchor] = useState("");
   const [opts, setOpts] = useState({ commentsEnabled: true, correctionsEnabled: false, showBacklinks: false, allowRobots: false });
-  const headings = useMemo(() => target?.kind === "note" && target.bodyMd ? target.bodyMd.split("\n").filter(l => /^#{1,6}\s/.test(l)).map(l => ({ anchor: slug(l.replace(/^#+\s*/, "")), text: l.replace(/^#+\s*/, "").trim() })).filter(h => h.anchor) : [], [target?.bodyMd, target?.kind]);
+  const headings = useMemo(() => target?.kind === "note" && target.bodyMd ? outlineOf(target.bodyMd).map(item => ({ anchor: item.slug, text: item.text, level: item.level })) : [], [target?.bodyMd, target?.kind]);
   const listPath = target ? shareListPath(target) : null;
   const load = () => listPath && api<{ shares: ShareDto[] }>(listPath).then(d => setShares(d.shares)).catch(() => setShares([]));
   useEffect(() => { if (open) { setErr(""); setAnchor(""); void load(); } }, [open, target?.id]);
@@ -84,7 +83,7 @@ export function ShareDialog({ target, open, onOpenChange }: { target: ShareTarge
       <DialogDescription>{target ? hint(target.kind) : ""}</DialogDescription>
       <p className="text-xs text-muted-foreground">这条链接<b className="font-medium">只读</b>，访客能看能评论，但不能编辑。想让人跟你一起写，用顶栏的「协作」。</p></DialogHeader>
     <div className="rounded-xl border border-border bg-muted/30 p-4">
-      {target?.kind === "note" && headings.length > 0 && <select className="mb-3 h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none" value={anchor} onChange={e => setAnchor(e.target.value)}><option value="">分享整篇</option>{headings.map(h => <option key={h.anchor} value={h.anchor}>只分享这一节：{h.text}</option>)}</select>}
+      {target?.kind === "note" && headings.length > 0 && <select className="mb-3 h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none" value={anchor} onChange={e => setAnchor(e.target.value)}><option value="">分享整篇</option>{headings.map(h => <option key={h.anchor} value={h.anchor}>只分享这一节：{"　".repeat(Math.max(0, h.level - 1))}{h.text}</option>)}</select>}
       <div className="grid gap-3 sm:grid-cols-[1fr_150px_auto]">
         <Input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="访问密码（可选）" autoComplete="new-password" />
         <select className="h-9 rounded-lg border border-input bg-background px-3 text-sm outline-none" value={days} onChange={e => setDays(e.target.value)}><option value="never">永不过期</option><option value="7">7 天</option><option value="30">30 天</option><option value="90">90 天</option></select>

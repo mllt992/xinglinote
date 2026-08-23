@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { countWords, diagramBlockAt, diagramFence, outlineOf, plainTextOf, renderMarkdown, slugifyHeading, toggleTaskAt } from "./index.js";
+import { countWords, diagramBlockAt, diagramFence, outlineOf, plainTextOf, renderMarkdown, sliceHeadingSection, slugifyHeading, toggleTaskAt } from "./index.js";
 
 test("GFM 表格、删除线、任务列表都在闭集里", () => {
   const html = renderMarkdown("| a | b |\n|---|---|\n| 1 | 2 |\n\n~~划掉~~\n");
@@ -79,6 +79,13 @@ test("目录带层级与行号", () => {
     { level: 1, text: "一", slug: "一", line: 0 },
     { level: 2, text: "二 别名", slug: "二-别名", line: 4 },
   ]);
+});
+
+test("章节截取与正文锚点共用标题解析，重复标题和代码块不漂移", () => {
+  const source = "# 安装 **指南**\n正文\n## 重复\n甲\n```md\n# 伪标题\n```\n## 重复\n乙\n# 下一章\n丙";
+  assert.equal(sliceHeadingSection(source, "安装-指南"), "# 安装 **指南**\n正文\n## 重复\n甲\n```md\n# 伪标题\n```\n## 重复\n乙");
+  assert.equal(sliceHeadingSection(source, "重复-2"), "## 重复\n乙");
+  assert.equal(sliceHeadingSection(source, "伪标题"), null);
 });
 
 test("纯文本摘要吃掉标记", () => {

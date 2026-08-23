@@ -38,6 +38,7 @@ import { NotificationBell } from "./components/notifications";
 import { OauthConsent } from "./components/oauth-consent";
 import { ShareDialog, type ShareTarget } from "./components/share-dialog";
 import { PublicShareTree } from "./components/public-share-tree";
+import { PublicReadingLayout } from "./components/public-toc";
 import { CollabDialog } from "./components/collab-dialog";
 import { FeedView, PostAssetGrid, type FeedPost } from "./components/feed";
 import { PublicInteractions } from "./components/public-interactions";
@@ -91,8 +92,25 @@ function useMe() {
   return me;
 }
 
-function Brand({ compact = false }: { compact?: boolean }) {
-  return <div className="flex items-center gap-2.5 font-semibold tracking-[-0.03em]"><span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground"><Sparkles className="size-3.5" /></span>{!compact && <span>Knowledge</span>}</div>;
+function Brand({ compact = false, href, ariaLabel }: { compact?: boolean; href?: string; ariaLabel?: string }) {
+  const content = <><span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground"><Sparkles className="size-3.5" /></span>{!compact && <span>Knowledge</span>}</>;
+  const className = "flex shrink-0 items-center gap-2.5 rounded-lg font-semibold tracking-[-0.03em] outline-none";
+  return href
+    ? <Link to={href} aria-label={ariaLabel} className={`${className} -m-1 p-1 transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50`}>{content}</Link>
+    : <div className={className}>{content}</div>;
+}
+
+function PublicHeader({ contextLabel, actions }: { contextLabel: string; actions?: ReactNode }) {
+  const me = useMe();
+  return <header className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2 sm:gap-3 sm:px-5">
+    <Brand href="/" ariaLabel="返回首页" />
+    <Badge className="hidden max-w-[min(36vw,26rem)] truncate lg:inline-flex">{contextLabel}</Badge>
+    <nav aria-label="公开页面导航" className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1 text-xs sm:gap-2">
+      <Link to="/" className="rounded-md px-2 py-1.5 text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50">返回首页</Link>
+      {me?.personalWorkspaceId && <Link to={`/w/${me.personalWorkspaceId}`} className="rounded-md px-2 py-1.5 text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50">我的知识库</Link>}
+      {actions}
+    </nav>
+  </header>;
 }
 
 function AuthShell({ children, title, subtitle }: { children: ReactNode; title: string; subtitle: string }) {
@@ -1029,19 +1047,20 @@ function PublicShare() {
   const treeShare = data.type === "folder" || data.type === "notebook";
   const body = <article className="mx-auto max-w-3xl"><div className="mb-10 border-b border-border pb-8">{data.notebookTitle && <Badge>{data.notebookTitle}</Badge>}<h1 className="mt-4 text-4xl font-semibold tracking-[-.055em] md:text-5xl">{treeShare ? (data.noteTitle ?? data.title) : data.title}</h1>{data.updatedAt && <p className="mt-4 text-xs text-muted-foreground">更新于 {new Date(data.updatedAt).toLocaleString()}</p>}</div><MarkdownView source={data.bodyMd ?? ""} /></article>;
   const interactions = data.noteId && data.shareToken && (data.commentsEnabled || data.correctionsEnabled) ? <PublicInteractions noteId={data.noteId} shareToken={data.shareToken} commentsEnabled={!!data.commentsEnabled} correctionsEnabled={!!data.correctionsEnabled} bodyMd={data.bodyMd ?? ""} /> : null;
+  const reading = <PublicReadingLayout source={data.bodyMd ?? ""}>{body}{interactions}</PublicReadingLayout>;
 
   if (treeShare) {
     const notes = data.notes ?? [];
     const folders = data.folders ?? [];
-    return <div className="flex h-full flex-col"><header className="flex h-14 shrink-0 items-center border-b border-border px-5"><Brand /><Badge className="ml-3">{data.type === "notebook" ? "笔记本分享" : "目录分享"} · {data.title}</Badge>{shareChip}</header>
+    return <div className="flex h-full flex-col"><PublicHeader contextLabel={`${data.type === "notebook" ? "笔记本分享" : "目录分享"} · ${data.title}`} actions={shareChip} />
       <div className="grid min-h-0 flex-1 md:grid-cols-[260px_1fr]">
         <aside className="hidden min-h-0 border-r border-border bg-muted/30 md:block"><ScrollArea className="h-full"><div className="p-4"><p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{notes.length} 篇</p><PublicShareTree kind={data.type === "notebook" ? "notebook" : "folder"} folders={folders} notes={notes} activeId={data.noteId} onPick={id => token && nav(`/p/${token}/${id}`)} /></div></ScrollArea></aside>
-        <ScrollArea className="h-full"><main className="px-5 py-10 md:py-16">{notes.length === 0 ? <Empty icon={data.type === "notebook" ? <Notebook /> : <Folder />} title={data.type === "notebook" ? "这个笔记本还没有笔记" : "这个目录还没有笔记"} text="之后新建的笔记会自动出现在这里。" /> : body}{interactions}</main></ScrollArea>
+        <ScrollArea className="h-full"><main className="px-5 py-10 md:py-16">{notes.length === 0 ? <Empty icon={data.type === "notebook" ? <Notebook /> : <Folder />} title={data.type === "notebook" ? "这个笔记本还没有笔记" : "这个目录还没有笔记"} text="之后新建的笔记会自动出现在这里。" /> : reading}</main></ScrollArea>
       </div></div>;
   }
-  return <PublicFrame chip={shareChip}>{body}{interactions}</PublicFrame>;
+  return <PublicFrame chip={shareChip}>{reading}</PublicFrame>;
 }
-function PublicFrame({ children, chip }: { children: ReactNode; chip?: ReactNode }) { return <div className="min-h-full bg-background"><header className="flex h-14 items-center border-b border-border px-5"><Brand /><Badge className="ml-3">公开阅读</Badge>{chip}</header><main className="px-5 py-10 md:py-16">{children}</main></div>; }
+function PublicFrame({ children, chip, contextLabel = "公开阅读" }: { children: ReactNode; chip?: ReactNode; contextLabel?: string }) { return <div className="min-h-full bg-background"><PublicHeader contextLabel={contextLabel} actions={chip} /><main className="px-5 py-10 md:py-16">{children}</main></div>; }
 
 function PublicSite() {
   const { wsSlug, nbSlug, noteId } = useParams(); const nav = useNavigate(); const me = useMe(); const [data, setData] = useState<{ workspace: string; notebook: string; notebookId: string; accent: string | null; notes: Array<{ id: string; title: string; bodyMd: string; updatedAt: string }>; savedShare?: { id: string; status: string } | null } | null>(null); const [active, setActive] = useState<string>(); const [err, setErr] = useState("");
@@ -1049,7 +1068,8 @@ function PublicSite() {
   if (err) return <PublicFrame><Empty icon={<Globe2 />} title="文档站尚未发布" text="此站点不存在，或者管理员已将其下线。" /></PublicFrame>;
   if (!data) return <div className="grid h-full place-items-center"><Circle className="size-5 animate-pulse fill-current" /></div>;
   const current = data.notes.find(n => n.id === active);
-  return <div className="flex h-full flex-col" style={data.accent ? ({ "--primary": data.accent } as React.CSSProperties) : undefined}><header className="flex h-14 items-center border-b border-border px-4"><Brand /><Separator orientation="vertical" className="mx-4 h-5" /><span className="font-medium">{data.notebook}</span><span className="ml-3 text-xs text-muted-foreground">{data.workspace}</span>{me && wsSlug && nbSlug && <SavedShareChip saved={data.savedShare ?? null} site={{ wsSlug, nbSlug }} lastNoteId={active} homeWsId={me.personalWorkspaceId ?? undefined} />}</header><div className="grid min-h-0 flex-1 md:grid-cols-[260px_1fr]"><aside className="hidden min-h-0 border-r border-border bg-muted/30 md:block"><ScrollArea className="h-full"><div className="p-4"><p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">目录</p>{data.notes.map(n => <button key={n.id} onClick={() => nav(`/s/${wsSlug}/${nbSlug}/${n.id}`)} className={cn("mb-1 w-full rounded-lg px-3 py-2.5 text-left text-sm", n.id === active ? "bg-primary text-primary-foreground" : "hover:bg-muted")}>{n.title}</button>)}</div></ScrollArea></aside><ScrollArea className="h-full"><main className="mx-auto max-w-3xl px-6 py-12"><h1 className="mb-10 text-4xl font-semibold tracking-[-.055em]">{current?.title ?? "暂无公开页面"}</h1>{current && <MarkdownView source={current.bodyMd} />}{current && <PublicInteractions noteId={current.id} siteNotebookId={data.notebookId} commentsEnabled correctionsEnabled bodyMd={current.bodyMd} />}</main></ScrollArea></div></div>;
+  const siteChip = me && wsSlug && nbSlug ? <SavedShareChip saved={data.savedShare ?? null} site={{ wsSlug, nbSlug }} lastNoteId={active} homeWsId={me.personalWorkspaceId ?? undefined} /> : null;
+  return <div className="flex h-full flex-col" style={data.accent ? ({ "--primary": data.accent } as React.CSSProperties) : undefined}><PublicHeader contextLabel={`${data.notebook} · ${data.workspace}`} actions={siteChip} /><div className="grid min-h-0 flex-1 md:grid-cols-[260px_1fr]"><aside className="hidden min-h-0 border-r border-border bg-muted/30 md:block"><ScrollArea className="h-full"><div className="p-4"><p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">文档页</p>{data.notes.map(n => <button key={n.id} onClick={() => nav(`/s/${wsSlug}/${nbSlug}/${n.id}`)} className={cn("mb-1 w-full rounded-lg px-3 py-2.5 text-left text-sm", n.id === active ? "bg-primary text-primary-foreground" : "hover:bg-muted")}>{n.title}</button>)}</div></ScrollArea></aside><ScrollArea className="h-full"><PublicReadingLayout source={current?.bodyMd ?? ""} className="px-6 py-12"><main className="mx-auto max-w-3xl"><h1 className="mb-10 text-4xl font-semibold tracking-[-.055em]">{current?.title ?? "暂无公开页面"}</h1>{current && <MarkdownView source={current.bodyMd} />}{current && <PublicInteractions noteId={current.id} siteNotebookId={data.notebookId} commentsEnabled correctionsEnabled bodyMd={current.bodyMd} />}</main></PublicReadingLayout></ScrollArea></div></div>;
 }
 
 function InvitePage() { const { token } = useParams(); const nav = useNavigate(); const me = useMe(); const [data, setData] = useState<{ workspace: string; role: string; expiresAt: string } | null>(null); const [err, setErr] = useState(""); useEffect(() => { api<typeof data>(`/api/v1/invites/${token}`).then(setData).catch(e => setErr((e as Error).message)); }, [token]); return <PublicFrame>{err ? <Empty icon={<Link2 />} title="邀请已失效" text={err} /> : !data ? <div className="grid place-items-center py-20"><Circle className="animate-pulse fill-current" /></div> : <div className="mx-auto max-w-md rounded-2xl border p-8 text-center"><Users className="mx-auto size-10 text-muted-foreground" /><h1 className="mt-5 text-2xl font-semibold">加入 {data.workspace}</h1><p className="mt-2 text-sm text-muted-foreground">你将以 {data.role} 身份加入此工作区。</p>{me === null ? <Button className="mt-6" onClick={() => location.assign(`/login?redirect=/invite/${token}`)}>登录后加入</Button> : <Button className="mt-6" onClick={async () => { const d = await api<{ workspaceId: string }>(`/api/v1/invites/${token}/accept`, { method: "POST" }); nav(`/w/${d.workspaceId}`); }}>确认加入</Button>}</div>}</PublicFrame>; }

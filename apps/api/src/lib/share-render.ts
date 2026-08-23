@@ -1,5 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { fail } from "@kb/shared";
+import { sliceHeadingSection, slugifyHeading } from "@kb/shared/markdown";
 import { db } from "../db/client.ts";
 import { attachments, folders, notebooks, notes, shareLinks, users, workspaces } from "../db/schema.ts";
 import { folderSubtree, notebookSubtree } from "./share-target.ts";
@@ -14,20 +15,26 @@ export function shareEffective(s: typeof shareLinks.$inferSelect) {
 }
 
 /** 标题锚点：和前端渲染用的一套规则，中文直接保留。 */
-export const headingSlug = (text: string) => text.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^\p{L}\p{N}_-]/gu, "");
+export const headingSlug = slugifyHeading;
+
+/** 兼容统一标题解析上线前已经生成的分享链接。 */
+function sliceLegacyHeading(body: string, anchor: string) {
+  const lines = body.split("\n");
+  const legacySlug = (text: string) => text.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^\p{L}\p{N}_-]/gu, "");
+  const start = lines.findIndex(line => /^#{1,6}\s/.test(line) && legacySlug(line.replace(/^#+\s*/, "")) === anchor);
+  if (start < 0) return null;
+  const level = lines[start].match(/^#+/)![0].length;
+  const next = lines.slice(start + 1).findIndex(line => {
+    const match = line.match(/^(#{1,6})\s/);
+    return !!match && match[1].length <= level;
+  });
+  const end = next < 0 ? lines.length : start + 1 + next;
+  return lines.slice(start, end).join("\n").trim();
+}
 
 /** 单节分享只给这一节：从该标题起，到下一个同级或更高级标题为止。 */
 export function sliceHeading(body: string, anchor: string) {
-  const lines = body.split("\n");
-  const start = lines.findIndex(l => /^#{1,6}\s/.test(l) && headingSlug(l.replace(/^#+\s*/, "")) === anchor);
-  if (start < 0) return null;
-  const level = lines[start].match(/^#+/)![0].length;
-  let end = lines.length;
-  for (let i = start + 1; i < lines.length; i++) {
-    const m = lines[i].match(/^(#{1,6})\s/);
-    if (m && m[1].length <= level) { end = i; break; }
-  }
-  return lines.slice(start, end).join("\n").trim();
+  return sliceHeadingSection(body, anchor) ?? sliceLegacyHeading(body, anchor);
 }
 
 export function treePayload(

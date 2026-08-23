@@ -94,6 +94,17 @@ export function outlineOf(source: string): OutlineItem[] {
   return outlineFromTokens(md.parse(source ?? "", {}));
 }
 
+/** 按正文渲染时的同一份标题 token 截出一节，直到下一个同级或更高级标题。 */
+export function sliceHeadingSection(source: string, slug: string): string | null {
+  const lines = (source ?? "").split("\n");
+  const items = outlineOf(source);
+  const index = items.findIndex(item => item.slug === slug);
+  if (index < 0) return null;
+  const start = items[index];
+  const next = items.slice(index + 1).find(item => item.level <= start.level);
+  return lines.slice(start.line, next?.line ?? lines.length).join("\n").trim();
+}
+
 /** 中日韩表意文字与假名。这些按「字」算，其余按「词」算。 */
 const CJK = /[㐀-鿿豈-﫿぀-ヿ]/gu;
 
