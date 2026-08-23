@@ -24,7 +24,7 @@ import { BackupPanel } from "./backup-panel";
 
 type Tab = "overview" | "registration" | "moderation" | "agents" | "notifications" | "codes" | "users" | "nav" | "backup";
 type AdminUser = { id: string; displayName: string; email: string; handle: string; roleInstance: string; status: string; createdAt?: string };
-type AdminCode = { id: string; prefix: string; usedCount: number; maxUses: number; status: string; note?: string | null; expiresAt?: string | null; createdAt?: string; skipEmailVerification?: boolean; bindRole?: string | null };
+type AdminCode = { id: string; prefix: string; code?: string | null; usedCount: number; maxUses: number; status: string; note?: string | null; expiresAt?: string | null; createdAt?: string; skipEmailVerification?: boolean; bindRole?: string | null };
 type Overview = {
   userCount: number; workspaceCount: number; adminCount: number; codeCount: number; activeCodeCount: number;
   recentUsers: AdminUser[]; settings: Record<string, boolean | number | string | null>; pendingModerationCount?: number;
@@ -231,9 +231,13 @@ export function AdminPage() {
   }
 
   async function copyText(text: string, id: string) {
-    await navigator.clipboard.writeText(text);
-    setCopied(id);
-    window.setTimeout(() => setCopied(cur => cur === id ? null : cur), 1500);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(id);
+      window.setTimeout(() => setCopied(cur => cur === id ? null : cur), 1500);
+    } catch (e) {
+      toast.error("复制失败", (e as Error).message);
+    }
   }
 
   async function generate() {
@@ -250,7 +254,7 @@ export function AdminPage() {
         }),
       });
       setNewCodes(d.codes);
-      toast.success(`已生成 ${d.codes.length} 个注册码`, "明文只显示这一次，离开或刷新后无法再看。");
+      toast.success(`已生成 ${d.codes.length} 个注册码`, "可在下方列表随时复制。");
       patch({ page: undefined, q: undefined, status: undefined, bindRole: undefined, skip: undefined });
       setListTick(n => n + 1);
       await loadOverview();
@@ -262,7 +266,7 @@ export function AdminPage() {
   }
 
   async function revoke(code: AdminCode) {
-    if (!await askConfirm({ title: `作废 ${code.prefix}…？`, description: "作废后不能再用这组码注册。已经用过的账号不受影响。", confirmText: "作废", destructive: true })) return;
+    if (!await askConfirm({ title: `作废 ${code.code ?? `${code.prefix}…`}？`, description: "作废后不能再用这组码注册。已经用过的账号不受影响。", confirmText: "作废", destructive: true })) return;
     try {
       await api(`/api/v1/admin/registration-codes/${code.id}`, { method: "DELETE" });
       toast.success("注册码已作废");
@@ -423,7 +427,7 @@ export function AdminPage() {
               <span className="grid size-9 place-items-center rounded-lg bg-muted"><KeyRound className="size-4" /></span>
               <div>
                 <h2 className="text-sm font-semibold">生成注册码</h2>
-                <p className="mt-1 text-xs text-muted-foreground">明文只在当次返回。请立刻复制或下载，刷新后只剩前缀。</p>
+                <p className="mt-1 text-xs text-muted-foreground">生成后可在列表里随时复制。发给要加入的人即可，不要发到公开场合。</p>
               </div>
             </div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -438,12 +442,12 @@ export function AdminPage() {
 
           {newCodes.length > 0 && <section className="rounded-xl border border-primary/20 bg-primary/5 p-5">
             <div className="mb-3 flex flex-wrap items-center gap-2">
-              <p className="flex-1 text-sm font-medium">仅本次显示，请立即保存</p>
+              <p className="flex-1 text-sm font-medium">刚生成的注册码</p>
               <Button variant="outline" size="sm" onClick={() => void copyText(newCodes.join("\n"), "all")}>{copied === "all" ? <Check /> : <Copy />}{copied === "all" ? "已复制" : "复制全部"}</Button>
               <Button variant="outline" size="sm" onClick={() => downloadCsv(newCodes)}><Download />下载 CSV</Button>
             </div>
             <ul className="space-y-1.5">{newCodes.map(code => <li key={code} className="flex items-center gap-2 rounded-lg bg-background/80 px-3 py-2">
-              <code className="min-w-0 flex-1 truncate font-mono text-sm">{code}</code>
+              <code className="min-w-0 flex-1 break-all font-mono text-sm">{code}</code>
               <Button variant="ghost" size="icon" aria-label={`复制 ${code}`} onClick={() => void copyText(code, code)}>{copied === code ? <Check /> : <Copy />}</Button>
             </li>)}</ul>
           </section>}
@@ -463,12 +467,20 @@ export function AdminPage() {
           <FormError>{listError}</FormError>
           {codes.length === 0 && !listLoading ? <Empty icon={<Ticket />} title={filtering ? "没有匹配的注册码" : "还没有注册码"} text={filtering ? "换个关键词或筛选项再试。" : "关掉开放注册后，用注册码把家人或同事请进来。"} />
             : <section className={cn("overflow-hidden rounded-xl border bg-background", listLoading && "opacity-60")}>
-              <div className="hidden grid-cols-[1fr_88px_88px_1fr_40px] gap-3 border-b bg-muted/40 px-5 py-2.5 text-xs font-medium text-muted-foreground sm:grid">
-                <span>前缀</span><span>用量</span><span>状态</span><span>备注</span><span />
+              {codes.some(c => c.code) && <div className="flex justify-end border-b px-5 py-2">
+                <Button variant="ghost" size="sm" onClick={() => void copyText(codes.flatMap(c => c.code ? [c.code] : []).join("\n"), "page")}>{copied === "page" ? <Check /> : <Copy />}{copied === "page" ? "已复制本页" : "复制本页"}</Button>
+              </div>}
+              <div className="hidden grid-cols-[minmax(0,1.6fr)_72px_80px_1fr_40px] gap-3 border-b bg-muted/40 px-5 py-2.5 text-xs font-medium text-muted-foreground sm:grid">
+                <span>注册码</span><span>用量</span><span>状态</span><span>备注</span><span />
               </div>
-              {codes.map((c, i) => <div key={c.id} className={cn("grid items-center gap-2 px-5 py-3.5 sm:grid-cols-[1fr_88px_88px_1fr_40px] sm:gap-3", i && "border-t")}>
+              {codes.map((c, i) => {
+                const full = c.code || "";
+                return <div key={c.id} className={cn("grid items-center gap-2 px-5 py-3.5 sm:grid-cols-[minmax(0,1.6fr)_72px_80px_1fr_40px] sm:gap-3", i && "border-t")}>
                 <div className="min-w-0">
-                  <code className="text-sm">{c.prefix}…</code>
+                  <div className="flex items-center gap-1">
+                    <code className="min-w-0 flex-1 break-all font-mono text-sm">{full || `${c.prefix}…`}</code>
+                    {full ? <Button variant="ghost" size="icon" className="size-8" aria-label={`复制 ${full}`} onClick={() => void copyText(full, c.id)}>{copied === c.id ? <Check /> : <Copy />}</Button> : null}
+                  </div>
                   <p className="mt-0.5 text-xs text-muted-foreground sm:hidden">{c.usedCount}/{c.maxUses} · {STATUS_LABEL[c.status] ?? c.status}</p>
                 </div>
                 <span className="hidden text-sm tabular-nums text-muted-foreground sm:block">{c.usedCount}/{c.maxUses}</span>
@@ -480,9 +492,10 @@ export function AdminPage() {
                   {c.expiresAt ? ` · ${new Date(c.expiresAt).toLocaleDateString()} 到期` : ""}
                 </p>
                 {c.status === "active"
-                  ? <Button variant="ghost" size="icon" className="text-destructive" aria-label={`作废 ${c.prefix}`} onClick={() => void revoke(c)}><Trash2 /></Button>
+                  ? <Button variant="ghost" size="icon" className="text-destructive" aria-label={`作废 ${full || c.prefix}`} onClick={() => void revoke(c)}><Trash2 /></Button>
                   : <span />}
-              </div>)}
+              </div>;
+              })}
             </section>}
           <Pager page={page} pages={pages} pageSize={pageSize} total={total} loading={listLoading} onPage={p => patch({ page: String(p) })} onSize={s => patch({ size: String(s), page: undefined })} />
         </div>}

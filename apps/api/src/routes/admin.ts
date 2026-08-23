@@ -8,13 +8,18 @@ import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { hashCode, registrationCode } from "../lib/tokens.ts";
 import { assertSafeOutboundUrl } from "../lib/net-guard.ts";
-import { seal } from "../lib/secrets.ts";
+import { open, seal } from "../lib/secrets.ts";
 import { normalizeCategories } from "../lib/moderation-verdict.ts";
 
 function pageQuery(c: { req: { query: (k: string) => string | undefined } }) {
   const page = Math.max(1, Number(c.req.query("page") ?? 1) || 1);
   const pageSize = Math.min(100, Math.max(1, Number(c.req.query("pageSize") ?? 20) || 20));
   return { page, pageSize, offset: (page - 1) * pageSize };
+}
+
+function revealCode(enc: string | null | undefined) {
+  if (!enc) return null;
+  try { return open(enc); } catch { return null; }
 }
 
 function likeContains(raw: string | undefined) {
@@ -125,7 +130,7 @@ adminRoutes.post("/admin/registration-codes", async c => {
   const actor = await admin(c);
   const body = z.object({ quantity: z.number().int().min(1).max(200), maxUses: z.number().int().min(1).max(1000).default(1), expiresInDays: z.number().int().min(1).max(3650).nullable().optional(), note: z.string().max(200).optional(), bindWorkspaceId: z.string().uuid().nullable().optional(), bindRole: z.enum(["admin", "editor", "viewer"]).nullable().optional(), skipEmailVerification: z.boolean().default(false) }).parse(await c.req.json());
   const plain = Array.from({ length: body.quantity }, registrationCode);
-  await db.insert(registrationCodes).values(plain.map(code => ({ codeHash: hashCode(code), codePrefix: code.slice(0, 9), maxUses: body.maxUses, expiresAt: body.expiresInDays ? new Date(Date.now() + body.expiresInDays * 86400000) : null, note: body.note, bindWorkspaceId: body.bindWorkspaceId, bindRole: body.bindRole, skipEmailVerification: body.skipEmailVerification, createdBy: actor.id })));
+  await db.insert(registrationCodes).values(plain.map(code => ({ codeHash: hashCode(code), codePrefix: code.slice(0, 9), codeEnc: seal(code), maxUses: body.maxUses, expiresAt: body.expiresInDays ? new Date(Date.now() + body.expiresInDays * 86400000) : null, note: body.note, bindWorkspaceId: body.bindWorkspaceId, bindRole: body.bindRole, skipEmailVerification: body.skipEmailVerification, createdBy: actor.id })));
   return ok(c, { codes: plain }, 201);
 });
 adminRoutes.get("/admin/registration-codes", async c => {
@@ -146,7 +151,7 @@ adminRoutes.get("/admin/registration-codes", async c => {
   const [{ value: total }] = await db.select({ value: count() }).from(registrationCodes).where(where);
   return ok(c, {
     codes: rows.map(r => ({
-      id: r.id, prefix: r.codePrefix, maxUses: r.maxUses, usedCount: r.usedCount, expiresAt: r.expiresAt, note: r.note,
+      id: r.id, prefix: r.codePrefix, code: revealCode(r.codeEnc), maxUses: r.maxUses, usedCount: r.usedCount, expiresAt: r.expiresAt, note: r.note,
       bindWorkspaceId: r.bindWorkspaceId, bindRole: r.bindRole, skipEmailVerification: r.skipEmailVerification, status: r.status, createdAt: r.createdAt,
     })),
     total, page, pageSize,

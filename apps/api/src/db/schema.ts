@@ -74,6 +74,8 @@ export const registrationCodes = pgTable("registration_codes", {
   id: uuid("id").defaultRandom().primaryKey(),
   codeHash: text("code_hash").notNull().unique(),
   codePrefix: text("code_prefix").notNull(),
+  /** APP_SECRET 封存的明文，给管理页复制。旧行可空。 */
+  codeEnc: text("code_enc"),
   maxUses: integer("max_uses").notNull().default(1),
   usedCount: integer("used_count").notNull().default(0),
   expiresAt: timestamp("expires_at", { withTimezone: true }),

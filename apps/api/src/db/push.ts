@@ -38,7 +38,7 @@ const statements = [
     updated_at timestamptz NOT NULL DEFAULT now()
   )`,
   `CREATE TABLE IF NOT EXISTS registration_codes (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), code_hash text NOT NULL UNIQUE, code_prefix text NOT NULL,
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), code_hash text NOT NULL UNIQUE, code_prefix text NOT NULL, code_enc text,
     max_uses integer NOT NULL DEFAULT 1, used_count integer NOT NULL DEFAULT 0, expires_at timestamptz,
     note text, bind_workspace_id uuid, bind_role text, skip_email_verification boolean NOT NULL DEFAULT false,
     status text NOT NULL DEFAULT 'active', created_by uuid REFERENCES users(id), created_at timestamptz NOT NULL DEFAULT now()
@@ -570,6 +570,7 @@ const statements = [
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS agent_replies_source_idx ON agent_replies(agent_id, source_type, source_id)`,
   `CREATE INDEX IF NOT EXISTS comments_agent_idx ON comments(author_agent_id)`,
+  `ALTER TABLE registration_codes ADD COLUMN IF NOT EXISTS code_enc text`,
 ];
 
 async function main() {
