@@ -396,7 +396,7 @@ const closedSet = await ex(`(()=>{
     markerVisible: text.includes('[!WARNING]'),
     bracketsKept: text.includes('[草稿]'),
     equalsHidden: !text.includes('==重点=='),
-    // 标签是裸地址时，显示文本得留下，只藏 `](目标)`。
+    // 标签是裸地址时，显示文本得留下，只藏链接目标部分。
     urlLabelKept: text.includes('https://github.com/gsvps/GSNode'),
     urlDestHidden: !text.includes('](https://github.com/gsvps/GSNode)'),
   };
