@@ -1,4 +1,4 @@
-import{useEffect,useMemo,useRef,useState}from'react';import{useSearchParams}from'react-router-dom';import{parseMentions}from'@kb/shared';import{ArrowLeft,FileText,Flag,Globe2,Heart,ImagePlus,MessageSquare,MoreHorizontal,NotebookPen,Paperclip,Pencil,RefreshCw,Search,Send,Star,Trash2,X}from'lucide-react';import{api}from'../api';import{cn}from'../lib/utils';import{useDebounced}from'../lib/use-debounced';import{openLightbox}from'../lib/lightbox';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
+import{useEffect,useMemo,useRef,useState}from'react';import{useSearchParams}from'react-router-dom';import{parseMentions}from'@kb/shared';import{ArrowLeft,FileText,Flag,Globe2,Heart,ImagePlus,MessageSquare,MoreHorizontal,NotebookPen,Paperclip,Pencil,RefreshCw,Search,Send,Star,Trash2,X}from'lucide-react';import{api}from'../api';import{cn}from'../lib/utils';import{useDebounced}from'../lib/use-debounced';import{openLightboxGallery}from'../lib/lightbox';import{Button}from'./ui/button';import{Textarea}from'./ui/textarea';import{Input}from'./ui/input';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuTrigger}from'./ui/dropdown-menu';import{useConfirm}from'./ui/confirm';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';
 import{FeedComments}from'./feed-comments';
 import{MentionField}from'./mention-field';
 import{type MentionAgent}from'./mention-text';
@@ -15,7 +15,7 @@ export function PostAssetGrid({assets}:{assets:PostAsset[]}){
   const rest=assets.filter(a=>a.kind!=="image");
   return <div className="mt-3 space-y-2">
     {images.length>0&&<div className={cn("grid gap-2",images.length===1?"grid-cols-1":"grid-cols-2")}>
-      {images.map(a=><button key={a.id} type="button" onClick={()=>openLightbox(a.url,a.filename)} className="overflow-hidden rounded-xl border bg-muted">
+      {images.map((a,index)=><button key={a.id} type="button" onClick={()=>openLightboxGallery(images.map(image=>({src:image.url,alt:image.filename,filename:image.filename,bytes:image.bytes})),index)} className="overflow-hidden rounded-xl border bg-muted">
         <img src={a.url} alt={a.filename} className="max-h-72 w-full object-cover"/>
       </button>)}
     </div>}

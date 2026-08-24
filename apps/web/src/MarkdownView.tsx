@@ -4,7 +4,7 @@ import { toSafeHtml } from "./lib/render-html";
 import { hydrateMath } from "./lib/katex-hydrate";
 import { hydrateDiagrams } from "./lib/mermaid-hydrate";
 import { hydrateCodeBlocks } from "./lib/code-block";
-import { openLightbox } from "./lib/lightbox";
+import { openLightboxGallery } from "./lib/lightbox";
 import { cn } from "./lib/utils";
 
 export function MarkdownView({
@@ -43,7 +43,18 @@ export function MarkdownView({
 
   const host = useRef<HTMLDivElement | null>(null);
   // 公式与图在这里补：KaTeX 和 mermaid 都按需加载，没用到的笔记根本不会去下它们。
-  useEffect(() => { void hydrateMath(host.current); void hydrateDiagrams(host.current); hydrateCodeBlocks(host.current); }, [html]);
+  useEffect(() => {
+    void hydrateMath(host.current);
+    void hydrateDiagrams(host.current);
+    hydrateCodeBlocks(host.current);
+    // Markdown 生成的图片不是原生控件，补上键盘入口也让 Dialog 关闭后能回到触发图。
+    host.current?.querySelectorAll("img").forEach(image => {
+      if (image.closest("a")) return;
+      image.tabIndex = 0;
+      image.setAttribute("role", "button");
+      image.setAttribute("aria-label", `查看大图：${image.alt || "图片"}`);
+    });
+  }, [html]);
 
   function follow(target: HTMLElement) {
     const el = target.closest<HTMLElement>("[data-wiki]");
@@ -51,6 +62,15 @@ export function MarkdownView({
     const section = el.dataset.wikiSection;
     onWiki(decodeURIComponent(el.dataset.wiki ?? ""), section ? decodeURIComponent(section) : undefined);
     return true;
+  }
+
+  function openPreviewImage(target: HTMLImageElement) {
+    const images = [...(host.current?.querySelectorAll("img") ?? [])].filter(image => !image.closest("a"));
+    target.focus({ preventScroll: true });
+    openLightboxGallery(
+      images.map(image => ({ src: image.currentSrc || image.src, alt: image.alt })),
+      images.indexOf(target),
+    );
   }
 
   return (
@@ -70,7 +90,7 @@ export function MarkdownView({
         // 预览里点图就放大：这一侧没有「点一下改字」要护着，不必再多一个按钮
         if (target instanceof HTMLImageElement && !target.closest("a")) {
           event.preventDefault();
-          openLightbox(target.currentSrc || target.src, target.alt);
+          openPreviewImage(target);
           return;
         }
         const tagEl = target.closest<HTMLElement>("[data-hashtag]");
@@ -83,6 +103,11 @@ export function MarkdownView({
       }}
       onKeyDown={event => {
         if (event.key !== "Enter" && event.key !== " ") return;
+        if (event.target instanceof HTMLImageElement && !event.target.closest("a")) {
+          event.preventDefault();
+          openPreviewImage(event.target);
+          return;
+        }
         if (follow(event.target as HTMLElement)) event.preventDefault();
       }}
     />
