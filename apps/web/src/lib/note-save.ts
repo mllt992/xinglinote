@@ -8,6 +8,10 @@ export type NoteDraft = {
   tags?: string[];
 };
 
+export function isSaveHotkey(event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey">) {
+  return (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "s";
+}
+
 function sameTags(left: string[] | undefined, right: string[] | undefined) {
   const a = left ?? [];
   const b = right ?? [];

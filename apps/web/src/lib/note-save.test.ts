@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { noteDraftChanged, reconcileSavedNote, type NoteDraft } from "./note-save.js";
+import { isSaveHotkey, noteDraftChanged, reconcileSavedNote, type NoteDraft } from "./note-save.js";
 
 const draft = (title: string, version = 3): NoteDraft => ({
   id: "note-1",
@@ -25,4 +25,11 @@ test("没有后续编辑时采用完整服务端响应", () => {
   const saved = { ...draft("11、绑定 Telegram", 4), serverField: "fresh" };
   assert.equal(noteDraftChanged(sent, sent), false);
   assert.strictEqual(reconcileSavedNote(sent, sent, saved), saved);
+});
+
+test("保存快捷键兼容 Ctrl 和 Cmd，但不抢 Alt 组合键", () => {
+  assert.equal(isSaveHotkey({ ctrlKey: true, metaKey: false, altKey: false, key: "s" }), true);
+  assert.equal(isSaveHotkey({ ctrlKey: false, metaKey: true, altKey: false, key: "S" }), true);
+  assert.equal(isSaveHotkey({ ctrlKey: true, metaKey: false, altKey: true, key: "s" }), false);
+  assert.equal(isSaveHotkey({ ctrlKey: true, metaKey: false, altKey: false, key: "k" }), false);
 });

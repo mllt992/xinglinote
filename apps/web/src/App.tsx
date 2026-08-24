@@ -20,7 +20,7 @@ import { EditorStatusBar, type CursorInfo } from "./components/editor-status-bar
 import { CommandPalette, type Command as PaletteCommand } from "./components/command-palette";
 import { FONT_SCALES, RENDER_KEYS, RENDER_LABELS, NOTEBOOKS_MAX, NOTEBOOKS_MIN, TREE_MAX, TREE_MIN, clamp, loadLayout, saveLayout, type LayoutPrefs } from "./lib/layout-prefs";
 import { useDebounced } from "./lib/use-debounced";
-import { noteDraftChanged, reconcileSavedNote } from "./lib/note-save";
+import { isSaveHotkey, noteDraftChanged, reconcileSavedNote } from "./lib/note-save";
 import { cn } from "./lib/utils";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
@@ -196,7 +196,7 @@ function WorkspaceSwitcher({ spaces, wsId, onPick, onCreate }: { spaces: Ws[]; w
 type Nb = { id: string; title: string; defaultAiIndex?: boolean; visibility?: "open"|"private"|"restricted"; createdBy?:string; sortKey?: number; createdAt?: string };
 type FolderDto = { id: string; title: string; parentId: string | null; sortKey?: number | null };
 type TreeNote = { id: string; title: string; folderId: string | null; createdAt?: string | Date | null; sortKey?: number | null };
-type NoteDto = { id: string; notebookId: string; title: string; bodyMd: string; version: number; aiIndex: boolean; published: boolean; moderationStatus?: string; canEdit: boolean; tags?: string[]; moderation?: { held: boolean; queued?: boolean; status?: string; submitted?: boolean; message: string | null } };
+type NoteDto = { id: string; notebookId: string; title: string; bodyMd: string; version: number; aiIndex: boolean; published: boolean; updatedAt?: string; moderationStatus?: string; canEdit: boolean; tags?: string[]; moderation?: { held: boolean; queued?: boolean; status?: string; submitted?: boolean; message: string | null } };
 /**
  * 保存类接口回来的那份笔记要是没带 canEdit，就沿用手上这份。
  * 少这一个字段不是「少显示一个徽标」：编辑器当场锁成只读、协同房间被拆掉，
@@ -385,7 +385,7 @@ function Workspace() {
   /** 侧栏里笔记本怎么排。按工作区记，默认「自定义」——侧栏是人自己摆的秩序。 */
   const [nbSort, setNbSort] = useState<NoteSortMode>("custom");
   const [reloading, setReloading] = useState(false);
-  const [note, setNote] = useState<NoteDto | null>(null); const noteRef = useRef<NoteDto | null>(null); const saveTimer = useRef<number | null>(null); const savingRef = useRef(false); const saveQueuedRef = useRef(false); const titleComposingRef = useRef(false); const [status, setStatus] = useState("就绪"); const [statusErr, setStatusErr] = useState(false);
+  const [note, setNote] = useState<NoteDto | null>(null); const noteRef = useRef<NoteDto | null>(null); const saveTimer = useRef<number | null>(null); const savingRef = useRef(false); const saveQueuedRef = useRef(false); const saveActionRef = useRef<() => void>(() => {}); const titleComposingRef = useRef(false); const [status, setStatus] = useState("就绪"); const [statusErr, setStatusErr] = useState(false); const [saving, setSaving] = useState(false); const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   /** 编辑器状态条：dirty / saving / saved / conflict（规范 §11.4）。冲突与保存失败必须和「已保存」看得出区别。 */
   const say = (text: string, error = false) => { setStatus(text); setStatusErr(error); };
   const [search, setSearch] = useState(""); const [hits, setHits] = useState<Hit[]>([]); const [allSpaces, setAllSpaces] = useState(false); const [titleOnly, setTitleOnly] = useState(false); const [backlinks, setBacklinks] = useState<Array<{ id: string; title: string; snippet: string }>>([]); const [atts, setAtts] = useState<Att[]>([]); const [rail, setRailState] = useState<RailTab | null>(loadRailTab); const [create, setCreate] = useState<CreateKind>(null);  const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null); const [showCollab, setShowCollab] = useState(false); const [showImport, setShowImport] = useState(false); const [favorited, setFavorited] = useState(false); const [viewers, setViewers] = useState<string[]>([]); const [quickOpen, setQuickOpen] = useState(false);  const[showAsk,setShowAsk]=useState(false); const [showNotebookAccess,setShowNotebookAccess]=useState(false); const [moveNb,setMoveNb]=useState<Nb|null>(null); const [site, setSite] = useState<{ published: boolean; slug: string; pending?: boolean; canPublish?: boolean; canRequest?: boolean } | null>(null);
@@ -465,7 +465,7 @@ function Workspace() {
       void refreshTree();
     }
   }
-  useEffect(() => { if (!noteId) { setNote(null); setAtts([]); return; } api<NoteDto>(`/api/v1/notes/${noteId}`).then(loaded => { setNote(loaded); noteRef.current = loaded; say(`已保存 · v${loaded.version}`); }); api<{ items: typeof backlinks }>(`/api/v1/notes/${noteId}/backlinks`).then(d => setBacklinks(d.items)); api<{ attachments: Att[] }>(`/api/v1/notes/${noteId}/attachments`).then(d => setAtts(d.attachments)).catch(() => setAtts([])); }, [noteId]);
+  useEffect(() => { if (!noteId) { setNote(null); setAtts([]); setLastSavedAt(null); return; } api<NoteDto>(`/api/v1/notes/${noteId}`).then(loaded => { setNote(loaded); noteRef.current = loaded; const savedAt = loaded.updatedAt ? new Date(loaded.updatedAt).getTime() : NaN; setLastSavedAt(Number.isFinite(savedAt) ? savedAt : null); say(`已保存 · v${loaded.version}`); }); api<{ items: typeof backlinks }>(`/api/v1/notes/${noteId}/backlinks`).then(d => setBacklinks(d.items)); api<{ attachments: Att[] }>(`/api/v1/notes/${noteId}/attachments`).then(d => setAtts(d.attachments)).catch(() => setAtts([])); }, [noteId]);
   useEffect(() => { noteRef.current = note; }, [note]);
   /** 从搜索、快速打开或深链进来的笔记可能不在当前笔记本：侧栏跟着笔记走，面包屑才不会张冠李戴。 */
   useEffect(() => { if (note?.notebookId) setNbId(note.notebookId); }, [note?.notebookId]);
@@ -507,6 +507,7 @@ function Workspace() {
     if (savingRef.current) { saveQueuedRef.current = true; return; }
     if (saveTimer.current !== null) { clearTimeout(saveTimer.current); saveTimer.current = null; }
     savingRef.current = true;
+    setSaving(true);
     saveQueuedRef.current = false;
     say("保存中…");
     const body = collab.status === "connected" ? {} : { bodyMd: current.bodyMd };
@@ -519,6 +520,8 @@ function Workspace() {
         noteRef.current = next;
         setNote(shown => shown?.id === next.id ? next : shown);
         setTree(tree => tree.map(row => row.id === next.id ? { ...row, title: next.title } : row));
+        const savedAt = saved.updatedAt ? new Date(saved.updatedAt).getTime() : Date.now();
+        setLastSavedAt(Number.isFinite(savedAt) ? savedAt : Date.now());
         say(stillDirty ? "未保存" : `已保存 · v${saved.version}`);
       } else {
         setTree(tree => tree.map(row => row.id === saved.id ? { ...row, title: saved.title } : row));
@@ -529,6 +532,7 @@ function Workspace() {
       say((error as Error).message, true);
     } finally {
       savingRef.current = false;
+      setSaving(false);
       if (saveQueuedRef.current) {
         saveQueuedRef.current = false;
         void save();
@@ -547,6 +551,16 @@ function Workspace() {
     if (patch.title !== undefined && titleComposingRef.current) return;
     saveTimer.current = window.setTimeout(() => { saveTimer.current = null; void save(); }, instant ? 0 : 850);
   }
+  saveActionRef.current = () => { void save(); };
+  useEffect(() => {
+    const saveHotkey = (event: KeyboardEvent) => {
+      if (!isSaveHotkey(event) || event.defaultPrevented || !noteRef.current) return;
+      event.preventDefault();
+      if (!event.repeat && noteRef.current.canEdit) saveActionRef.current();
+    };
+    window.addEventListener("keydown", saveHotkey);
+    return () => window.removeEventListener("keydown", saveHotkey);
+  }, []);
   async function createNote(folderId: string | null = activeFolder ?? tree.find(n => n.id === noteId)?.folderId ?? null) { if (!nbId || !wsId) return; const n = await api<{ id: string }>("/api/v1/notes", { method: "POST", body: JSON.stringify({ notebookId: nbId, folderId }) }); await refreshTree(); nav(`/w/${wsId}/n/${n.id}`); }
   /**
    * 页内刷新这一篇：正文、反向链接、附件、目录树一起从服务端重新拉。
@@ -574,6 +588,8 @@ function Workspace() {
       const next = collab.status === "connected" && noteRef.current ? { ...fresh, bodyMd: noteRef.current.bodyMd } : fresh;
       setNote(next); noteRef.current = next;
       setTree(t => t.map(n => n.id === next.id ? { ...n, title: next.title } : n));
+      const savedAt = fresh.updatedAt ? new Date(fresh.updatedAt).getTime() : NaN;
+      setLastSavedAt(current => Number.isFinite(savedAt) ? savedAt : current);
       say(`已保存 · v${fresh.version}`);
       await Promise.all([
         api<{ items: typeof backlinks }>(`/api/v1/notes/${id}/backlinks`).then(d => setBacklinks(d.items)).catch(() => {}),
@@ -1048,13 +1064,13 @@ ${a.mime.startsWith("image/") ? "!" : ""}[${a.filename}](${a.url})` }, true)}
             }}
             onApplyAi={async (bodyMd, baseVersion) => {
               const saved = withCanEdit(await api<NoteDto>(`/api/v1/notes/${note.id}`, { method: "PATCH", body: JSON.stringify({ expectedVersion: baseVersion, title: note.title, bodyMd, aiIndex: note.aiIndex, published: note.published, source: "ai_accept" }) }), note);
-              setNote(saved); noteRef.current = saved; say(`已保存 · v${saved.version}`);
+              setNote(saved); noteRef.current = saved; const savedAt = saved.updatedAt ? new Date(saved.updatedAt).getTime() : Date.now(); setLastSavedAt(Number.isFinite(savedAt) ? savedAt : Date.now()); say(`已保存 · v${saved.version}`);
             }}
-            onReviewApplied={() => { void api<NoteDto>(`/api/v1/notes/${note.id}`).then(fresh => { setNote(fresh); noteRef.current = fresh; say(`已保存 · v${fresh.version}`); }); }}
+            onReviewApplied={() => { void api<NoteDto>(`/api/v1/notes/${note.id}`).then(fresh => { setNote(fresh); noteRef.current = fresh; const savedAt = fresh.updatedAt ? new Date(fresh.updatedAt).getTime() : Date.now(); setLastSavedAt(Number.isFinite(savedAt) ? savedAt : Date.now()); say(`已保存 · v${fresh.version}`); }); }}
             onLocate={locateInBody}
           />}
         </div>
-        <EditorStatusBar status={status} statusErr={statusErr} bodyMd={note.bodyMd} cursor={cursor} readOnly={!note.canEdit} vimMode={vimMode} right={<CollabBadge collab={collab} />} />
+        <EditorStatusBar status={status} statusErr={statusErr} bodyMd={note.bodyMd} cursor={cursor} readOnly={!note.canEdit} vimMode={vimMode} lastSavedAt={lastSavedAt} saving={saving} onSave={() => saveActionRef.current()} right={<CollabBadge collab={collab} />} />
       </> : <div className="grid h-full place-items-center p-8"><div className="max-w-sm text-center"><span className="mx-auto grid size-14 place-items-center rounded-2xl bg-muted"><Notebook className="size-6 text-muted-foreground" /></span><h2 className="mt-5 text-lg font-semibold tracking-tight">选择一篇笔记开始</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">从左侧打开现有笔记，或者新建一篇内容。</p><Button className="mt-5" onClick={() => void createNote()}><FilePlus2 />新建笔记</Button></div></div>}</section>
       </>}
     </main>
