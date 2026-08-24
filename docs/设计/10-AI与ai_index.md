@@ -22,10 +22,15 @@
 
 ### 2.2 Provider
 
-工作区一份默认：
+一份 Provider 可同时绑定多个工作区，避免同一套模型参数和 Key 重复配置：
 
 - chat: OpenAI 兼容 base_url / model / api_key（加密存）
 - embedding: 可不同模型
+- `workspace_ids` 是绑定范围；升级前只有 `workspace_id` 的旧行按单工作区兼容
+- 已有 Provider 可只调整适用工作区，不用重新输入模型参数或 Key
+- 工作区公用 Provider 只能绑定配置人在其中是 Owner / Admin 的工作区；调整范围时要能管理每个新增或移除的区，删除整份共享 Provider 则要能管理全部绑定区
+- 新建 Provider 或调整绑定后，受影响工作区内已开启 `ai_index` 的笔记要自动排队重建索引
+- 删除某个工作区时，只从 Provider 的范围中移除该区；还有其他绑定时不删整份配置
 - `members_may_use_workspace_key` 默认 true
 - 成员可存自己的 key，优先于工作区 key
 

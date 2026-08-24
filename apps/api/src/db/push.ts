@@ -248,6 +248,9 @@ const statements = [
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL REFERENCES users(id), type text NOT NULL, title text NOT NULL, body text, href text, read_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
   )`,
   `CREATE TABLE IF NOT EXISTS ai_providers (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), workspace_id uuid NOT NULL REFERENCES workspaces(id), owner_user_id uuid, kind text NOT NULL DEFAULT 'openai-compatible', base_url text NOT NULL, chat_model text NOT NULL, embedding_model text, api_key text NOT NULL, enabled boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`,
+  `ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS workspace_ids jsonb NOT NULL DEFAULT '[]'::jsonb`,
+  `UPDATE ai_providers SET workspace_ids = jsonb_build_array(workspace_id) WHERE workspace_ids = '[]'::jsonb AND workspace_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS ai_providers_workspace_ids_idx ON ai_providers USING gin (workspace_ids)`,
   `CREATE TABLE IF NOT EXISTS ai_chunks (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), note_id uuid NOT NULL REFERENCES notes(id) ON DELETE CASCADE, workspace_id uuid NOT NULL REFERENCES workspaces(id), notebook_id uuid NOT NULL REFERENCES notebooks(id), chunk_index integer NOT NULL, content text NOT NULL, embedding double precision[], created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(note_id,chunk_index))`,
   `CREATE INDEX IF NOT EXISTS ai_chunks_note_idx ON ai_chunks(note_id)`,
   `CREATE OR REPLACE FUNCTION kb_cosine_distance(a double precision[],b double precision[]) RETURNS double precision LANGUAGE sql IMMUTABLE STRICT AS $$ SELECT CASE WHEN sqrt(sa)*sqrt(sb)=0 THEN 1 ELSE 1-dot/(sqrt(sa)*sqrt(sb)) END FROM (SELECT sum(x*y) dot,sum(x*x) sa,sum(y*y) sb FROM unnest(a,b) z(x,y)) q $$`,

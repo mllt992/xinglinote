@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { aiProviders } from "../db/schema.ts";
+import { aiProviderCoversWorkspace } from "./ai-provider-workspaces.ts";
 import { extractChatContent, providerErrorHint } from "./ai-chat.ts";
 import { cacheGet, cacheSet, embedCacheKey, EMBED_CACHE_TTL_SEC } from "./cache.ts";
 import { safeFetch } from "./net-guard.ts";
@@ -17,7 +18,7 @@ export async function aiProvider(wsId: string, userId?: string) {
   const rows = await db
     .select()
     .from(aiProviders)
-    .where(and(eq(aiProviders.workspaceId, wsId), eq(aiProviders.enabled, true)))
+    .where(and(aiProviderCoversWorkspace(wsId), eq(aiProviders.enabled, true)))
     .orderBy(desc(aiProviders.createdAt));
   return rows.find(p => p.ownerUserId === userId) ?? rows.find(p => !p.ownerUserId);
 }

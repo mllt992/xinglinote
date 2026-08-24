@@ -1,6 +1,6 @@
 import { and,asc,desc,eq,inArray,lte,lt,or,sql } from "drizzle-orm";
 import { db } from "../../api/src/db/client.ts";
-import { aiChunks,aiProviders,aiUsage,attachments,backupRestoreRuns,backupRuns,backupTargets,auditLogs,authTokens,backgroundJobs,calendarFeedTokens,comments,calendarItems,calendarOverrides,calendarReminders,calendarSubscriptions,calendarTemplates,folders,mcpTokens,notebookMembers,notebooks,notes,notifications,posts,pushSubscriptions,savedShares,sessions,shareLinks,users,workspaceInvites,workspaceMembers,workspaces } from "../../api/src/db/schema.ts";
+import { aiChunks,aiUsage,attachments,backupRestoreRuns,backupRuns,backupTargets,auditLogs,authTokens,backgroundJobs,calendarFeedTokens,comments,calendarItems,calendarOverrides,calendarReminders,calendarSubscriptions,calendarTemplates,folders,mcpTokens,notebookMembers,notebooks,notes,notifications,posts,pushSubscriptions,savedShares,sessions,shareLinks,users,workspaceInvites,workspaceMembers,workspaces } from "../../api/src/db/schema.ts";
 import { nextOccurrence,reminderFireAt,rescheduleReminders,syncNoteTasks } from "../../api/src/lib/calendar.ts";
 import { pushToUser } from "../../api/src/lib/push.ts";
 import { syncSubscription } from "../../api/src/lib/ics.ts";
@@ -13,6 +13,7 @@ import { open } from "../../api/src/lib/secrets.ts";
 import { pruneNoteVersions } from "../../api/src/lib/versions.ts";
 import { purgeNotes } from "../../api/src/lib/trash.ts";
 import { dropWorkspaceFromMcpTokens } from "../../api/src/lib/mcp-workspaces.ts";
+import { dropWorkspaceFromAiProviders } from "../../api/src/lib/ai-provider-workspaces.ts";
 import { extractPdfText } from "../../api/src/lib/pdf-text.ts";
 import { readStoredFile, releaseStoredFile } from "../../api/src/lib/blobs.ts";
 import { applyModeration } from "../../api/src/lib/moderation.ts";
@@ -80,7 +81,7 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
      await tx.delete(notebooks).where(eq(notebooks.workspaceId,workspaceId));
      await tx.delete(shareLinks).where(eq(shareLinks.workspaceId,workspaceId));
      await dropWorkspaceFromMcpTokens(tx,{workspaceId,empty:"delete"});
-     await tx.delete(aiProviders).where(eq(aiProviders.workspaceId,workspaceId));
+     await dropWorkspaceFromAiProviders(tx,workspaceId);
      await tx.delete(aiUsage).where(eq(aiUsage.workspaceId,workspaceId));
      await tx.delete(workspaceInvites).where(eq(workspaceInvites.workspaceId,workspaceId));
      await tx.delete(workspaceMembers).where(eq(workspaceMembers.workspaceId,workspaceId));

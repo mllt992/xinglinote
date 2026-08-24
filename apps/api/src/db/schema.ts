@@ -415,6 +415,7 @@ export const themes = pgTable("themes", {
 
 export const aiProviders = pgTable("ai_providers", {
   id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id), ownerUserId: uuid("owner_user_id"),
+  workspaceIds: jsonb("workspace_ids").notNull().default([]),
   kind: text("kind").notNull().default("openai-compatible"), baseUrl: text("base_url").notNull(), chatModel: text("chat_model").notNull(), embeddingModel: text("embedding_model"),
   apiKey: text("api_key").notNull(), enabled: boolean("enabled").notNull().default(true), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
