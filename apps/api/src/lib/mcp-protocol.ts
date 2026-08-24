@@ -22,12 +22,21 @@ const UUID = { type: "string", format: "uuid" } as const;
 const NUL_UUID = { type: ["string", "null"], format: "uuid" } as const;
 const TAGS = { type: "array", items: { type: "string", minLength: 1, maxLength: 50 }, maxItems: 50 } as const;
 const CLIENT_REQUEST_ID = { type: "string", format: "uuid", description: "同一次逻辑操作重试时保持不变；服务端保留首次成功结果 10 分钟" } as const;
-const EDIT_PROPS = {
+const NOTE_TARGET_PROPS = {
   id: UUID,
   expected_version: { type: "integer", minimum: 1 },
-  content: { type: "string" },
   title: { type: "string", minLength: 1, maxLength: 200 },
 } as const;
+const EDIT_PROPS = { ...NOTE_TARGET_PROPS, body_md: { type: "string", description: "完整 Markdown 正文" } } as const;
+const APPEND_PROPS = { ...NOTE_TARGET_PROPS, content: { type: "string" } } as const;
+
+/**
+ * create_note / update_note 对外统一叫 body_md；content 是早期 schema 用过的名字，
+ * 仍在执行层兼容，避免已经缓存旧工具定义的客户端升级后突然失效。
+ */
+export function mcpNoteBody(input: { body_md?: string; content?: string }, fallback: string) {
+  return input.body_md ?? input.content ?? fallback;
+}
 
 const read = (title: string, extra: Partial<ToolAnnotations> = {}): ToolAnnotations => ({
   title, readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, ...extra,
@@ -41,6 +50,7 @@ export const MCP_INSTRUCTIONS = [
   "先调 get_me，看 workspaces、rw、notebooks 和到期时间，再动手。",
   "找内容用 search_notes（默认 hybrid，默认 8 条摘要），不要用 list_folder 扫整库，也不要猜测 UUID。",
   "读一篇用 get_note；默认最多回 6000 字，超长时 truncated=true，用 offset 翻页。改正文必须先拿到 version，再传 expected_version。",
+  "create_note / update_note 用 body_md 传 Markdown 正文；append_to_note 仍用 content 追加。",
   "只改一段请用 replace_in_note，日记补一行用 append_to_note，不要整篇重写，也不要为了改一段把长文读完。",
   "问「今天做什么」用 today；看最近改动用 list_recent。",
   "小于 512KB 的配图可用 upload_image；更大的文件先调 create_attachment_upload，按返回信息直传二进制，再调 complete_attachment_upload。把 markdown 用 append_to_note 或 replace_in_note 插进正文。",
@@ -200,7 +210,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
       notebook_id: UUID,
       folder_id: NUL_UUID,
       title: { type: "string", minLength: 1, maxLength: 200 },
-      content: { type: "string", default: "" },
+      body_md: { type: "string", default: "", description: "完整 Markdown 正文" },
       tags: TAGS,
       client_request_id: CLIENT_REQUEST_ID,
     },
@@ -217,7 +227,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
   append_to_note: {
     tier: "write",
     description: "在笔记末尾追加内容，不覆盖原文。适合日记。expected_version 可选；不传则冲突时自动重试两次。",
-    properties: EDIT_PROPS,
+    properties: APPEND_PROPS,
     required: ["id", "content"],
     annotations: write("追加笔记"),
   },

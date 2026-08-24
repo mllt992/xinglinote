@@ -429,14 +429,16 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 
 ```
 { notebook_id: string, folder_id?: string, title: string,
-  content: string, tags?: string[] }
+  body_md?: string, tags?: string[] }
 → { id, version }
 ```
+
+执行层继续兼容旧客户端的 `content` 别名；新客户端只从工具 schema 看到 `body_md`。
 
 ### update_note
 
 ```
-{ id: string, expected_version: number, content?: string, title?: string }
+{ id: string, expected_version: number, body_md?: string, title?: string }
 → { id, version }
 ```
 

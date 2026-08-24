@@ -184,11 +184,13 @@ limit≤20，**默认 8**（不要一上来塞 20 条摘要）。出：`{ hits: 
 **`ask_knowledge(question, notebook_id?, workspace_id?)`**  
 复用 10 的 5.2。多区时默认跨勾选区检索再答；传了 `notebook_id` / `workspace_id` 则收窄。`citations` 复用 `search_notes` 的统一 `source`，并增加 `citation_number`、`current_version`、`version_matches_current`；答案中的 `[#n]` 必须回指 `citation_number=n`。模型生成后重新读取源版本，任一源被更新或移入回收站时返回 `source_version_changed=true`，客户端应重新 `get_note` 后再决定是否采信。另返回不含内部向量的 `retrieval_metadata`。
 
-**`create_note(notebook_id, folder_id?, title, content, tags?)`**  
+**`create_note(notebook_id, folder_id?, title, body_md?, tags?)`**
 须 write。ai_index/published 跟本默认。出：id、version。
 
-**`update_note(id, expected_version, content?, title?)`**  
+**`update_note(id, expected_version, body_md?, title?)`**
 缺 expected_version → VALIDATION。冲突 → CONFLICT_VERSION + 当前 version。
+
+`content` 只作为旧版 create/update 客户端的执行层兼容别名保留，不再出现在新工具 schema 中；追加正文的 `append_to_note` 仍使用 `content`。
 
 **`append_to_note(id, content)`**  
 内部读 version 再 update 追加，乐观重试 2 次。传了 `expected_version` 则不重试，冲突直接 `CONFLICT_VERSION`。

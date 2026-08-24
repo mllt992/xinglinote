@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { likeContains } from "./like.ts";
 import { decodeImageData } from "./image-data.ts";
-import { isWriteTool, toolAllowed, toolsFor } from "./mcp-protocol.ts";
+import { isWriteTool, mcpNoteBody, toolAllowed, toolsFor } from "./mcp-protocol.ts";
 
 test("只读钥匙看不到写工具，看得到搜索和今天", () => {
   const names = toolsFor({ rw: "read", allowDelete: false, feedPublic: false, feedWorkspace: false }).map(t => t.name);
@@ -74,6 +74,23 @@ test("创建类工具公开 UUID 幂等键", () => {
     const prop = (tool?.inputSchema.properties as { client_request_id?: { format?: string } } | undefined)?.client_request_id;
     assert.equal(prop?.format, "uuid", `${name} 缺少 client_request_id`);
   }
+});
+
+test("建笔记和覆盖笔记公开 body_md，旧 content 参数仍可兼容", () => {
+  const tools = toolsFor({ rw: "manage", allowDelete: true, feedPublic: true, feedWorkspace: true });
+  for (const name of ["create_note", "update_note"]) {
+    const properties = tools.find(tool => tool.name === name)?.inputSchema.properties;
+    assert.ok(properties && "body_md" in properties, `${name} 缺少 body_md`);
+    assert.equal(!!properties && "content" in properties, false, `${name} 不应再向新客户端公开旧参数`);
+  }
+  const append = tools.find(tool => tool.name === "append_to_note")?.inputSchema.properties;
+  assert.ok(append && "content" in append);
+  assert.equal(!!append && "body_md" in append, false);
+
+  assert.equal(mcpNoteBody({ body_md: "新正文" }, "原正文"), "新正文");
+  assert.equal(mcpNoteBody({ content: "旧客户端正文" }, "原正文"), "旧客户端正文");
+  assert.equal(mcpNoteBody({}, "原正文"), "原正文");
+  assert.equal(mcpNoteBody({ body_md: "", content: "不会误用" }, "原正文"), "");
 });
 
 test("所有列表工具使用统一 cursor 协议", () => {
