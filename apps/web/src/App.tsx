@@ -20,6 +20,7 @@ import { EditorStatusBar, type CursorInfo } from "./components/editor-status-bar
 import { CommandPalette, type Command as PaletteCommand } from "./components/command-palette";
 import { FONT_SCALES, RENDER_KEYS, RENDER_LABELS, NOTEBOOKS_MAX, NOTEBOOKS_MIN, TREE_MAX, TREE_MIN, clamp, loadLayout, saveLayout, type LayoutPrefs } from "./lib/layout-prefs";
 import { useDebounced } from "./lib/use-debounced";
+import { noteDraftChanged, reconcileSavedNote } from "./lib/note-save";
 import { cn } from "./lib/utils";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
@@ -384,7 +385,7 @@ function Workspace() {
   /** 侧栏里笔记本怎么排。按工作区记，默认「自定义」——侧栏是人自己摆的秩序。 */
   const [nbSort, setNbSort] = useState<NoteSortMode>("custom");
   const [reloading, setReloading] = useState(false);
-  const [note, setNote] = useState<NoteDto | null>(null); const noteRef = useRef<NoteDto | null>(null); const saveTimer = useRef<number | null>(null); const [status, setStatus] = useState("就绪"); const [statusErr, setStatusErr] = useState(false);
+  const [note, setNote] = useState<NoteDto | null>(null); const noteRef = useRef<NoteDto | null>(null); const saveTimer = useRef<number | null>(null); const savingRef = useRef(false); const saveQueuedRef = useRef(false); const titleComposingRef = useRef(false); const [status, setStatus] = useState("就绪"); const [statusErr, setStatusErr] = useState(false);
   /** 编辑器状态条：dirty / saving / saved / conflict（规范 §11.4）。冲突与保存失败必须和「已保存」看得出区别。 */
   const say = (text: string, error = false) => { setStatus(text); setStatusErr(error); };
   const [search, setSearch] = useState(""); const [hits, setHits] = useState<Hit[]>([]); const [allSpaces, setAllSpaces] = useState(false); const [titleOnly, setTitleOnly] = useState(false); const [backlinks, setBacklinks] = useState<Array<{ id: string; title: string; snippet: string }>>([]); const [atts, setAtts] = useState<Att[]>([]); const [rail, setRailState] = useState<RailTab | null>(loadRailTab); const [create, setCreate] = useState<CreateKind>(null);  const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null); const [showCollab, setShowCollab] = useState(false); const [showImport, setShowImport] = useState(false); const [favorited, setFavorited] = useState(false); const [viewers, setViewers] = useState<string[]>([]); const [quickOpen, setQuickOpen] = useState(false);  const[showAsk,setShowAsk]=useState(false); const [showNotebookAccess,setShowNotebookAccess]=useState(false); const [moveNb,setMoveNb]=useState<Nb|null>(null); const [site, setSite] = useState<{ published: boolean; slug: string; pending?: boolean; canPublish?: boolean; canRequest?: boolean } | null>(null);
@@ -500,16 +501,51 @@ function Workspace() {
   }
 
   /** 协同接管期间正文归房间落库（设计 17 §3.4），这里就别再 PATCH 一遍 body 了，否则两个写者互相盖版本。 */
-  async function save(snapshot?: NoteDto) { const current = snapshot ?? noteRef.current; if (!current?.canEdit) return; if (saveTimer.current) clearTimeout(saveTimer.current); say("保存中…"); const body = collab.status === "connected" ? {} : { bodyMd: current.bodyMd }; try { const saved = withCanEdit(await api<NoteDto>(`/api/v1/notes/${current.id}`, { method: "PATCH", body: JSON.stringify({ expectedVersion: current.version, title: current.title, ...body, aiIndex: current.aiIndex, published: current.published, tags: current.tags ?? [] }) }), current); noteRef.current = saved; setNote(live => live?.id === saved.id && live.bodyMd !== current.bodyMd ? { ...live, version: saved.version } : saved); setTree(t => t.map(n => n.id === saved.id ? { ...n, title: saved.title } : n)); say(`已保存 · v${saved.version}`); if (saved.moderation?.submitted && saved.moderation.queued) toast.success("已提交", saved.moderation.message ?? "正在审核，通过后会出现在文档站。"); else if (saved.moderation?.submitted && saved.moderation.held) toast.success("已提交，等待人工审核", saved.moderation.message ?? undefined); } catch (x) { say((x as Error).message, true); } }
+  async function save() {
+    const current = noteRef.current;
+    if (!current?.canEdit) return;
+    if (savingRef.current) { saveQueuedRef.current = true; return; }
+    if (saveTimer.current !== null) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    savingRef.current = true;
+    saveQueuedRef.current = false;
+    say("保存中…");
+    const body = collab.status === "connected" ? {} : { bodyMd: current.bodyMd };
+    try {
+      const saved = withCanEdit(await api<NoteDto>(`/api/v1/notes/${current.id}`, { method: "PATCH", body: JSON.stringify({ expectedVersion: current.version, title: current.title, ...body, aiIndex: current.aiIndex, published: current.published, tags: current.tags ?? [] }) }), current);
+      const live = noteRef.current;
+      if (live?.id === saved.id) {
+        const next = reconcileSavedNote(live, current, saved);
+        const stillDirty = noteDraftChanged(live, current);
+        noteRef.current = next;
+        setNote(shown => shown?.id === next.id ? next : shown);
+        setTree(tree => tree.map(row => row.id === next.id ? { ...row, title: next.title } : row));
+        say(stillDirty ? "未保存" : `已保存 · v${saved.version}`);
+      } else {
+        setTree(tree => tree.map(row => row.id === saved.id ? { ...row, title: saved.title } : row));
+      }
+      if (saved.moderation?.submitted && saved.moderation.queued) toast.success("已提交", saved.moderation.message ?? "正在审核，通过后会出现在文档站。");
+      else if (saved.moderation?.submitted && saved.moderation.held) toast.success("已提交，等待人工审核", saved.moderation.message ?? undefined);
+    } catch (error) {
+      say((error as Error).message, true);
+    } finally {
+      savingRef.current = false;
+      if (saveQueuedRef.current) {
+        saveQueuedRef.current = false;
+        void save();
+      }
+    }
+  }
   function changeNote(patch: Partial<NoteDto>, instant = false) {
     if (!note) return;
     const next = { ...note, ...patch };
     setNote(next); noteRef.current = next;
+    if (patch.title !== undefined) setTree(tree => tree.map(row => row.id === next.id ? { ...row, title: next.title } : row));
     // 只改了正文、而且协同连着：房间会自己落库，这里连计时器都不必起
     if (collab.status === "connected" && Object.keys(patch).length === 1 && patch.bodyMd !== undefined) { say("协同中"); return; }
     say("未保存");
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => void save(next), instant ? 0 : 850);
+    if (saveTimer.current !== null) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    if (patch.title !== undefined && titleComposingRef.current) return;
+    saveTimer.current = window.setTimeout(() => { saveTimer.current = null; void save(); }, instant ? 0 : 850);
   }
   async function createNote(folderId: string | null = activeFolder ?? tree.find(n => n.id === noteId)?.folderId ?? null) { if (!nbId || !wsId) return; const n = await api<{ id: string }>("/api/v1/notes", { method: "POST", body: JSON.stringify({ notebookId: nbId, folderId }) }); await refreshTree(); nav(`/w/${wsId}/n/${n.id}`); }
   /**
@@ -924,7 +960,19 @@ function Workspace() {
 
   if (me === undefined) return <div className="grid h-full place-items-center"><Circle className="size-5 animate-pulse fill-current" /></div>;
 
-  return <TooltipProvider delayDuration={300}><div className="flex h-full flex-col bg-background">
+  return <TooltipProvider delayDuration={300}><div
+    className="flex h-full flex-col bg-background"
+    onCompositionStartCapture={event => {
+      if (!(event.target instanceof HTMLInputElement) || event.target.placeholder !== "无标题") return;
+      titleComposingRef.current = true;
+      if (saveTimer.current !== null) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    }}
+    onCompositionEndCapture={event => {
+      if (!(event.target instanceof HTMLInputElement) || event.target.placeholder !== "无标题") return;
+      titleComposingRef.current = false;
+      changeNote({ title: event.target.value });
+    }}
+  >
     <header className={cn("h-14 shrink-0 items-center gap-3 border-b border-border px-3 md:px-4", zen ? "hidden" : "flex")}>
       <WorkspaceSwitcher spaces={spaces} wsId={wsId} onPick={id => nav(`/w/${id}`)} onCreate={() => setCreate("workspace")} />
       <Tooltip content={sidesOpen ? "折叠左侧栏（Ctrl+\\）" : "展开左侧栏（Ctrl+\\）"}><Button variant="ghost" size="icon" aria-label="折叠或展开左侧栏" aria-expanded={sidesOpen} onClick={toggleSides}><PanelLeft /></Button></Tooltip>
