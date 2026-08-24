@@ -28,8 +28,17 @@ export function userColor(userId: string) {
 export type CollabSession = {
   extension: Extension;
   text: Y.Text;
+  undo: () => void;
+  redo: () => void;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
   destroy: () => void;
 };
+
+/** 只让 y-codemirror 后续注册的本地 origin 进入历史，不跟踪补种与远端同步。 */
+export function createEditorUndoManager(text: Y.Text) {
+  return new Y.UndoManager(text, { trackedOrigins: new Set() });
+}
 
 /** 20 秒没心跳的 awareness 条目会被 y-protocols 自己清掉，这里只负责读。 */
 function peersOf(provider: WebsocketProvider, selfId: string): CollabPeer[] {
@@ -72,6 +81,10 @@ export function createCollab(noteId: string, user: CollabUser, on: {
   provider.on("connection-error", () => { if (++failures >= 3) { provider.disconnect(); on.status("offline"); on.peers([]); } });
 
   const text = doc.getText("body");
+  // 默认 trackedOrigins 含 null，而首次给空房间补种现有正文正是 null origin。
+  // 从空集合起步，让 y-codemirror 挂载时只注册自己的本地编辑 origin，
+  // 否则工具栏第一次点「撤销」可能把整篇初始正文清空。
+  const undoManager = createEditorUndoManager(text);
   provider.on("sync", (isSynced: boolean) => { if (isSynced) on.synced(text); });
   return {
     // yCollab 自带远端光标与选区的渲染，样式在 styles.css 里覆盖成我们的口径。
@@ -81,11 +94,16 @@ export function createCollab(noteId: string, user: CollabUser, on: {
     // 那时按 Ctrl+Z 撤的是同事的句子，而且撤销结果还会经 CRDT 广播出去，等于替所有人回滚。
     // 所以宿主在挂上这个扩展的同时会把 history() 换成空扩展（markdown-editor.tsx），
     // 键位由这里的 keymap 接管。Prec.high 是为了盖住下面那套 historyKeymap。
-    extension: [yCollab(text, provider.awareness), Prec.high(keymap.of(yUndoManagerKeymap))],
+    extension: [yCollab(text, provider.awareness, { undoManager }), Prec.high(keymap.of(yUndoManagerKeymap))],
     text,
+    undo: () => { undoManager.undo(); },
+    redo: () => { undoManager.redo(); },
+    canUndo: () => undoManager.undoStack.length > 0,
+    canRedo: () => undoManager.redoStack.length > 0,
     destroy: () => {
       provider.awareness.off("change", pushPeers);
       provider.destroy();
+      undoManager.destroy();
       doc.destroy();
     },
   };

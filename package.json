@@ -15,7 +15,7 @@
     "restore:preflight": "tsx scripts/backup-verify.ts",
     "restore:instance": "tsx scripts/restore-instance.ts",
     "restore:disaster": "node scripts/disaster-restore.mjs",
-    "test": "pnpm --filter @kb/shared test && pnpm --filter @kb/core test && pnpm --filter @kb/api test",
+    "test": "pnpm --filter @kb/shared test && pnpm --filter @kb/core test && pnpm --filter @kb/web test && pnpm --filter @kb/api test",
     "lint": "eslint .",
     "build": "pnpm -r build",
     "typecheck": "tsc --noEmit -p packages/shared/tsconfig.json && tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p apps/api/tsconfig.json && tsc --noEmit -p apps/worker/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json"

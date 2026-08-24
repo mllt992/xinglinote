@@ -1,7 +1,11 @@
 import type { CompletionResult, CompletionSource } from "@codemirror/autocomplete";
 import { EditorSelection } from "@codemirror/state";
+import type { Command } from "@codemirror/view";
 
-type Snippet = {
+export type EditorSnippetId = "heading1" | "heading2" | "heading3" | "bullet" | "ordered" | "task" | "quote" | "horizontalRule" | "codeBlock" | "table" | "mermaidFlow" | "mermaidSequence" | "inlineMath" | "blockMath" | "wiki" | "date" | "time";
+
+export type Snippet = {
+  id: EditorSnippetId;
   label: string;
   detail: string;
   /**
@@ -23,22 +27,22 @@ const CARET = "^";
  * 斜杠菜单。**只在行首触发**（前面允许缩进）——这样「替换掉 /xxx」就等于「给这一行加标记」，
  * 不会出现在句子中间敲 `/` 冒出菜单、选完把半句话变成标题的怪事。
  */
-const SNIPPETS: Snippet[] = [
-  { label: "一级标题", detail: "# ", keys: ["h1", "heading1", "yijibiaoti", "yjbt", "biaoti", "bt"], template: "# " + CARET },
-  { label: "二级标题", detail: "## ", keys: ["h2", "heading2", "erjibiaoti", "ejbt", "biaoti", "bt"], template: "## " + CARET },
-  { label: "三级标题", detail: "### ", keys: ["h3", "heading3", "sanjibiaoti", "sjbt", "biaoti", "bt"], template: "### " + CARET },
-  { label: "无序列表", detail: "- ", keys: ["ul", "list", "bullet", "wuxuliebiao", "wxlb", "liebiao", "lb"], template: "- " + CARET },
-  { label: "有序列表", detail: "1. ", keys: ["ol", "number", "youxuliebiao", "yxlb", "liebiao", "lb"], template: "1. " + CARET },
-  { label: "任务项", detail: "- [ ] ", keys: ["todo", "task", "checkbox", "renwu", "rw", "rwx"], template: "- [ ] " + CARET },
-  { label: "引用", detail: "> ", keys: ["quote", "blockquote", "yinyong", "yy"], template: "> " + CARET },
-  { label: "分隔线", detail: "---", keys: ["hr", "rule", "divider", "fengexian", "fgx"], template: "---" + NL + CARET },
-  { label: "代码块", detail: "```", keys: ["code", "pre", "daimakuai", "dmk", "daima", "dm"], template: "```" + CARET + NL + NL + "```" },
-  { label: "表格", detail: "两列表格", keys: ["table", "biaoge", "bg"], template: "| 列一 | 列二 |" + NL + "| --- | --- |" + NL + "| " + CARET + " | |" },
-  { label: "流程图", detail: "mermaid 流程图", keys: ["flowchart", "mermaid", "diagram", "liuchengtu", "lct", "tu"], template: "```mermaid" + NL + "flowchart TD" + NL + "  A[开始] --> B{判断}" + NL + "  B -->|是| C[继续]" + NL + "  B -->|否| D[结束]" + CARET + NL + "```" },
-  { label: "时序图", detail: "mermaid 时序图", keys: ["sequence", "mermaid", "diagram", "shixutu", "sxt", "tu"], template: "```mermaid" + NL + "sequenceDiagram" + NL + "  甲->>乙: 请求" + NL + "  乙-->>甲: 响应" + CARET + NL + "```" },
-  { label: "行内公式", detail: "$…$", keys: ["math", "inlinemath", "latex", "hangneigongshi", "hngs", "gongshi", "gs"], template: "$" + CARET + "$" },
-  { label: "块级公式", detail: "$$…$$", keys: ["blockmath", "math", "latex", "kuaijigongshi", "kjgs", "gongshi", "gs"], template: "$$" + NL + CARET + NL + "$$" },
-  { label: "双链", detail: "[[…]]", keys: ["link", "wiki", "wikilink", "shuanglian", "sl"], template: "[[" + CARET + "]]" },
+export const EDITOR_SNIPPETS: Snippet[] = [
+  { id: "heading1", label: "一级标题", detail: "# ", keys: ["h1", "heading1", "yijibiaoti", "yjbt", "biaoti", "bt"], template: "# " + CARET },
+  { id: "heading2", label: "二级标题", detail: "## ", keys: ["h2", "heading2", "erjibiaoti", "ejbt", "biaoti", "bt"], template: "## " + CARET },
+  { id: "heading3", label: "三级标题", detail: "### ", keys: ["h3", "heading3", "sanjibiaoti", "sjbt", "biaoti", "bt"], template: "### " + CARET },
+  { id: "bullet", label: "无序列表", detail: "- ", keys: ["ul", "list", "bullet", "wuxuliebiao", "wxlb", "liebiao", "lb"], template: "- " + CARET },
+  { id: "ordered", label: "有序列表", detail: "1. ", keys: ["ol", "number", "youxuliebiao", "yxlb", "liebiao", "lb"], template: "1. " + CARET },
+  { id: "task", label: "任务项", detail: "- [ ] ", keys: ["todo", "task", "checkbox", "renwu", "rw", "rwx"], template: "- [ ] " + CARET },
+  { id: "quote", label: "引用", detail: "> ", keys: ["quote", "blockquote", "yinyong", "yy"], template: "> " + CARET },
+  { id: "horizontalRule", label: "分隔线", detail: "---", keys: ["hr", "rule", "divider", "fengexian", "fgx"], template: "---" + NL + CARET },
+  { id: "codeBlock", label: "代码块", detail: "```", keys: ["code", "pre", "daimakuai", "dmk", "daima", "dm"], template: "```" + CARET + NL + NL + "```" },
+  { id: "table", label: "表格", detail: "两列表格", keys: ["table", "biaoge", "bg"], template: "| 列一 | 列二 |" + NL + "| --- | --- |" + NL + "| " + CARET + " | |" },
+  { id: "mermaidFlow", label: "流程图", detail: "mermaid 流程图", keys: ["flowchart", "mermaid", "diagram", "liuchengtu", "lct", "tu"], template: "```mermaid" + NL + "flowchart TD" + NL + "  A[开始] --> B{判断}" + NL + "  B -->|是| C[继续]" + NL + "  B -->|否| D[结束]" + CARET + NL + "```" },
+  { id: "mermaidSequence", label: "时序图", detail: "mermaid 时序图", keys: ["sequence", "mermaid", "diagram", "shixutu", "sxt", "tu"], template: "```mermaid" + NL + "sequenceDiagram" + NL + "  甲->>乙: 请求" + NL + "  乙-->>甲: 响应" + CARET + NL + "```" },
+  { id: "inlineMath", label: "行内公式", detail: "$…$", keys: ["math", "inlinemath", "latex", "hangneigongshi", "hngs", "gongshi", "gs"], template: "$" + CARET + "$" },
+  { id: "blockMath", label: "块级公式", detail: "$$…$$", keys: ["blockmath", "math", "latex", "kuaijigongshi", "kjgs", "gongshi", "gs"], template: "$$" + NL + CARET + NL + "$$" },
+  { id: "wiki", label: "双链", detail: "[[…]]", keys: ["link", "wiki", "wikilink", "shuanglian", "sl"], template: "[[" + CARET + "]]" },
 ];
 
 /** 今天 / 现在：写日记和会议纪要时最常用的两条。 */
@@ -47,8 +51,8 @@ function dateSnippets(now: Date): Snippet[] {
   const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
   const time = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
   return [
-    { label: "今天日期", detail: date, keys: ["today", "date", "jintian", "jt", "riqi", "rq"], template: `${date}${CARET}` },
-    { label: "当前时间", detail: `${date} ${time}`, keys: ["now", "time", "xianzai", "xz", "shijian", "sj"], template: `${date} ${time}${CARET}` },
+    { id: "date", label: "今天日期", detail: date, keys: ["today", "date", "jintian", "jt", "riqi", "rq"], template: `${date}${CARET}` },
+    { id: "time", label: "当前时间", detail: `${date} ${time}`, keys: ["now", "time", "xianzai", "xz", "shijian", "sj"], template: `${date} ${time}${CARET}` },
   ];
 }
 
@@ -71,7 +75,7 @@ export function slashCompletion(): CompletionSource {
     if (!hit) return null;
     const from = line.from + hit[1].length;
 
-    const all = [...SNIPPETS, ...dateSnippets(new Date())].filter(snippet => matches(snippet, hit[2]));
+    const all = [...EDITOR_SNIPPETS, ...dateSnippets(new Date())].filter(snippet => matches(snippet, hit[2]));
     if (!all.length) return null;
     return {
       from,
@@ -94,5 +98,36 @@ export function slashCompletion(): CompletionSource {
       // 不给 validFor：过滤是我们自己做的，让它每敲一个键重跑一次这个 source
       // （纯本地计算，十几条 snippet，比让 CodeMirror 拿中文 label 复筛便宜也正确）
     };
+  };
+}
+
+/** 工具栏与斜杠菜单共用同一份模板，避免高级插入能力逐渐漂开。 */
+export function insertSnippet(id: EditorSnippetId): Command {
+  return view => {
+    if (view.state.readOnly) return false;
+    const snippet = id === "date" || id === "time"
+      ? dateSnippets(new Date()).find(item => item.id === id)
+      : EDITOR_SNIPPETS.find(item => item.id === id);
+    if (!snippet) return false;
+    const block = id === "table" || id === "blockMath" || id === "mermaidFlow" || id === "mermaidSequence";
+    view.dispatch(
+      view.state.changeByRange(range => {
+        const selected = view.state.sliceDoc(range.from, range.to);
+        const caret = snippet.template.indexOf(CARET);
+        const startLine = view.state.doc.lineAt(range.from);
+        const endLine = view.state.doc.lineAt(range.to);
+        const before = block && range.from !== startLine.from ? NL : "";
+        const after = block && range.to !== endLine.to ? NL : "";
+        const content = caret < 0 ? snippet.template : snippet.template.replace(CARET, selected);
+        const insert = `${before}${content}${after}`;
+        const head = range.from + before.length + (caret < 0 ? content.length : caret + selected.length);
+        return {
+          changes: { from: range.from, to: range.to, insert },
+          range: selected ? EditorSelection.range(range.from + before.length + caret, head) : EditorSelection.cursor(head),
+        };
+      }),
+      { userEvent: "input.complete", scrollIntoView: true },
+    );
+    return true;
   };
 }

@@ -5,7 +5,7 @@ import type { Command } from "@codemirror/view";
 import type { SyntaxNode } from "@lezer/common";
 
 /** 选区两侧是不是已经被 marker 包着。`*` 要额外躲开 `**`，否则给粗体加斜体会把粗体拆坏。 */
-function wrappedWith(state: EditorState, from: number, to: number, marker: string): boolean {
+export function wrappedWith(state: EditorState, from: number, to: number, marker: string): boolean {
   const len = marker.length;
   if (from - len < 0) return false;
   if (state.sliceDoc(from - len, from) !== marker || state.sliceDoc(to, to + len) !== marker) return false;
@@ -123,31 +123,116 @@ export function toggleLinePrefix(prefix: string, existing: RegExp): Command {
 const BULLET = /^\s*(?:[-*+]|\d+[.)])[ \t]+/;
 const CHECKBOX = /^\[[ xX]\][ \t]?/;
 
-/** 光标所在行在「普通行 → 待办 → 已办 → 普通列表项」之间轮转。 */
+/** 所选行在「普通行 → 待办 → 已办 → 普通列表项」之间轮转。 */
 export const toggleTask: Command = view => {
   if (view.state.readOnly) return false;
-  const line = view.state.doc.lineAt(view.state.selection.main.head);
-  const bullet = BULLET.exec(line.text);
-  const indent = /^\s*/.exec(line.text)?.[0].length ?? 0;
-
-  if (!bullet) {
-    view.dispatch({ changes: { from: line.from + indent, insert: "- [ ] " }, userEvent: "input.task", scrollIntoView: true });
-    return true;
+  const changes: ChangeSpec[] = [];
+  for (const number of selectedLines(view.state)) {
+    const line = view.state.doc.line(number);
+    const bullet = BULLET.exec(line.text);
+    const indent = /^\s*/.exec(line.text)?.[0].length ?? 0;
+    if (!bullet) {
+      changes.push({ from: line.from + indent, insert: "- [ ] " });
+      continue;
+    }
+    const markerEnd = line.from + bullet[0].length;
+    const box = CHECKBOX.exec(line.text.slice(bullet[0].length));
+    if (!box) changes.push({ from: markerEnd, insert: "[ ] " });
+    else if (box[0].startsWith("[ ]")) changes.push({ from: markerEnd + 1, to: markerEnd + 2, insert: "x" });
+    else changes.push({ from: markerEnd, to: markerEnd + box[0].length });
   }
-  const markerEnd = line.from + bullet[0].length;
-  const box = CHECKBOX.exec(line.text.slice(bullet[0].length));
-  if (!box) {
-    view.dispatch({ changes: { from: markerEnd, insert: "[ ] " }, userEvent: "input.task", scrollIntoView: true });
-    return true;
-  }
-  if (box[0].startsWith("[ ]")) {
-    // 只翻那一个字符，别的字节不动。
-    view.dispatch({ changes: { from: markerEnd + 1, to: markerEnd + 2, insert: "x" }, userEvent: "input.task" });
-    return true;
-  }
-  view.dispatch({ changes: { from: markerEnd, to: markerEnd + box[0].length }, userEvent: "input.task" });
+  if (!changes.length) return false;
+  view.dispatch({ changes, userEvent: "input.task", scrollIntoView: true });
   return true;
 };
+
+/** 设置所选行的标题层级；0 表示恢复正文。 */
+export function setHeading(level: 0 | 1 | 2 | 3 | 4 | 5 | 6): Command {
+  return view => {
+    if (view.state.readOnly) return false;
+    const changes: ChangeSpec[] = [];
+    for (const number of selectedLines(view.state)) {
+      const line = view.state.doc.line(number);
+      const indent = /^\s*/.exec(line.text)?.[0].length ?? 0;
+      const heading = /^#{1,6}[ \t]+/.exec(line.text.slice(indent));
+      const from = line.from + indent;
+      const to = from + (heading?.[0].length ?? 0);
+      const insert = level ? `${"#".repeat(level)} ` : "";
+      if (view.state.sliceDoc(from, to) !== insert) changes.push({ from, to, insert });
+    }
+    if (!changes.length) return false;
+    view.dispatch({ changes, userEvent: "input.heading", scrollIntoView: true });
+    return true;
+  };
+}
+
+/** 代码围栏可切换；有选区时包住选区，无选区时把光标放到空围栏里。 */
+export const toggleCodeBlock: Command = view => {
+  if (view.state.readOnly) return false;
+  view.dispatch(
+    view.state.changeByRange(range => {
+      const startLine = view.state.doc.lineAt(range.from);
+      const endLine = view.state.doc.lineAt(range.to);
+      const before = startLine.number > 1 ? view.state.doc.line(startLine.number - 1) : null;
+      const after = endLine.number < view.state.doc.lines ? view.state.doc.line(endLine.number + 1) : null;
+      if (before && after && /^\s*```[^`]*$/.test(before.text) && /^\s*```\s*$/.test(after.text)) {
+        return {
+          changes: [
+            { from: before.from, to: startLine.from },
+            { from: endLine.to, to: after.to },
+          ],
+          range: EditorSelection.range(before.from, endLine.to - (startLine.from - before.from)),
+        };
+      }
+      const text = view.state.sliceDoc(range.from, range.to);
+      const beforeBreak = range.from === startLine.from ? "" : "\n";
+      const afterBreak = range.to === endLine.to ? "" : "\n";
+      const insert = `${beforeBreak}\`\`\`\n${text}\n\`\`\`${afterBreak}`;
+      const contentFrom = range.from + beforeBreak.length + 4;
+      const contentTo = contentFrom + text.length;
+      return {
+        changes: { from: range.from, to: range.to, insert },
+        range: text ? EditorSelection.range(contentFrom, contentTo) : EditorSelection.cursor(contentFrom),
+      };
+    }),
+    { userEvent: "input.codeblock", scrollIntoView: true },
+  );
+  return true;
+};
+
+/** 插入一个独占行块，必要时自动补换行。 */
+export function insertBlock(text: string, cursorOffset = text.length): Command {
+  return view => {
+    if (view.state.readOnly) return false;
+    const range = view.state.selection.main;
+    const line = view.state.doc.lineAt(range.from);
+    const before = range.from === line.from ? "" : "\n";
+    const after = range.to === view.state.doc.length || view.state.sliceDoc(range.to, range.to + 1) === "\n" ? "" : "\n";
+    const insert = `${before}${text}${after}`;
+    view.dispatch({
+      changes: { from: range.from, to: range.to, insert },
+      selection: EditorSelection.cursor(range.from + before.length + cursorOffset),
+      userEvent: "input.block",
+      scrollIntoView: true,
+    });
+    return true;
+  };
+}
+
+/** 上传等宿主异步操作完成后，把结果插回原编辑器选区并进入同一份历史。 */
+export function insertTextAtSelection(text: string, userEvent = "input.insert"): Command {
+  return view => {
+    if (view.state.readOnly) return false;
+    view.dispatch(
+      view.state.changeByRange(range => ({
+        changes: { from: range.from, to: range.to, insert: text },
+        range: EditorSelection.cursor(range.from + text.length),
+      })),
+      { userEvent, scrollIntoView: true },
+    );
+    return true;
+  };
+}
 
 /**
  * Tab 的归属。

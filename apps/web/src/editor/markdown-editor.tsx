@@ -1,23 +1,24 @@
 import { useEffect, useImperativeHandle, useRef } from "react";
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { defaultKeymap, history, historyKeymap, redo, redoDepth, undo, undoDepth } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
-import { bracketMatching, foldKeymap, indentOnInput } from "@codemirror/language";
-import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
+import { bracketMatching, foldAll, foldKeymap, indentOnInput, syntaxTree, unfoldAll } from "@codemirror/language";
+import { highlightSelectionMatches, openSearchPanel, search, searchKeymap } from "@codemirror/search";
 import { Compartment, EditorSelection, EditorState, Prec, type Extension } from "@codemirror/state";
 import {
   EditorView, crosshairCursor, drawSelection, dropCursor, highlightActiveLine,
   keymap, placeholder as placeholderExt, rectangularSelection,
 } from "@codemirror/view";
+import type { SyntaxNode } from "@lezer/common";
 import { fileDrop, type FileUploader } from "./attachments";
-import { insertLink, insertWikiLink, structuralTab, structuralShiftTab, toggleLinePrefix, toggleTask, toggleWrap } from "./commands";
+import { insertBlock, insertLink, insertTextAtSelection, insertWikiLink, setHeading, structuralTab, structuralShiftTab, toggleCodeBlock, toggleLinePrefix, toggleTask, toggleWrap, wrappedWith } from "./commands";
 import { markdownFolding } from "./folding";
 import { hangingIndent } from "./hanging-indent";
 import { livePreview } from "./live-preview";
 import { markdownSyntaxExtensions } from "./markdown-syntax";
 import { smartPaste } from "./paste";
-import { slashCompletion } from "./slash-menu";
+import { insertSnippet, slashCompletion } from "./slash-menu";
 import { typewriterScroll } from "./typewriter";
 import { editorHighlighting, editorTheme } from "./theme";
 import { createCollab, type CollabPeer, type CollabSession, type CollabStatus, type CollabUser } from "./collab";
@@ -56,8 +57,14 @@ const historyCompartment = new Compartment();
 // 拼写检查是本机偏好，改一下不该重建编辑器。
 const spellcheckCompartment = new Compartment();
 
-/** 移动端工具条能按的那些格式动作。名字就是动作，不是键位——键位是桌面的事。 */
-export type EditorAction = "bold" | "italic" | "strike" | "code" | "link" | "wiki" | "quote" | "bullet" | "task" | "heading";
+/** 桌面与移动工具栏共用的编辑动作；名字就是动作，不绑定某一种 UI。 */
+export type EditorAction =
+  | "undo" | "redo"
+  | "paragraph" | "heading1" | "heading2" | "heading3" | "heading4" | "heading5" | "heading6"
+  | "bold" | "italic" | "strike" | "code" | "highlight"
+  | "link" | "wiki" | "quote" | "bullet" | "ordered" | "task" | "codeBlock"
+  | "horizontalRule" | "table" | "inlineMath" | "blockMath" | "mermaid"
+  | "search" | "fold" | "unfold";
 
 /**
  * 即时渲染的那一套装饰。**当前行高亮跟着模式走**：Typora 那类即时渲染编辑器都不高亮当前行，
@@ -72,17 +79,68 @@ function previewExtensions(onWiki: () => ((title: string, section?: string) => v
 
 /** 工具条动作 → 已有的那些命令。和快捷键走同一批实现，免得两处行为漂开。 */
 const ACTIONS: Record<EditorAction, (view: EditorView) => void> = {
+  undo: v => { undo(v); },
+  redo: v => { redo(v); },
+  paragraph: v => { setHeading(0)(v); },
+  heading1: v => { setHeading(1)(v); },
+  heading2: v => { setHeading(2)(v); },
+  heading3: v => { setHeading(3)(v); },
+  heading4: v => { setHeading(4)(v); },
+  heading5: v => { setHeading(5)(v); },
+  heading6: v => { setHeading(6)(v); },
   bold: v => { toggleWrap("**")(v); },
   italic: v => { toggleWrap("*")(v); },
   strike: v => { toggleWrap("~~")(v); },
   code: v => { toggleWrap("`")(v); },
+  highlight: v => { toggleWrap("==")(v); },
   link: v => { insertLink(v); },
   wiki: v => { insertWikiLink(v); },
   quote: v => { toggleLinePrefix("> ", /^\s*>[ \t]?/)(v); },
   bullet: v => { toggleLinePrefix("- ", /^\s*(?:[-*+]|\d+[.)])[ \t]+/)(v); },
+  ordered: v => { toggleLinePrefix("1. ", /^\s*(?:[-*+]|\d+[.)])[ \t]+/)(v); },
   task: v => { toggleTask(v); },
-  heading: v => { toggleLinePrefix("## ", /^\s*#{1,6}[ \t]+/)(v); },
+  codeBlock: v => { toggleCodeBlock(v); },
+  horizontalRule: v => { insertBlock("---")(v); },
+  table: v => { insertSnippet("table")(v); },
+  inlineMath: v => { insertSnippet("inlineMath")(v); },
+  blockMath: v => { insertSnippet("blockMath")(v); },
+  mermaid: v => { insertSnippet("mermaidFlow")(v); },
+  search: v => { openSearchPanel(v); },
+  fold: v => { foldAll(v); },
+  unfold: v => { unfoldAll(v); },
 };
+
+function markerActive(state: EditorState, marker: string): boolean {
+  const { from, to, head } = state.selection.main;
+  if (from !== to) return wrappedWith(state, from, to, marker);
+  const line = state.doc.lineAt(head);
+  const before = state.sliceDoc(line.from, head);
+  const after = state.sliceDoc(head, line.to);
+  const open = before.lastIndexOf(marker);
+  const close = after.indexOf(marker);
+  if (open < 0 || close < 0) return false;
+  if (marker === "*" && (before.slice(open - 1, open + 1) === "**" || after.slice(close, close + 2) === "**")) return false;
+  return true;
+}
+
+function activeActions(state: EditorState): EditorAction[] {
+  const active: EditorAction[] = [];
+  for (const [action, marker] of [["bold", "**"], ["italic", "*"], ["strike", "~~"], ["code", "`"], ["highlight", "=="]] as const) {
+    if (markerActive(state, marker)) active.push(action);
+  }
+  const line = state.doc.lineAt(state.selection.main.head).text;
+  const heading = /^\s*(#{1,6})[ \t]+/.exec(line);
+  if (heading) active.push(`heading${heading[1].length}` as EditorAction);
+  if (/^\s*>[ \t]?/.test(line)) active.push("quote");
+  if (/^\s*(?:[-*+]|\d+[.)])[ \t]+\[[ xX]\][ \t]?/.test(line)) active.push("task");
+  else if (/^\s*\d+[.)][ \t]+/.test(line)) active.push("ordered");
+  else if (/^\s*[-*+][ \t]+/.test(line)) active.push("bullet");
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(state.selection.main.head, -1);
+  for (; node; node = node.parent) {
+    if (node.name === "FencedCode" || node.name === "CodeBlock") { active.push("codeBlock"); break; }
+  }
+  return active;
+}
 
 /**
  * 内容区的 DOM 属性。CodeMirror 默认按**代码编辑器**配：`spellcheck=false`、
@@ -105,6 +163,9 @@ export type MarkdownEditorHandle = {
   focus: () => void;
   /** 执行一个格式动作，并把焦点还给编辑器（手机上焦点一丢键盘就收）。 */
   run: (action: EditorAction) => void;
+  /** 工具栏激活态与历史按钮可用性。 */
+  activeActions: () => EditorAction[];
+  historyState: () => { canUndo: boolean; canRedo: boolean };
   /** 当前选区，没选中就是 null。偏移量和正文字符串一致，可以直接拿去切片。 */
   getSelection: () => { text: string; from: number; to: number } | null;
   /** 选中一段并滚过去，用来把「这条纠错说的是哪句」指出来。 */
@@ -113,6 +174,8 @@ export type MarkdownEditorHandle = {
   getCursorPos: () => number | null;
   /** 就地替换一段，光标落在插入内容末尾。`from === to` 就是纯插入。 */
   replaceRange: (from: number, to: number, text: string) => void;
+  /** 在当前选区插入文本，上传附件后用它落下 Markdown。 */
+  insertText: (text: string) => void;
 };
 
 /**
@@ -210,8 +273,17 @@ export function MarkdownEditor({
     run: action => {
       const instance = view.current;
       if (!instance || instance.state.readOnly) return;
-      ACTIONS[action](instance);
+      if (action === "undo" && collabSession.current) collabSession.current.undo();
+      else if (action === "redo" && collabSession.current) collabSession.current.redo();
+      else ACTIONS[action](instance);
       instance.focus();
+    },
+    activeActions: () => view.current ? activeActions(view.current.state) : [],
+    historyState: () => {
+      const instance = view.current;
+      const session = collabSession.current;
+      if (session) return { canUndo: session.canUndo(), canRedo: session.canRedo() };
+      return { canUndo: !!instance && undoDepth(instance.state) > 0, canRedo: !!instance && redoDepth(instance.state) > 0 };
     },
     selectRange: (from, to) => {
       const instance = view.current;
@@ -240,6 +312,12 @@ export function MarkdownEditor({
         selection: EditorSelection.cursor(start + text.length),
         userEvent: "input.replace",
       });
+      instance.focus();
+    },
+    insertText: text => {
+      const instance = view.current;
+      if (!instance || instance.state.readOnly) return;
+      insertTextAtSelection(text, "input.upload")(instance);
       instance.focus();
     },
   }), []);
