@@ -16,7 +16,7 @@ export type { OutlineItem } from "./headings.js";
 export type { WikiRef, WikiResolution, WikiResolver } from "./wikilink.js";
 export { diagramBlockAt, diagramFence } from "./diagram.js";
 export { slugifyHeading } from "./headings.js";
-export { toggleTaskAt } from "./tasklist.js";
+export { stripTaskAnchorSuffix, taskAnchorSuffixStart, toggleTaskAt } from "./tasklist.js";
 export type { Align, ParsedTable, TableOp } from "./table.js";
 export { applyTableOp, canDeleteColumn, canDeleteRow, parseTable, serializeTable } from "./table.js";
 export { parseWikiRef } from "./wikilink.js";
@@ -130,6 +130,8 @@ export function plainTextOf(source: string): string {
     .replace(/^\s{0,3}>\s?/gm, "")
     // Callout 的 `[!NOTE]` 是标记不是正文；后面跟的标题要留着
     .replace(/^\s*\[!\w+\][+-]?[ \t]*/gm, "")
+    // 日历同步写入的稳定块锚是内部标识，不进入摘要、字数或 AI 上下文。
+    .replace(/[ \t]+\^tk-[0-9a-f]{8}\b/g, "")
     .replace(/^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/gm, "")
     .replace(/==/g, "")
     .replace(/[*_~]{1,3}/g, "")

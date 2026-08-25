@@ -4,7 +4,7 @@ import type { SyntaxNode, SyntaxNodeRef } from "@lezer/common";
 import {
   Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType,
 } from "@codemirror/view";
-import { diagramBlockAt } from "@kb/shared/markdown";
+import { diagramBlockAt, taskAnchorSuffixStart } from "@kb/shared/markdown";
 import { hydrateMath, loadKatex } from "../lib/katex-hydrate";
 import { openLightbox } from "../lib/lightbox";
 import { renderDiagram } from "../lib/mermaid-hydrate";
@@ -396,7 +396,21 @@ function build(view: EditorView, wysiwyg: boolean, render: RenderToggles): Built
     }
   };
 
+  // 日历同步会给任务行补稳定块锚。它必须留在源码里保证改文案、移动行后仍能关联，
+  // 但属于系统元数据：编辑器和预览都不应把它当正文展示。
+  const anchoredLines = new Set<number>();
   for (const visible of view.visibleRanges) {
+    let pos = state.doc.lineAt(visible.from).from;
+    while (pos <= visible.to) {
+      const line = state.doc.lineAt(pos);
+      if (!anchoredLines.has(line.number) && /^\s*[-*+]\s+\[[ xX]\]/.test(line.text)) {
+        const at = taskAnchorSuffixStart(line.text);
+        if (at !== null) replace(hide, line.from + at, line.to);
+        anchoredLines.add(line.number);
+      }
+      if (line.to >= visible.to || line.to === state.doc.length) break;
+      pos = line.to + 1;
+    }
     tree.iterate({
       from: visible.from,
       to: visible.to,

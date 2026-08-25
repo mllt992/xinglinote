@@ -20,7 +20,10 @@ import { EditorStatusBar, type CursorInfo } from "./components/editor-status-bar
 import { CommandPalette, type Command as PaletteCommand } from "./components/command-palette";
 import { FONT_SCALES, RENDER_KEYS, RENDER_LABELS, NOTEBOOKS_MAX, NOTEBOOKS_MIN, TREE_MAX, TREE_MIN, clamp, loadLayout, saveLayout, type LayoutPrefs } from "./lib/layout-prefs";
 import { useDebounced } from "./lib/use-debounced";
-import { isSaveHotkey, noteDraftChanged, reconcileSavedNote } from "./lib/note-save";
+import {
+  isSaveHotkey, noteDraftChanged, noteMetadataKeys, pickNoteMetadata,
+  reconcileSavedNote, sameNoteMetadataValue, type NoteMetadataKey,
+} from "./lib/note-save";
 import { cn } from "./lib/utils";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
@@ -385,7 +388,7 @@ function Workspace() {
   /** 侧栏里笔记本怎么排。按工作区记，默认「自定义」——侧栏是人自己摆的秩序。 */
   const [nbSort, setNbSort] = useState<NoteSortMode>("custom");
   const [reloading, setReloading] = useState(false);
-  const [note, setNote] = useState<NoteDto | null>(null); const noteRef = useRef<NoteDto | null>(null); const saveTimer = useRef<number | null>(null); const savingRef = useRef(false); const saveQueuedRef = useRef(false); const saveActionRef = useRef<() => void>(() => {}); const titleComposingRef = useRef(false); const [status, setStatus] = useState("就绪"); const [statusErr, setStatusErr] = useState(false); const [saving, setSaving] = useState(false); const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [note, setNote] = useState<NoteDto | null>(null); const noteRef = useRef<NoteDto | null>(null); const saveTimer = useRef<number | null>(null); const savingRef = useRef(false); const saveQueuedRef = useRef(false); const saveActionRef = useRef<() => void>(() => {}); const dirtyMetadataRef = useRef(new Set<NoteMetadataKey>()); const titleComposingRef = useRef(false); const [status, setStatus] = useState("就绪"); const [statusErr, setStatusErr] = useState(false); const [saving, setSaving] = useState(false); const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   /** 编辑器状态条：dirty / saving / saved / conflict（规范 §11.4）。冲突与保存失败必须和「已保存」看得出区别。 */
   const say = (text: string, error = false) => { setStatus(text); setStatusErr(error); };
   const [search, setSearch] = useState(""); const [hits, setHits] = useState<Hit[]>([]); const [allSpaces, setAllSpaces] = useState(false); const [titleOnly, setTitleOnly] = useState(false); const [backlinks, setBacklinks] = useState<Array<{ id: string; title: string; snippet: string }>>([]); const [atts, setAtts] = useState<Att[]>([]); const [rail, setRailState] = useState<RailTab | null>(loadRailTab); const [create, setCreate] = useState<CreateKind>(null);  const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null); const [showCollab, setShowCollab] = useState(false); const [showImport, setShowImport] = useState(false); const [favorited, setFavorited] = useState(false); const [viewers, setViewers] = useState<string[]>([]); const [quickOpen, setQuickOpen] = useState(false);  const[showAsk,setShowAsk]=useState(false); const [showNotebookAccess,setShowNotebookAccess]=useState(false); const [moveNb,setMoveNb]=useState<Nb|null>(null); const [site, setSite] = useState<{ published: boolean; slug: string; pending?: boolean; canPublish?: boolean; canRequest?: boolean } | null>(null);
@@ -465,7 +468,7 @@ function Workspace() {
       void refreshTree();
     }
   }
-  useEffect(() => { if (!noteId) { setNote(null); setAtts([]); setLastSavedAt(null); return; } api<NoteDto>(`/api/v1/notes/${noteId}`).then(loaded => { setNote(loaded); noteRef.current = loaded; const savedAt = loaded.updatedAt ? new Date(loaded.updatedAt).getTime() : NaN; setLastSavedAt(Number.isFinite(savedAt) ? savedAt : null); say(`已保存 · v${loaded.version}`); }); api<{ items: typeof backlinks }>(`/api/v1/notes/${noteId}/backlinks`).then(d => setBacklinks(d.items)); api<{ attachments: Att[] }>(`/api/v1/notes/${noteId}/attachments`).then(d => setAtts(d.attachments)).catch(() => setAtts([])); }, [noteId]);
+  useEffect(() => { dirtyMetadataRef.current.clear(); if (!noteId) { setNote(null); setAtts([]); setLastSavedAt(null); return; } api<NoteDto>(`/api/v1/notes/${noteId}`).then(loaded => { setNote(loaded); noteRef.current = loaded; const savedAt = loaded.updatedAt ? new Date(loaded.updatedAt).getTime() : NaN; setLastSavedAt(Number.isFinite(savedAt) ? savedAt : null); say(`已保存 · v${loaded.version}`); }); api<{ items: typeof backlinks }>(`/api/v1/notes/${noteId}/backlinks`).then(d => setBacklinks(d.items)); api<{ attachments: Att[] }>(`/api/v1/notes/${noteId}/attachments`).then(d => setAtts(d.attachments)).catch(() => setAtts([])); }, [noteId]);
   useEffect(() => { noteRef.current = note; }, [note]);
   /** 从搜索、快速打开或深链进来的笔记可能不在当前笔记本：侧栏跟着笔记走，面包屑才不会张冠李戴。 */
   useEffect(() => { if (note?.notebookId) setNbId(note.notebookId); }, [note?.notebookId]);
@@ -504,25 +507,64 @@ function Workspace() {
   async function save() {
     const current = noteRef.current;
     if (!current?.canEdit) return;
+    const collabConnected = collab.status === "connected";
+    const metadataKeys = [...dirtyMetadataRef.current];
+    // 正文已经交给 CRDT 房间落库。这里再拿页面上的旧 version 发一遍空 PATCH，
+    // 会把房间刚保存的新版本误报成「别人更新了」；手动保存正文时直接交还给房间即可。
+    if (collabConnected && !metadataKeys.length) {
+      if (saveTimer.current !== null) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+      say("协同中");
+      return;
+    }
     if (savingRef.current) { saveQueuedRef.current = true; return; }
     if (saveTimer.current !== null) { clearTimeout(saveTimer.current); saveTimer.current = null; }
     savingRef.current = true;
     setSaving(true);
     saveQueuedRef.current = false;
     say("保存中…");
-    const body = collab.status === "connected" ? {} : { bodyMd: current.bodyMd };
+    const body = collabConnected ? {} : { bodyMd: current.bodyMd };
     try {
-      const saved = withCanEdit(await api<NoteDto>(`/api/v1/notes/${current.id}`, { method: "PATCH", body: JSON.stringify({ expectedVersion: current.version, title: current.title, ...body, aiIndex: current.aiIndex, published: current.published, tags: current.tags ?? [] }) }), current);
+      const metadata = collabConnected
+        ? pickNoteMetadata(current, metadataKeys)
+        : { title: current.title, aiIndex: current.aiIndex, published: current.published, tags: current.tags ?? [] };
+      const patch = (expectedVersion: number) => api<NoteDto>(`/api/v1/notes/${current.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ expectedVersion, ...metadata, ...body }),
+      });
+      let saved: NoteDto;
+      if (collabConnected) {
+        // 房间会独立递增 notes.version，页面不把它当正文事实源。保存标题/标签等元数据前
+        // 先取最新版本；若恰好撞上房间下一次落库，只对版本冲突重取并重试一次。
+        let fresh = await api<NoteDto>(`/api/v1/notes/${current.id}`);
+        if (metadataKeys.every(key => sameNoteMetadataValue(fresh, current, key))) saved = withCanEdit(fresh, current);
+        else {
+          try { saved = withCanEdit(await patch(fresh.version), current); }
+          catch (error) {
+            if ((error as Error & { code?: string }).code !== "CONFLICT_VERSION") throw error;
+            fresh = await api<NoteDto>(`/api/v1/notes/${current.id}`);
+            saved = metadataKeys.every(key => sameNoteMetadataValue(fresh, current, key))
+              ? withCanEdit(fresh, current)
+              : withCanEdit(await patch(fresh.version), current);
+          }
+        }
+      } else saved = withCanEdit(await patch(current.version), current);
       const live = noteRef.current;
       if (live?.id === saved.id) {
-        const next = reconcileSavedNote(live, current, saved);
+        const reconciled = reconcileSavedNote(live, current, saved);
+        // REST 响应里的正文只是房间上一次落库的快照，不能倒灌覆盖正在协同的 Y.Text。
+        const next = collabConnected ? { ...reconciled, bodyMd: live.bodyMd } : reconciled;
         const stillDirty = noteDraftChanged(live, current);
+        for (const key of metadataKeys) {
+          if (sameNoteMetadataValue(live, current, key)) dirtyMetadataRef.current.delete(key);
+        }
         noteRef.current = next;
         setNote(shown => shown?.id === next.id ? next : shown);
         setTree(tree => tree.map(row => row.id === next.id ? { ...row, title: next.title } : row));
         const savedAt = saved.updatedAt ? new Date(saved.updatedAt).getTime() : Date.now();
         setLastSavedAt(Number.isFinite(savedAt) ? savedAt : Date.now());
-        say(stillDirty ? "未保存" : `已保存 · v${saved.version}`);
+        say(collabConnected
+          ? (dirtyMetadataRef.current.size ? "未保存" : "协同中")
+          : (stillDirty ? "未保存" : `已保存 · v${saved.version}`));
       } else {
         setTree(tree => tree.map(row => row.id === saved.id ? { ...row, title: saved.title } : row));
       }
@@ -543,6 +585,7 @@ function Workspace() {
     if (!note) return;
     const next = { ...note, ...patch };
     setNote(next); noteRef.current = next;
+    for (const key of noteMetadataKeys(patch)) dirtyMetadataRef.current.add(key);
     if (patch.title !== undefined) setTree(tree => tree.map(row => row.id === next.id ? { ...row, title: next.title } : row));
     // 只改了正文、而且协同连着：房间会自己落库，这里连计时器都不必起
     if (collab.status === "connected" && Object.keys(patch).length === 1 && patch.bodyMd !== undefined) { say("协同中"); return; }

@@ -1,5 +1,18 @@
 import type { MarkdownIt } from "markdown-it";
 
+const TASK_ANCHOR_SUFFIX = /[ \t]+\^tk-[0-9a-f]{8}[ \t]*$/;
+
+/** 系统写在任务行末尾的稳定块锚。显示层隐藏它，源码与导出仍原样保留。 */
+export function taskAnchorSuffixStart(source: string): number | null {
+  const hit = TASK_ANCHOR_SUFFIX.exec(source);
+  return hit?.index ?? null;
+}
+
+export function stripTaskAnchorSuffix(source: string): string {
+  const at = taskAnchorSuffixStart(source);
+  return at === null ? source : source.slice(0, at);
+}
+
 /**
  * GFM 任务列表。给每个复选框标上它在源码里的行号，宿主据此就地改一个字符完成勾选，
  * 不必重排全文——勾选算一次保存（设计 03 §4.7）。
@@ -22,9 +35,18 @@ export function taskListPlugin(md: MarkdownIt) {
       const checked = marker[1] !== " ";
       const line = tokens[i - 2].map?.[0] ?? -1;
 
-      inline.content = inline.content.slice(marker[0].length);
+      inline.content = stripTaskAnchorSuffix(inline.content.slice(marker[0].length));
       const first = inline.children?.[0];
       if (first?.type === "text") first.content = first.content.slice(marker[0].length);
+      // 块锚通常落在最后一个 text token；只在已经确认是任务项后处理，普通正文里的
+      // `^tk-xxxxxxxx` 仍照常显示。Markdown 源码没有改，这里只是渲染层不把内部 ID 给人看。
+      for (let child = (inline.children?.length ?? 0) - 1; child >= 0; child--) {
+        const token = inline.children?.[child];
+        if (!token || token.type !== "text") continue;
+        const stripped = stripTaskAnchorSuffix(token.content);
+        if (stripped !== token.content) token.content = stripped;
+        break;
+      }
 
       const box = new state.Token("html_inline", "", 0);
       box.content = `<input class="task-checkbox" type="checkbox"${checked ? " checked" : ""}${interactive ? "" : " disabled"} data-task-line="${line}">`;

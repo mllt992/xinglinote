@@ -106,6 +106,7 @@ export function plain(md: string) {
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/!?\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g, (_, t, d) => d || t)
+    .replace(/[ \t]+\^tk-[0-9a-f]{8}\b/g, " ")
     .replace(/[#>*_~`-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();

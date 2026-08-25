@@ -300,8 +300,24 @@ knowledge.patch("/notes/:id", async (c) => {
     })
     .parse(await c.req.json());
   const {note}=await noteAccess(c.req.param("id"),user.id,"edit");
+  const requestedTags = body.tags
+    ? [...new Set(body.tags.map(t => t.trim()).filter(Boolean))]
+    : (note.tags as string[]);
+  const currentTags = note.tags as string[];
+  const unchanged = (body.bodyMd ?? note.bodyMd) === note.bodyMd
+    && (body.title ?? note.title) === note.title
+    && (body.published ?? note.published) === note.published
+    && (body.aiIndex ?? note.aiIndex) === note.aiIndex
+    && requestedTags.length === currentTags.length
+    && requestedTags.every((tag, index) => tag === currentTags[index]);
+  // 协同房间可能已经把同一份正文落成更高版本。旧页面随后发来的手动保存若没有
+  // 实际变化，应直接认当前版本，而不是把自己的上一轮保存误报成版本冲突。
+  if (unchanged) {
+    const dto = await attachNoteModeration(note);
+    return ok(c, { ...dto, canEdit: true, moderation: { ...dto.moderation, submitted: false } });
+  }
   if (note.version !== body.expectedVersion && !body.force) {
-    throw fail("CONFLICT_VERSION", "别人刚保存了更新");
+    throw fail("CONFLICT_VERSION", "笔记已有较新版本，请刷新后重试");
   }
   if (note.version !== body.expectedVersion && body.force) {
     const [already] = await db.select().from(noteVersions).where(and(eq(noteVersions.noteId, note.id), eq(noteVersions.version, note.version)));
@@ -334,7 +350,7 @@ knowledge.patch("/notes/:id", async (c) => {
     published: nextPublished,
     moderationStatus: unpublish ? "none" : shouldReview ? "pending_review" : (note.moderationStatus ?? "none"),
     aiIndex: body.aiIndex ?? note.aiIndex,
-    tags: body.tags ? [...new Set(body.tags.map(t => t.trim()).filter(Boolean))] : (note.tags as string[]),
+    tags: requestedTags,
     version: note.version + 1,
     updatedBy: user.id,
     updatedAt: new Date(),

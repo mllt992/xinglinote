@@ -19,6 +19,16 @@ test("任务列表可交互时才允许点击", () => {
   assert.match(renderMarkdown("- [ ] 待办\n", { interactiveTasks: true }), /type="checkbox" data-task-line="0"/);
 });
 
+test("任务块锚留在源码里，但不出现在预览、摘要与字数里", () => {
+  const source = "- [ ] 跟进方案 **今天完成** ^tk-a1b2c3d4\n";
+  const html = renderMarkdown(source);
+  assert.doesNotMatch(html, /\^tk-a1b2c3d4/);
+  assert.match(html, /跟进方案 <strong>今天完成<\/strong>/);
+  assert.equal(plainTextOf(source), "跟进方案 今天完成");
+  assert.equal(countWords(source), 8);
+  assert.match(source, /\^tk-a1b2c3d4/);
+});
+
 test("勾选只改那一个字符", () => {
   const src = "标题\n\n- [ ] 待办 [[链接]]\n- [x] 已办\n";
   assert.equal(toggleTaskAt(src, 2), "标题\n\n- [x] 待办 [[链接]]\n- [x] 已办\n");

@@ -58,7 +58,7 @@ export function MarkdownView({
 
   function follow(target: HTMLElement) {
     const el = target.closest<HTMLElement>("[data-wiki]");
-    if (!el || !onWiki || el.tagName === "A") return false;
+    if (!el || !onWiki) return false;
     const section = el.dataset.wikiSection;
     onWiki(decodeURIComponent(el.dataset.wiki ?? ""), section ? decodeURIComponent(section) : undefined);
     return true;
@@ -99,7 +99,12 @@ export function MarkdownView({
           onHashtag(tagEl.dataset.hashtag ?? "");
           return;
         }
-        follow(target);
+        // 双链把单击留给选词和复制；已解析的双链是 <a>，这里必须拦住它的默认导航，
+        // 真正跟随统一放到下面的双击与键盘入口。
+        if (target.closest("[data-wiki]")) event.preventDefault();
+      }}
+      onDoubleClick={event => {
+        if (follow(event.target as HTMLElement)) event.preventDefault();
       }}
       onKeyDown={event => {
         if (event.key !== "Enter" && event.key !== " ") return;
