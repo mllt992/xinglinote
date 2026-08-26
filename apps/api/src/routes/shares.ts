@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { Hono } from "hono";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import { canPublishNotebook, canRequestSitePublish, hashPassword, verifyPassword } from "@kb/core";
@@ -22,6 +22,7 @@ import {
 import {
   dismissSaved, getSaved, listSaved, maybeAutoSave, openLocation, peekSaved, reactivateSaved, renderSavedContent, saveManually,
 } from "../lib/saved-shares.ts";
+import { canManageShare, requireRevokedShare } from "../lib/share-revoke.ts";
 
 export const shareRoutes = new Hono();
 
@@ -189,7 +190,7 @@ shareRoutes.patch("/shares/:id", async (c) => {
   const [share] = await db.select().from(shareLinks).where(eq(shareLinks.id, c.req.param("id")));
   if (!share) throw fail("NOT_FOUND", "分享不存在");
   const role = await memberRole(share.workspaceId, user.id);
-  if (!role || (!manageRoles.has(role) && share.createdBy !== user.id)) throw fail("FORBIDDEN", "无权管理此分享");
+  if (!canManageShare(role, user.id, share.createdBy)) throw fail("FORBIDDEN", "无权管理此分享");
   const body = z.object({ password: z.string().max(100).nullable().optional(), expiresInDays: z.number().int().min(1).max(365).nullable().optional(), commentsEnabled: z.boolean().optional(), correctionsEnabled: z.boolean().optional(), showBacklinks: z.boolean().optional(), allowRobots: z.boolean().optional() }).parse(await c.req.json());
   const [saved] = await db.update(shareLinks).set({
     passwordHash: body.password === undefined ? share.passwordHash : body.password ? await hashPassword(body.password) : null,
@@ -207,9 +208,17 @@ shareRoutes.delete("/shares/:id", async (c) => {
   const [share] = await db.select().from(shareLinks).where(eq(shareLinks.id, c.req.param("id")));
   if (!share) throw fail("NOT_FOUND", "分享不存在");
   const role = await memberRole(share.workspaceId, user.id);
-  if (!role || (!manageRoles.has(role) && share.createdBy !== user.id)) throw fail("FORBIDDEN", "无权撤销此分享");
-  await db.update(shareLinks).set({ status: "revoked", revokedAt: new Date() }).where(eq(shareLinks.id, share.id));
-  return ok(c, {});
+  if (!canManageShare(role, user.id, share.createdBy)) throw fail("FORBIDDEN", "无权撤销此分享");
+  const revoked = await requireRevokedShare(() => db.transaction(async tx => {
+    // 正常更新只需毫秒；若另一个事务长期占着这行，及时返回冲突，不能让 HTTP 请求无限挂住。
+    await tx.execute(sql`set local lock_timeout = '5s'`);
+    const [saved] = await tx.update(shareLinks)
+      .set({ status: "revoked", revokedAt: new Date() })
+      .where(eq(shareLinks.id, share.id))
+      .returning();
+    return saved;
+  }));
+  return ok(c, publicShare(revoked));
 });
 
 async function loadShare(token: string) {

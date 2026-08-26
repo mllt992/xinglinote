@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { outlineOf } from "@kb/shared/markdown";
-import { Check, Copy, Link2, Lock, Share2, Trash2 } from "lucide-react";
+import { Check, Copy, Link2, LoaderCircle, Lock, Share2, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -14,7 +14,7 @@ export type ShareDto = { id: string; token: string; targetType: string; targetId
 export type ShareTarget = { kind: "note" | "folder" | "attachment" | "notebook"; id: string; title: string; bodyMd?: string };
 const typeLabel: Record<string, string> = { note: "整篇", heading: "某一节", folder: "目录", attachment: "附件", notebook: "整本" };
 
-function ShareRow({ s, url, copied, onCopy, onRevoke }: { s: ShareDto; url: string; copied?: boolean; onCopy?: () => void; onRevoke?: () => void }) {
+function ShareRow({ s, url, copied, revoking, revokeDisabled, onCopy, onRevoke }: { s: ShareDto; url: string; copied?: boolean; revoking?: boolean; revokeDisabled?: boolean; onCopy?: () => void; onRevoke?: () => void }) {
   const expired = !!s.expiresAt && new Date(s.expiresAt).getTime() < Date.now();
   return <div className="flex items-center gap-3 rounded-xl border border-border p-3">
     <span className={`grid size-9 shrink-0 place-items-center rounded-lg ${onCopy ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>{s.hasPassword ? <Lock className="size-4" /> : <Link2 className="size-4" />}</span>
@@ -23,7 +23,7 @@ function ShareRow({ s, url, copied, onCopy, onRevoke }: { s: ShareDto; url: stri
         {s.status === "revoked" ? "已撤销" : expired ? "已过期" : s.expiresAt ? `到期 ${new Date(s.expiresAt).toLocaleDateString()}` : "永不过期"}
         {s.hasPassword ? " · 有密码" : " · 无密码"}{s.correctionsEnabled ? " · 可纠错" : ""}{s.allowRobots ? " · 公开收录" : ""}</p></div>
     {onCopy && <Button variant="ghost" size="icon" aria-label="复制链接" onClick={onCopy}>{copied ? <Check /> : <Copy />}</Button>}
-    {onRevoke && <Button variant="ghost" size="icon" aria-label="撤销链接" className="text-destructive" onClick={onRevoke}><Trash2 /></Button>}
+    {onRevoke && <Button variant="ghost" size="icon" aria-label={revoking ? "正在撤销链接" : "撤销链接"} className="text-destructive" disabled={revokeDisabled} onClick={onRevoke}>{revoking ? <LoaderCircle className="animate-spin" /> : <Trash2 />}</Button>}
   </div>;
 }
 
@@ -47,6 +47,7 @@ export function ShareDialog({ target, open, onOpenChange }: { target: ShareTarge
   const [password, setPassword] = useState("");
   const [days, setDays] = useState("never");
   const [busy, setBusy] = useState(false);
+  const [revokingId, setRevokingId] = useState("");
   const [copied, setCopied] = useState("");
   const [err, setErr] = useState("");
   const askConfirm = useConfirm();
@@ -63,9 +64,25 @@ export function ShareDialog({ target, open, onOpenChange }: { target: ShareTarge
   const live = shares.filter(isLive);
   const dead = shares.filter(s => !isLive(s));
   async function revoke(s: ShareDto) {
+    if (revokingId) return;
     if (!await askConfirm({ title: `撤销《${target?.title}》的这条链接？`, description: "撤销后这条链接立刻失效且不可恢复，已经拿到链接的人也打不开了。需要的话可以再生成一条新的。", confirmText: "撤销链接", destructive: true })) return;
-    await api(`/api/v1/shares/${s.id}`, { method: "DELETE" });
-    void load();
+    setRevokingId(s.id);
+    setErr("");
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15_000);
+    try {
+      const revoked = await api<ShareDto>(`/api/v1/shares/${s.id}`, { method: "DELETE", signal: controller.signal });
+      // 只采用数据库 RETURNING 回来的状态；服务端没真正写成功时不会把这一行假装成已撤销。
+      setShares(rows => rows.map(row => row.id === s.id ? revoked : row));
+      toast.success("已撤销这条链接");
+    } catch (e) {
+      const message = controller.signal.aborted ? "请求超时，请检查网络后重试。" : (e as Error).message;
+      setErr(`撤销失败：${message}`);
+      toast.error("撤销失败", message);
+    } finally {
+      window.clearTimeout(timeout);
+      setRevokingId("");
+    }
   }
   async function copy(s: ShareDto) {
     try {
@@ -108,7 +125,7 @@ export function ShareDialog({ target, open, onOpenChange }: { target: ShareTarge
     <div className="max-h-80 space-y-2 overflow-auto">
       {shares.length === 0 && <div className="py-10 text-center text-sm text-muted-foreground">还没有分享链接。</div>}
       {live.length > 0 && <p className="px-1 text-[11px] font-semibold uppercase tracking-[.12em] text-muted-foreground">生效中 {live.length}</p>}
-      {live.map(s => <ShareRow key={s.id} s={s} url={url(s)} copied={copied === s.id} onCopy={() => void copy(s)} onRevoke={() => void revoke(s)} />)}
+      {live.map(s => <ShareRow key={s.id} s={s} url={url(s)} copied={copied === s.id} revoking={revokingId === s.id} revokeDisabled={!!revokingId} onCopy={() => void copy(s)} onRevoke={() => void revoke(s)} />)}
       {dead.length > 0 && <>
         <button className="mt-2 w-full rounded-lg px-1 py-1.5 text-left text-[11px] font-semibold uppercase tracking-[.12em] text-muted-foreground hover:bg-muted" onClick={() => setShowDead(v => !v)}>
           {showDead ? "▾" : "▸"} 已失效 {dead.length}
