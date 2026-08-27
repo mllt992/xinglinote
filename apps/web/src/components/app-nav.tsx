@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { BookOpen, Compass, LayoutGrid, Users } from "lucide-react";
+import { BookOpen, Compass, Kanban, LayoutGrid, Users } from "lucide-react";
 import { api } from "../api";
 import { cn } from "../lib/utils";
 import { askFeedRefresh, feedUpdateTotal, formatFeedUpdateLabel, useFeedBadges } from "./feed-updates";
 
 /** 顶栏认的几个「地方」。问知识库不在其中：它是一个动作（开右侧问答栏），不是一个能停留的页面。 */
-export type NavPlace = "notes" | "circle" | "square" | "nav";
+export type NavPlace = "notes" | "projects" | "circle" | "square" | "nav";
 
 const LAST_WS_KEY = "kb.last-workspace";
-/** 广场没有 wsId。记下最后待过的工作区，从广场点「笔记 / 圈子」才回得去原来那个库，而不是被扔回个人库。 */
+/** 广场没有 wsId。记下最后待过的工作区，从广场点「笔记 / 项目 / 圈子」才回得去原来那个库，而不是被扔回个人库。 */
 export function saveLastWorkspace(id: string) { try { localStorage.setItem(LAST_WS_KEY, id); } catch { /* 隐私模式忽略 */ } }
 export function loadLastWorkspace(): string | undefined { try { return localStorage.getItem(LAST_WS_KEY) ?? undefined; } catch { return undefined; } }
 
@@ -36,18 +36,23 @@ export function useNavEnabled() {
 }
 
 /**
- * 笔记 / 圈子 / 广场 / 导航共用的顶栏。各处都渲染同一个组件、同一套选中态，
- * 用户才看得出自己在哪、点下去会去哪。
+ * 笔记 / 项目 / 广场 / 圈子 / 导航共用的顶栏。各处都渲染同一个组件、同一套选中态，
+ * 用户才看得出自己在哪、点下去会去哪。顺序见设计 23。
  */
 export function AppNav({ wsId, active, className }: { wsId?: string; active: NavPlace; className?: string }) {
   const nav = useNavigate();
   const meta = useInstanceMeta();
   const squareOn = meta.squareEnabled;
   const navOn = meta.navEnabled !== false;
-  const badges = useFeedBadges({ workspaceId: wsId, square: squareOn });
+  const home = wsId || loadLastWorkspace();
+  const badges = useFeedBadges({ workspaceId: home, square: squareOn });
   const items: Array<{ id: NavPlace; label: string; icon: typeof BookOpen; to: string; count: number; hint?: string }> = [];
-  if (wsId) items.push({ id: "notes", label: "笔记", icon: BookOpen, to: `/w/${wsId}`, count: 0 }, { id: "circle", label: "圈子", icon: Users, to: `/w/${wsId}/feed`, count: feedUpdateTotal(badges.circle), hint: formatFeedUpdateLabel(badges.circle) });
+  if (home) {
+    items.push({ id: "notes", label: "笔记", icon: BookOpen, to: `/w/${home}`, count: 0 });
+    items.push({ id: "projects", label: "项目", icon: Kanban, to: `/w/${home}/projects`, count: 0 });
+  }
   if (squareOn) items.push({ id: "square", label: "广场", icon: LayoutGrid, to: "/", count: feedUpdateTotal(badges.square), hint: formatFeedUpdateLabel(badges.square) });
+  if (home) items.push({ id: "circle", label: "圈子", icon: Users, to: `/w/${home}/feed`, count: feedUpdateTotal(badges.circle), hint: formatFeedUpdateLabel(badges.circle) });
   if (navOn) items.push({ id: "nav", label: "导航", icon: Compass, to: "/nav", count: 0 });
   if (!items.length) return null;
   return <nav aria-label="主导航" className={cn("inline-flex shrink-0 items-center gap-0.5 rounded-lg bg-muted p-1", className)}>

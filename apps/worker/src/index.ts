@@ -11,7 +11,7 @@ import { backupDue, executeBackupRun } from "../../api/src/lib/backup.ts";
 import { upload,remove } from "../../api/src/lib/backup-transfer.ts";
 import { open } from "../../api/src/lib/secrets.ts";
 import { pruneNoteVersions } from "../../api/src/lib/versions.ts";
-import { purgeNotes } from "../../api/src/lib/trash.ts";
+import { purgeNotes, purgeWorkspaceProjects } from "../../api/src/lib/trash.ts";
 import { dropWorkspaceFromMcpTokens } from "../../api/src/lib/mcp-workspaces.ts";
 import { dropWorkspaceFromAiProviders } from "../../api/src/lib/ai-provider-workspaces.ts";
 import { extractPdfText } from "../../api/src/lib/pdf-text.ts";
@@ -59,6 +59,7 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
    if(!ws||ws.kind==="personal"||!ws.deletionScheduledAt||ws.deletionScheduledAt.getTime()>Date.now())return;
    const ns=await db.select({id:notes.id}).from(notes).where(eq(notes.workspaceId,workspaceId));
    await purgeNotes(ns.map(n=>n.id));
+   await purgeWorkspaceProjects(workspaceId);
    const nbs=await db.select({id:notebooks.id}).from(notebooks).where(eq(notebooks.workspaceId,workspaceId));
    const items=await db.select({id:calendarItems.id}).from(calendarItems).where(eq(calendarItems.workspaceId,workspaceId));
    const targets=await db.select({id:backupTargets.id}).from(backupTargets).where(eq(backupTargets.workspaceId,workspaceId));

@@ -660,6 +660,71 @@ export const navLinks = pgTable("nav_links", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+/** 工作区级项目。归档用 status=archived + archived_at，不软删行。 */
+export const projects = pgTable("projects", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  status: text("status").notNull().default("planning"),
+  color: text("color").notNull().default("ink"),
+  startAt: timestamp("start_at", { withTimezone: true }),
+  dueAt: timestamp("due_at", { withTimezone: true }),
+  visibility: text("visibility").notNull().default("workspace"),
+  sortKey: integer("sort_key").notNull().default(0),
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  updatedBy: uuid("updated_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+});
+
+/** 项目任务。不回写笔记正文；source_note_id 只当入口。parent_id 只允许一层。 */
+export const projectTasks = pgTable("project_tasks", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id),
+  title: text("title").notNull(),
+  bodyMd: text("body_md").notNull().default(""),
+  status: text("status").notNull().default("todo"),
+  priority: integer("priority").notNull().default(0),
+  startAt: timestamp("start_at", { withTimezone: true }),
+  dueAt: timestamp("due_at", { withTimezone: true }),
+  estimateMin: integer("estimate_min"),
+  assigneeUserId: uuid("assignee_user_id"),
+  parentId: uuid("parent_id"),
+  sortKey: integer("sort_key").notNull().default(0),
+  sourceNoteId: uuid("source_note_id"),
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  updatedBy: uuid("updated_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  completedBy: uuid("completed_by"),
+});
+
+/** 工时。ended_at 空 = 正在跑。同一用户同一时刻只允许一只。 */
+export const projectTimeEntries = pgTable("project_time_entries", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id),
+  taskId: uuid("task_id").notNull().references(() => projectTasks.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+  endedAt: timestamp("ended_at", { withTimezone: true }),
+  seconds: integer("seconds").notNull().default(0),
+  note: text("note").notNull().default(""),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const projectMilestones = pgTable("project_milestones", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id),
+  title: text("title").notNull(),
+  dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
+  done: boolean("done").notNull().default(false),
+  sortKey: integer("sort_key").notNull().default(0),
+});
+
 /**
  * 协同房间的 Y.Doc 快照（设计 17 §3.4）。这是**可丢的缓存**：
  * 删掉它只会让下一个房间从 notes.body_md 重新初始化，不丢任何已落库的内容。

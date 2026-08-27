@@ -83,6 +83,7 @@ node scripts/verify-folder-order.mjs     # 目录同级调序：新建排最后�
 node scripts/verify-site-review.mjs      # 文档站：编辑申请、管理员过审才上线
 node scripts/verify-feed.mjs        # 圈子动态、泄漏检查、转正、公开主页、评论
 node scripts/verify-agents.mjs      # 智能体 CRUD、动态 @、评论回复
+node scripts/verify-projects.mjs        # 项目：建/看板/计时/ACL/归档；不回写笔记
 node scripts/verify-calendar-core.mjs   # 日历 CRUD、时区边界、ACL、409、今天页、日记
 node scripts/verify-calendar-sync.mjs   # 笔记 ↔ 日历双向同步、块锚、版本合并、脱链
 node scripts/verify-calendar-recur.mjs  # 重复展开、单次例外、「此后全部」

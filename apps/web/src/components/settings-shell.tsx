@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
-  Archive, ArrowUpRight, BellRing, Bot, ChevronRight, CloudUpload, Download, FileClock, HardDrive, Link2,
+  Archive, ArrowUpRight, BellRing, Bot, ChevronRight, CloudUpload, Download, FileClock, HardDrive, Kanban, Link2,
   Paintbrush, ShieldAlert, ShieldCheck, Snowflake, Sparkles, TriangleAlert, Users,
 } from "lucide-react";
 import { api } from "../api";
@@ -23,7 +23,7 @@ export const cardCls = "rounded-xl border border-border bg-background";
 /** 设置壳认的所有落点。前八个是 /w/:id/settings 的 ?tab=，后面是独立路由。 */
 export type SettingsPlace =
   | "overview" | "members" | "shares" | "backup" | "transfer" | "audit" | "moderation" | "danger"
-  | "trash" | "feed" | "integrations" | "appearance" | "notifications" | "account";
+  | "trash" | "feed" | "projects" | "integrations" | "appearance" | "notifications" | "account";
 
 type NavItem = {
   id: SettingsPlace;
@@ -58,6 +58,7 @@ export const SETTINGS_NAV: Array<{ title: string; items: NavItem[] }> = [
     title: "内容",
     items: [
       { id: "trash", label: "回收站", hint: "删掉的东西在这里躺 30 天，过期自动销毁。", icon: Archive, to: wsId => `/w/${wsId}/trash` },
+      { id: "projects", label: "项目", hint: "交付面：看板、甘特、计时和脉搏。", icon: Kanban, to: wsId => `/w/${wsId}/projects`, leaves: true },
       { id: "feed", label: "圈子动态", hint: "只有本工作区成员看得到的时间线。", icon: Users, to: wsId => `/w/${wsId}/feed`, leaves: true },
       { id: "integrations", label: "AI 与 MCP", hint: "配置 OpenAI 兼容模型，并为外部 Agent 创建受限钥匙。", icon: Bot, to: wsId => `/w/${wsId}/settings/integrations` },
     ],

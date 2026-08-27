@@ -5,7 +5,7 @@ import {
   calendarOverrides, calendarReminders, calendarSubscriptions, calendarTemplates,
   comments, contentReports, corrections, folders, instanceSettings, links, mcpAttachmentUploads, mcpTokens,
   moderationReviews, navGroups, navLinks, notebookMembers, notebooks, noteCollab,
-  notes, noteFavorites, noteVersions, noteVisits, postAssets, postFavorites, postReactions, posts,
+  notes, noteFavorites, noteVersions, noteVisits, postAssets, postFavorites, postReactions, posts, projectMilestones, projectTasks, projectTimeEntries, projects,
   registrationCodes, registrationCodeUsages, savedShares, serviceRequests, sessions,
   shareLinks, themes, users, workspaceInvites, workspaceMembers, workspaces,
 } from "../db/schema.ts";
@@ -13,6 +13,7 @@ import type { BackupPackage, InstanceBackupPackage, WorkspaceBackupPackage } fro
 import { checksum } from "./backup-package.ts";
 import { putBlob, readStoredFile, releaseBlob, releaseStoredFile, type BlobRef } from "./blobs.ts";
 import { writeNoteFile } from "./files.ts";
+import { purgeWorkspaceProjects } from "./trash.ts";
 import { noteCandidates, rebuildLinks } from "./links.ts";
 import { seal } from "./secrets.ts";
 import { secureToken } from "./tokens.ts";
@@ -33,6 +34,7 @@ const DATE_KEYS = new Set([
   "startsAt", "endsAt", "dueAt", "rruleUntil", "occurrenceStart", "newStart", "newEnd",
   "absoluteAt", "firedAt", "lastSyncAt", "lastUsedAt", "emailVerifiedAt", "deletionRequestedAt",
   "deletionScheduledAt", "decidedAt", "expiresAt", "installedAt", "sitePublishRequestedAt",
+  "startAt", "archivedAt", "completedAt", "startedAt", "endedAt",
 ]);
 
 function revive(row: Row) {
@@ -130,6 +132,7 @@ async function deleteWorkspaceContents(tx: Tx, workspaceId: string) {
     await tx.delete(calendarOverrides).where(inArray(calendarOverrides.itemId, itemIds));
   }
   await tx.delete(calendarItems).where(eq(calendarItems.workspaceId, workspaceId));
+  await purgeWorkspaceProjects(workspaceId, tx);
   await tx.delete(calendarSubscriptions).where(eq(calendarSubscriptions.workspaceId, workspaceId));
   await tx.delete(calendarTemplates).where(eq(calendarTemplates.workspaceId, workspaceId));
   await tx.delete(calendarFeedTokens).where(eq(calendarFeedTokens.workspaceId, workspaceId));
@@ -201,6 +204,10 @@ export async function restoreWorkspacePackage(input: {
   const subscriptionMap = idMap(snapshot.calendarSubscriptions);
   const templateMap = idMap(snapshot.calendarTemplates);
   const feedMap = idMap(snapshot.calendarFeedTokens);
+  const projectMap = idMap(snapshot.projects);
+  const taskMap = idMap(snapshot.projectTasks);
+  const timeMap = idMap(snapshot.projectTimeEntries);
+  const milestoneMap = idMap(snapshot.projectMilestones);
   const staged = await stageFiles(snapshot);
   let oldFiles: Array<typeof attachments.$inferSelect> = [];
   let oldPostFiles: Array<typeof postAssets.$inferSelect> = [];
@@ -214,6 +221,7 @@ export async function restoreWorkspacePackage(input: {
     comments: snapshot.comments.length,
     posts: snapshot.posts.length,
     calendarItems: snapshot.calendarItems.length,
+    projects: snapshot.projects.length,
   };
   if (snapshot.version === 3 && snapshot.attachments.length) warnings.push(`已跳过 ${snapshot.attachments.length} 个无二进制文件的 v3 附件元数据`);
   try {
@@ -310,6 +318,33 @@ export async function restoreWorkspacePackage(input: {
       await insertRows(tx, calendarTemplates, snapshot.calendarTemplates.map(raw => ({ ...revive(raw), id: templateMap.get(String(raw.id)), workspaceId: targetWorkspaceId, createdBy: mapUser(raw.createdBy) })));
       await insertRows(tx, calendarFeedTokens, snapshot.calendarFeedTokens.map(raw => ({
         ...revive(raw), id: feedMap.get(String(raw.id)), workspaceId: targetWorkspaceId, userId: mapUser(raw.userId), token: secureToken(32), status: "revoked", lastUsedAt: null,
+      })));
+      await insertRows(tx, projects, snapshot.projects.map(raw => ({
+        ...revive(raw), id: projectMap.get(String(raw.id)), workspaceId: targetWorkspaceId,
+        createdBy: mapUser(raw.createdBy), updatedBy: mapUser(raw.updatedBy),
+      })));
+      const parentTasks = snapshot.projectTasks.filter(raw => !raw.parentId);
+      const childTasks = snapshot.projectTasks.filter(raw => !!raw.parentId);
+      await insertRows(tx, projectTasks, parentTasks.map(raw => ({
+        ...revive(raw), id: taskMap.get(String(raw.id)), projectId: mapped(projectMap, raw.projectId),
+        workspaceId: targetWorkspaceId, parentId: null, sourceNoteId: mapped(noteMap, raw.sourceNoteId),
+        assigneeUserId: raw.assigneeUserId ? mapUser(raw.assigneeUserId) : null,
+        createdBy: mapUser(raw.createdBy), updatedBy: mapUser(raw.updatedBy),
+        completedBy: raw.completedBy ? mapUser(raw.completedBy) : null,
+      })));
+      await insertRows(tx, projectTasks, childTasks.map(raw => ({
+        ...revive(raw), id: taskMap.get(String(raw.id)), projectId: mapped(projectMap, raw.projectId),
+        workspaceId: targetWorkspaceId, parentId: mapped(taskMap, raw.parentId), sourceNoteId: mapped(noteMap, raw.sourceNoteId),
+        assigneeUserId: raw.assigneeUserId ? mapUser(raw.assigneeUserId) : null,
+        createdBy: mapUser(raw.createdBy), updatedBy: mapUser(raw.updatedBy),
+        completedBy: raw.completedBy ? mapUser(raw.completedBy) : null,
+      })));
+      await insertRows(tx, projectTimeEntries, snapshot.projectTimeEntries.map(raw => ({
+        ...revive(raw), id: timeMap.get(String(raw.id)), projectId: mapped(projectMap, raw.projectId),
+        taskId: mapped(taskMap, raw.taskId), userId: mapUser(raw.userId),
+      })));
+      await insertRows(tx, projectMilestones, snapshot.projectMilestones.map(raw => ({
+        ...revive(raw), id: milestoneMap.get(String(raw.id)), projectId: mapped(projectMap, raw.projectId),
       })));
 
       const [verify] = await tx.select({ notebooks: sql<number>`count(distinct ${notebooks.id})`, notes: sql<number>`count(distinct ${notes.id})` })

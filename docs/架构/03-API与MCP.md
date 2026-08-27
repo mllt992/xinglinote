@@ -244,6 +244,30 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | POST | `/api/v1/admin/push/vapid` | 生成 / 轮换 VAPID；轮换会把所有旧订阅一并置 `gone` |
 | WS | `/api/v1/notes/:id/collab` | 协同房间（y-websocket 协议：`0`=sync、`1`=awareness）。**升级前**跑 `noteAccess(id, user, 'edit')`：能编辑给 `mode=write`，只能读给 `mode=read`（收得到光标、发不出更新，服务端丢弃其 update 帧），读都不能读**一律回 404**——403 会告诉对方这篇存在 |
 
+### 2.8 项目
+
+业务规则见 [设计 23](../设计/23-项目.md)。写操作记 `audit_logs`，`target_type=project` 或 `project_task`。Viewer 写接口 403；私有项目对非创建者 404。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/workspaces/:id/projects` | `?archived=1` 看归档；默认不含归档。带回健康度与本周节奏 |
+| POST | `/api/v1/workspaces/:id/projects` | 建项目；未归档上限 200 |
+| GET | `/api/v1/workspaces/:id/projects/running` | 当前用户正在跑的一只计时 |
+| GET | `/api/v1/projects/:id` | 详情：任务树、里程碑、脉搏、正在跑的表 |
+| PATCH | `/api/v1/projects/:id` | 改标题/状态/色/期/可见性。改可见性或归档走 archive ACL |
+| POST | `/api/v1/projects/:id/archive` | 归档；列表默认不再出现，详情只读 |
+| POST | `/api/v1/projects/:id/unarchive` | 拉回，落成 `done` |
+| POST | `/api/v1/projects/:id/tasks` | 建任务；可选挂笔记、一层子任务 |
+| PATCH | `/api/v1/project-tasks/:id` | 改字段；不回写笔记正文 |
+| POST | `/api/v1/project-tasks/:id/move` | `{ status, beforeId? }` 看板拖拽 |
+| POST | `/api/v1/project-tasks/:id/reschedule` | `{ startAt, dueAt }` 甘特改期 |
+| DELETE | `/api/v1/project-tasks/:id` | 连子任务和工时一起删 |
+| POST | `/api/v1/projects/:id/time/start` | 开表；同一人已有一只会先停 |
+| POST | `/api/v1/projects/:id/time/stop` | 停表才落 `seconds` |
+| GET/POST | `/api/v1/projects/:id/time` | 账本；POST 补录 |
+| POST | `/api/v1/projects/:id/milestones` | 建里程碑 |
+| PATCH/DELETE | `/api/v1/project-milestones/:id` | 改 / 删里程碑 |
+
 导出内容只含标题、时间与回本实例的 `URL`，**不含 `DESCRIPTION`**，任务导成 `VEVENT`（标题带 `☐` / `☑`）而不是 `VTODO`。
 订阅抓取每一跳都重新做 SSRF 校验（私有网段一律拒），条件请求带 `If-None-Match`，连续失败 5 次自动停用并通知创建者。
 

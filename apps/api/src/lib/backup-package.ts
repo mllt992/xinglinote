@@ -40,6 +40,10 @@ const workspacePackage = base.extend({
   calendarSubscriptions: rows,
   calendarTemplates: rows,
   calendarFeedTokens: rows,
+  projects: rows.default([]),
+  projectTasks: rows.default([]),
+  projectTimeEntries: rows.default([]),
+  projectMilestones: rows.default([]),
   attachmentFiles: z.array(z.object({
     attachmentId: uuid,
     bytes: z.number().int().nonnegative(),
@@ -166,6 +170,8 @@ export function validateWorkspaceGraph(snapshot: WorkspaceBackupPackage) {
   const postIds = idsOf(snapshot.posts, "posts");
   const postAssetIds = idsOf(snapshot.postAssets, "postAssets");
   const itemIds = idsOf(snapshot.calendarItems, "calendarItems");
+  const projectIds = idsOf(snapshot.projects, "projects");
+  const taskIds = idsOf(snapshot.projectTasks, "projectTasks");
   const shareIds = idsOf(snapshot.shares, "shares");
   const commentIds = idsOf(snapshot.comments, "comments");
 
@@ -227,6 +233,18 @@ export function validateWorkspaceGraph(snapshot: WorkspaceBackupPackage) {
   for (const item of snapshot.calendarSubscriptions) if (item.workspaceId !== wsId) throw new Error("calendarSubscriptions.workspaceId 与工作区不一致");
   for (const item of snapshot.calendarTemplates) if (item.workspaceId !== wsId) throw new Error("calendarTemplates.workspaceId 与工作区不一致");
   for (const item of snapshot.calendarFeedTokens) if (item.workspaceId !== wsId) throw new Error("calendarFeedTokens.workspaceId 与工作区不一致");
+  for (const item of snapshot.projects) if (item.workspaceId !== wsId) throw new Error("projects.workspaceId 与工作区不一致");
+  for (const item of snapshot.projectTasks) {
+    if (item.workspaceId !== wsId) throw new Error("projectTasks.workspaceId 与工作区不一致");
+    assertRef(item.projectId, projectIds, "projectTasks.projectId");
+    assertRef(item.parentId, taskIds, "projectTasks.parentId", true);
+    assertRef(item.sourceNoteId, noteIds, "projectTasks.sourceNoteId", true);
+  }
+  for (const item of snapshot.projectTimeEntries) {
+    assertRef(item.projectId, projectIds, "projectTimeEntries.projectId");
+    assertRef(item.taskId, taskIds, "projectTimeEntries.taskId");
+  }
+  for (const item of snapshot.projectMilestones) assertRef(item.projectId, projectIds, "projectMilestones.projectId");
 
   const files = new Map(snapshot.attachmentFiles.map(file => [file.attachmentId, file]));
   for (const a of snapshot.attachments) {

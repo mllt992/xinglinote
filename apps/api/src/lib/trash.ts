@@ -4,7 +4,7 @@ import { and,eq,inArray,isNull,or } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import {
   aiChunks,attachments,calendarItems,calendarReminders,comments,corrections,folders,links,
-  noteFavorites,notebooks,notes,noteVersions,noteVisits,posts,
+  noteFavorites,notebooks,notes,noteVersions,noteVisits,posts,projectMilestones,projectTasks,projectTimeEntries,projects,
 } from "../db/schema.ts";
 import { env } from "../env.ts";
 import { releaseStoredFile } from "./blobs.ts";
@@ -45,6 +45,7 @@ export async function purgeNotes(ids:string[]){
         await tx.delete(calendarItems).where(eq(calendarItems.sourceNoteId,id));
       }
       await tx.update(posts).set({noteId:null}).where(eq(posts.noteId,id));
+      await tx.update(projectTasks).set({sourceNoteId:null}).where(eq(projectTasks.sourceNoteId,id));
       await tx.delete(notes).where(eq(notes.id,id));
     });
   }
@@ -55,6 +56,17 @@ export async function purgeFolder(folderId:string){
   await purgeNotes(doomed.map(n=>n.id));
   await db.delete(folders).where(inArray(folders.id,ids));
 }
+/** 工作区销毁 / 替换恢复前先卸项目，否则外键会卡住 workspaces 那一行。 */
+export async function purgeWorkspaceProjects(workspaceId:string, tx: Pick<typeof db,"select"|"delete"> = db){
+  const rows=await tx.select({id:projects.id}).from(projects).where(eq(projects.workspaceId,workspaceId));
+  if(!rows.length)return;
+  const ids=rows.map(r=>r.id);
+  await tx.delete(projectTimeEntries).where(inArray(projectTimeEntries.projectId,ids));
+  await tx.delete(projectMilestones).where(inArray(projectMilestones.projectId,ids));
+  await tx.delete(projectTasks).where(eq(projectTasks.workspaceId,workspaceId));
+  await tx.delete(projects).where(eq(projects.workspaceId,workspaceId));
+}
+
 export async function purgeNotebook(notebookId:string){
   const doomed=await db.select({id:notes.id}).from(notes).where(eq(notes.notebookId,notebookId));
   await purgeNotes(doomed.map(n=>n.id));
