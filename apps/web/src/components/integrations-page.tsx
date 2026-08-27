@@ -1,10 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import * as Tabs from "@radix-ui/react-tabs";
-import { Bot, Pencil, Trash2 } from "lucide-react";
+import {
+  Activity, AlertTriangle, Bot, Check, CheckCircle2, CircleSlash2, Clock3, Database, FileText,
+  KeyRound, Layers3, LoaderCircle, Pencil, Play, Plus, RefreshCw, Search, Server, Sparkles, Trash2, X,
+} from "lucide-react";
 import { api } from "../api";
+import { cn } from "../lib/utils";
 import { McpPanel } from "./mcp-panel";
-import { EmptyState, Field, Row, SectionCard, SettingsShell } from "./settings-shell";
+import { EmptyState, Field, SettingsShell } from "./settings-shell";
+import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { useConfirm } from "./ui/confirm";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
@@ -12,216 +17,98 @@ import { FormError } from "./ui/form-error";
 import { Input } from "./ui/input";
 import { useToast } from "./ui/toast";
 
-type Provider = {
-  id: string; baseUrl: string; chatModel: string; embeddingModel?: string | null; embeddingBaseUrl?: string | null;
-  autoEmbed?: boolean; keySuffix: string; embeddingKeySuffix?: string; workspaceIds: string[]; canEditScope: boolean; canManage: boolean;
-};
-type Ws = { id: string; name: string; role: string };
+type Provider = { id:string;name:string;kind:string;baseUrl:string;chatModel:string;chatModels:string[];embeddingModel?:string|null;embeddingBaseUrl?:string|null;autoEmbed?:boolean;enabled:boolean;keySuffix:string;embeddingKeySuffix?:string;workspaceIds:string[];canEditScope:boolean;canManage:boolean };
+type Ws = { id:string;name:string;role:string };
+type Draft = { name:string;baseUrl:string;apiKey:string;chatModels:string[];chatModel:string;embeddingEnabled:boolean;separateEmbedding:boolean;embeddingModel:string;embeddingBaseUrl:string;embeddingApiKey:string;autoEmbed:boolean;workspaceIds:string[];clearApiKey:boolean;clearEmbeddingApiKey:boolean };
+type IndexState = "indexed"|"pending"|"running"|"stale"|"missing"|"failed"|"excluded";
+type IndexNote = { id:string;title:string;notebookTitle:string;updatedAt:string;indexedAt:string|null;chunks:number;runAfter:string|null;lastError:string|null;aiIndex:boolean;status:IndexState };
+type IndexData = { summary:Record<IndexState,number>&{total:number;eligible:number};notes:IndexNote[];total:number;provider:{configured:boolean;model:string|null;autoEmbed:boolean} };
 
-const DEFAULTS = { baseUrl: "https://api.openai.com/v1", chatModel: "gpt-4o-mini", apiKey: "", embeddingModel: "", embeddingBaseUrl: "", embeddingApiKey: "", autoEmbed: true };
+const DEFAULTS:Omit<Draft,"workspaceIds">={name:"OpenAI 兼容渠道",baseUrl:"https://api.openai.com/v1",apiKey:"",chatModels:[],chatModel:"",embeddingEnabled:false,separateEmbedding:false,embeddingModel:"",embeddingBaseUrl:"",embeddingApiKey:"",autoEmbed:true,clearApiKey:false,clearEmbeddingApiKey:false};
+const looksLikeEmbedding=(id:string)=>/embed|rerank|bge|e5-|gte-|jina|colbert/i.test(id);
+const uniq=(values:string[])=>[...new Set(values.map(x=>x.trim()).filter(Boolean))];
 
-/**
- * AI 与 MCP。原来挂在全局的 /settings/integrations?workspace=xxx 下，页面上却没有一处告诉你
- * 「正在给哪个库配模型」，query 掉了就是个空表单；现在归到 /w/:wsId/settings/integrations，
- * 工作区从路由来，面包屑和左栏也就都对得上了。
- */
-export function IntegrationsPage() {
-  const { wsId = "" } = useParams();
-  const toast = useToast();
-  const askConfirm = useConfirm();
-  const [providers, setProviders] = useState<Provider[]>([]);
-  const [spaces, setSpaces] = useState<Ws[]>([]);
-  const [draft, setDraft] = useState({ ...DEFAULTS, workspaceIds: [] as string[] });
-  const [saving, setSaving] = useState(false);
-  const [formErr, setFormErr] = useState("");
-  const [aiErr, setAiErr] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [scopeEdit, setScopeEdit] = useState<Provider | null>(null);
-  const [scopeIds, setScopeIds] = useState<string[]>([]);
-  const [scopeBusy, setScopeBusy] = useState(false);
-  const [scopeErr, setScopeErr] = useState("");
-  const [embedBusy, setEmbedBusy] = useState<string | null>(null);
+export function IntegrationsPage(){
+  const {wsId=""}=useParams(),toast=useToast(),askConfirm=useConfirm();
+  const [providers,setProviders]=useState<Provider[]>([]),[spaces,setSpaces]=useState<Ws[]>([]),[loading,setLoading]=useState(true),[aiErr,setAiErr]=useState("");
+  const [pageTab,setPageTab]=useState("ai");
+  const [editor,setEditor]=useState<Provider|"new"|null>(null),[draft,setDraft]=useState<Draft>({...DEFAULTS,workspaceIds:wsId?[wsId]:[]});
+  const [catalog,setCatalog]=useState<string[]>([]),[catalogSearch,setCatalogSearch]=useState(""),[manualModel,setManualModel]=useState("");
+  const [discovering,setDiscovering]=useState<"chat"|"embedding"|null>(null),[connectionOk,setConnectionOk]=useState(false),[saving,setSaving]=useState(false),[formErr,setFormErr]=useState("");
 
-  /** 新存的提供商要拿服务端给的 id 和 Key 后四位，只能回表；工作区列表是给 MCP 面板用的，不跟着动。 */
-  const loadProviders = useCallback(async () => {
-    setProviders((await api<{ providers: Provider[] }>(`/api/v1/workspaces/${wsId}/ai/provider`)).providers);
-    setAiErr("");
-  }, [wsId]);
-  const load = useCallback(async () => {
-    // 两路互不拖死：模型配置挂了不该把 MCP 钥匙一起藏起来。
-    const [p, w] = await Promise.allSettled([
-      api<{ providers: Provider[] }>(`/api/v1/workspaces/${wsId}/ai/provider`),
-      api<{ workspaces: Ws[] }>("/api/v1/workspaces"),
-    ]);
-    if (p.status === "fulfilled") { setProviders(p.value.providers); setAiErr(""); }
-    else { setProviders([]); setAiErr((p.reason as Error).message); }
-    setSpaces(w.status === "fulfilled" ? w.value.workspaces : []);
-  }, [wsId]);
-  const reload = useCallback(() => {
-    setLoading(true);
-    load().finally(() => setLoading(false));
-  }, [load]);
-  useEffect(() => { reload(); }, [reload]);
-  useEffect(() => { setDraft(d => ({ ...d, workspaceIds: wsId ? [wsId] : [] })); }, [wsId]);
+  const loadProviders=useCallback(async()=>{const data=await api<{providers:Provider[]}>(`/api/v1/workspaces/${wsId}/ai/provider`);setProviders(data.providers);setAiErr("");},[wsId]);
+  const reload=useCallback(async()=>{setLoading(true);const[p,w]=await Promise.allSettled([api<{providers:Provider[]}>(`/api/v1/workspaces/${wsId}/ai/provider`),api<{workspaces:Ws[]}>("/api/v1/workspaces")]);if(p.status==="fulfilled"){setProviders(p.value.providers);setAiErr("");}else{setProviders([]);setAiErr((p.reason as Error).message);}setSpaces(w.status==="fulfilled"?w.value.workspaces:[]);setLoading(false);},[wsId]);
+  useEffect(()=>{void reload();},[reload]);
+  const manageableSpaces=spaces.filter(w=>w.role==="owner"||w.role==="admin"),canConfigureCurrent=manageableSpaces.some(w=>w.id===wsId);
+  const workspaceName=(id:string)=>spaces.find(w=>w.id===id)?.name??"其他工作区";
+  const activeProviders=providers.filter(p=>p.enabled).length,modelCount=providers.reduce((n,p)=>n+(p.chatModels?.length||1),0);
 
-  const manageableSpaces = spaces.filter(w => w.role === "owner" || w.role === "admin");
-  const canConfigureCurrent = manageableSpaces.some(w => w.id === wsId);
-  const workspaceName = (id: string) => spaces.find(w => w.id === id)?.name ?? "其他工作区";
-  const toggleWorkspace = (id: string) => setDraft(d => ({
-    ...d,
-    workspaceIds: d.workspaceIds.includes(id) ? d.workspaceIds.filter(x => x !== id) : [...d.workspaceIds, id],
-  }));
-  const openScopeEdit = (p: Provider) => { setScopeEdit(p); setScopeIds(p.workspaceIds); setScopeErr(""); };
-  const toggleScope = (id: string) => setScopeIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]);
-
-  async function saveScope() {
-    if (!scopeEdit || !scopeIds.length) return setScopeErr("至少选择一个工作区。");
-    setScopeBusy(true); setScopeErr("");
-    try {
-      await api(`/api/v1/ai/providers/${scopeEdit.id}`, { method: "PATCH", body: JSON.stringify({ workspaceIds: scopeIds }) });
-      toast.success("适用范围已更新", `现在供 ${scopeIds.length} 个工作区共用，原 Key 不变。`);
-      setScopeEdit(null);
-      void loadProviders();
-    } catch (e) { setScopeErr((e as Error).message); }
-    finally { setScopeBusy(false); }
+  function resetEditor(){setEditor(null);setFormErr("");setCatalog([]);setCatalogSearch("");setManualModel("");setConnectionOk(false);}
+  function openNew(){setDraft({...DEFAULTS,workspaceIds:wsId?[wsId]:[]});setCatalog([]);setCatalogSearch("");setManualModel("");setConnectionOk(false);setFormErr("");setEditor("new");}
+  function editDraft(p:Provider){const models=uniq(p.chatModels?.length?p.chatModels:[p.chatModel]);setDraft({name:p.name||"OpenAI 兼容渠道",baseUrl:p.baseUrl,apiKey:"",chatModels:models,chatModel:p.chatModel,embeddingEnabled:!!p.embeddingModel,separateEmbedding:!!p.embeddingBaseUrl,embeddingModel:p.embeddingModel??"",embeddingBaseUrl:p.embeddingBaseUrl??"",embeddingApiKey:"",autoEmbed:p.autoEmbed!==false,workspaceIds:p.workspaceIds,clearApiKey:false,clearEmbeddingApiKey:false});setCatalog(models);setCatalogSearch("");setManualModel("");setConnectionOk(false);setFormErr("");setEditor(p);}
+  async function discover(target:"chat"|"embedding"){
+    const baseUrl=target==="embedding"&&draft.separateEmbedding?draft.embeddingBaseUrl:draft.baseUrl,typedKey=target==="embedding"&&draft.separateEmbedding?draft.embeddingApiKey:draft.apiKey;
+    if(!baseUrl.trim())return setFormErr("请先填写要连接的 Base URL。");setDiscovering(target);setFormErr("");setConnectionOk(false);
+    try{const current=editor!=="new"?editor:null;const body={baseUrl:baseUrl.trim(),target,...(current?{providerId:current.id}:{}),...(typedKey?{apiKey:typedKey}:current?{}:{apiKey:""})};const data=await api<{models:string[]}>("/api/v1/ai/providers/discover-models",{method:"POST",body:JSON.stringify(body)});if(!data.models.length)throw new Error("连接成功，但接口没有返回模型；你仍可以手动添加模型 ID。");setConnectionOk(true);setCatalog(old=>uniq([...old,...data.models]));if(target==="chat"&&!draft.chatModels.length){const first=data.models.find(x=>!looksLikeEmbedding(x))??data.models[0]!;setDraft(d=>({...d,chatModels:[first],chatModel:first}));}else if(target==="embedding"&&!draft.embeddingModel){const first=data.models.find(looksLikeEmbedding)??data.models[0]!;setDraft(d=>({...d,embeddingModel:first}));}toast.success("连接成功",`已读取 ${data.models.length} 个模型。`);}catch(e){setFormErr((e as Error).message);}finally{setDiscovering(null);}
   }
-
-  async function save() {
-    setFormErr("");
-    if (!draft.baseUrl.trim() || !draft.chatModel.trim()) return setFormErr("对话的 Base URL 和模型名都不能留空。");
-    if (draft.embeddingBaseUrl.trim() && !draft.embeddingModel.trim()) return setFormErr("单独配了向量地址，就要填 Embedding 模型名。");
-    if (!draft.workspaceIds.length) return setFormErr("至少选择一个工作区。");
-    if (!draft.workspaceIds.includes(wsId)) return setFormErr("当前工作区必须保留在适用范围内。");
-    if (!canConfigureCurrent) return setFormErr("只有 Owner 或 Admin 能配置当前工作区的 AI。");
-    setSaving(true);
-    try {
-      await api(`/api/v1/workspaces/${wsId}/ai/provider`, { method: "POST", body: JSON.stringify({
-        baseUrl: draft.baseUrl.trim(),
-        chatModel: draft.chatModel.trim(),
-        apiKey: draft.apiKey,
-        embeddingModel: draft.embeddingModel.trim() || undefined,
-        embeddingBaseUrl: draft.embeddingBaseUrl.trim() || undefined,
-        embeddingApiKey: draft.embeddingApiKey.trim() || undefined,
-        autoEmbed: draft.autoEmbed,
-        workspaceIds: draft.workspaceIds,
-        personal: false,
-      }) });
-      setDraft({ ...draft, apiKey: "", embeddingApiKey: "" });
-      toast.success("已保存", draft.embeddingModel.trim()
-        ? (draft.autoEmbed
-          ? `${draft.workspaceIds.length} 个工作区会立刻排队重建向量索引。之后改笔记要等五分钟没再动才重嵌。`
-          : "已保存，但自动向量化是关的。模型起来后再打开，才会排队。")
-        : `${draft.workspaceIds.length} 个工作区的 AI 写作和问答会走它。没填 Embedding 模型，语义检索不会建索引。`);
-      void loadProviders();
-    } catch (e) { setFormErr((e as Error).message); }
-    finally { setSaving(false); }
+  function toggleModel(id:string){setDraft(d=>{const selected=d.chatModels.includes(id)?d.chatModels.filter(x=>x!==id):[...d.chatModels,id];return{...d,chatModels:selected,chatModel:selected.includes(d.chatModel)?d.chatModel:selected[0]??""};});}
+  function addManualModel(){const id=manualModel.trim();if(!id)return;setCatalog(c=>uniq([...c,id]));setDraft(d=>({...d,chatModels:uniq([...d.chatModels,id]),chatModel:d.chatModel||id}));setManualModel("");}
+  async function save(){
+    if(!editor)return;setFormErr("");if(!draft.name.trim())return setFormErr("请给渠道起一个容易识别的名字。");if(!draft.baseUrl.trim())return setFormErr("Base URL 不能为空。");if(!draft.chatModels.length||!draft.chatModel)return setFormErr("至少添加一个对话模型，并选择默认模型。");if(draft.embeddingEnabled&&!draft.embeddingModel.trim())return setFormErr("已开启语义检索，请选择或填写 Embedding 模型。");if(draft.embeddingEnabled&&draft.separateEmbedding&&!draft.embeddingBaseUrl.trim())return setFormErr("请填写独立 Embedding 服务的 Base URL。");if(!draft.workspaceIds.length||!draft.workspaceIds.includes(wsId))return setFormErr("当前工作区必须保留在适用范围内。");if(!canConfigureCurrent)return setFormErr("只有 Owner 或 Admin 能配置当前工作区的 AI。");setSaving(true);
+    try{const payload={name:draft.name.trim(),baseUrl:draft.baseUrl.trim(),chatModels:uniq(draft.chatModels),chatModel:draft.chatModel,embeddingModel:draft.embeddingEnabled?draft.embeddingModel.trim():null,embeddingBaseUrl:draft.embeddingEnabled&&draft.separateEmbedding?draft.embeddingBaseUrl.trim():null,autoEmbed:draft.embeddingEnabled&&draft.autoEmbed,workspaceIds:draft.workspaceIds,enabled:editor==="new"?true:editor.enabled,...(draft.apiKey?{apiKey:draft.apiKey}:{}),...(draft.embeddingApiKey?{embeddingApiKey:draft.embeddingApiKey}:{}),clearApiKey:draft.clearApiKey,clearEmbeddingApiKey:draft.clearEmbeddingApiKey||!draft.embeddingEnabled||!draft.separateEmbedding};if(editor==="new")await api(`/api/v1/workspaces/${wsId}/ai/provider`,{method:"POST",body:JSON.stringify(payload)});else await api(`/api/v1/ai/providers/${editor.id}`,{method:"PATCH",body:JSON.stringify(payload)});toast.success(editor==="new"?"渠道已添加":"渠道已更新",`${draft.chatModels.length} 个对话模型已就绪${draft.embeddingEnabled?"，语义检索也已配置":""}。`);resetEditor();await loadProviders();}catch(e){setFormErr((e as Error).message);}finally{setSaving(false);}
   }
+  async function toggleEnabled(p:Provider){try{await api(`/api/v1/ai/providers/${p.id}`,{method:"PATCH",body:JSON.stringify({enabled:!p.enabled})});setProviders(list=>list.map(x=>x.id===p.id?{...x,enabled:!x.enabled}:x));toast.success(p.enabled?"渠道已停用":"渠道已启用",p.enabled?"配置和模型都已保留。":"工作区现在可以继续使用这个渠道。");}catch(e){toast.error("操作失败",(e as Error).message);}}
+  async function syncProvider(p:Provider){editDraft(p);setDiscovering("chat");try{const data=await api<{models:string[]}>("/api/v1/ai/providers/discover-models",{method:"POST",body:JSON.stringify({baseUrl:p.baseUrl,providerId:p.id,target:"chat"})});setCatalog(uniq([...(p.chatModels||[]),...data.models]));setConnectionOk(true);toast.success("模型列表已刷新",`发现 ${data.models.length} 个模型，可按需勾选后保存。`);}catch(e){setFormErr((e as Error).message);}finally{setDiscovering(null);}}
+  async function remove(p:Provider){const yes=await askConfirm({title:`移除“${p.name}”？`,description:`渠道下的 ${p.chatModels?.length||1} 个模型和已保存凭据会一起移除。${p.workspaceIds.length>1?`它当前由 ${p.workspaceIds.length} 个工作区共用。`:""}`,confirmText:"移除渠道",destructive:true});if(!yes)return;try{await api(`/api/v1/ai/providers/${p.id}`,{method:"DELETE"});setProviders(list=>list.filter(x=>x.id!==p.id));toast.success("渠道已移除");}catch(e){toast.error("移除失败",(e as Error).message);}}
 
-  async function toggleAutoEmbed(p: Provider, autoEmbed: boolean) {
-    setEmbedBusy(p.id);
-    try {
-      await api(`/api/v1/ai/providers/${p.id}`, { method: "PATCH", body: JSON.stringify({ autoEmbed }) });
-      setProviders(list => list.map(x => x.id === p.id ? { ...x, autoEmbed } : x));
-      toast.success(autoEmbed ? "已打开自动向量化" : "已关闭自动向量化", autoEmbed ? "绑定工作区里 AI 可读的笔记会立刻排队。" : "模型没启动时先关着，队列不会去打挂掉的接口。");
-    } catch (e) { toast.error("切换失败", (e as Error).message); }
-    finally { setEmbedBusy(null); }
-  }
-
-  async function remove(p: Provider) {
-    const names = p.workspaceIds.map(workspaceName).join("、");
-    const yes = await askConfirm({
-      title: `移除 ${p.chatModel}？`,
-      description: `这会从${p.workspaceIds.length > 1 ? ` ${p.workspaceIds.length} 个工作区（${names}）` : ` ${names}`}移除这份共享配置。没有其他提供商的工作区将暂停 AI 写作、问答和索引。`,
-      confirmText: "移除", destructive: true,
-    });
-    if (!yes) return;
-    try { await api(`/api/v1/ai/providers/${p.id}`, { method: "DELETE" }); toast.success("已移除"); setProviders(list => list.filter(x => x.id !== p.id)); }
-    catch (e) { toast.error("移除失败", (e as Error).message); }
-  }
-
-  return <SettingsShell wsId={wsId} current="integrations" counts={{ integrations: providers.length }} loading={loading}>
-    <Tabs.Root defaultValue="ai">
-      <Tabs.List className="mb-4 inline-flex rounded-lg bg-muted p-1">
-        {[["ai", "AI 提供商"], ["mcp", "MCP 钥匙"]].map(([v, label]) =>
-          <Tabs.Trigger key={v} value={v} className="rounded-md px-4 py-1.5 text-sm text-muted-foreground transition-colors data-[state=active]:bg-background data-[state=active]:font-medium data-[state=active]:text-foreground data-[state=active]:shadow-sm">{label}</Tabs.Trigger>)}
-      </Tabs.List>
-
-      <Tabs.Content value="ai" className="space-y-4 outline-none">
-        {aiErr && <FormError>{aiErr}</FormError>}
-        <SectionCard title="接入模型" desc="对话和向量都可以是 OpenAI 兼容接口。向量可以另填地址。配上后会给已打开 AI 可读的笔记建索引，正文、PDF、图片和视频都会进；之后改一篇要等五分钟没再动才重嵌。">
-          <div className="grid gap-4 p-4">
-            <Field label="适用工作区" hint="一份配置可以复用到多个工作区；这里只列出你有管理权限的工作区。">
-              <div className="max-h-44 overflow-auto rounded-lg border p-1">
-                {manageableSpaces.length === 0
-                  ? <p className="p-3 text-xs text-muted-foreground">你没有可配置 AI 的工作区。</p>
-                  : manageableSpaces.map(w => <label key={w.id} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-sm hover:bg-muted">
-                    <input type="checkbox" className="size-4 accent-current" checked={draft.workspaceIds.includes(w.id)} onChange={() => toggleWorkspace(w.id)} />
-                    <span className="truncate">{w.name}{w.id === wsId ? <span className="ml-1 text-[11px] text-muted-foreground">· 当前</span> : null}</span>
-                  </label>)}
-              </div>
-            </Field>
-            <Field label="对话 Base URL" htmlFor="ai-base" hint="要带到 /v1 这一层，末尾不用加斜杠。">
-              <Input id="ai-base" value={draft.baseUrl} onChange={e => setDraft({ ...draft, baseUrl: e.target.value })} placeholder={DEFAULTS.baseUrl} />
-            </Field>
-            <Field label="对话模型" htmlFor="ai-model" hint="AI 写作、问答和摘要都用它。">
-              <Input id="ai-model" value={draft.chatModel} onChange={e => setDraft({ ...draft, chatModel: e.target.value })} placeholder={DEFAULTS.chatModel} />
-            </Field>
-            <Field label="对话 API Key" htmlFor="ai-key" hint="没有 Key 的兼容接口可以留空。保存后前端只看得到后四位。">
-              <Input id="ai-key" type="password" autoComplete="off" value={draft.apiKey} onChange={e => setDraft({ ...draft, apiKey: e.target.value })} placeholder="sk-…" />
-            </Field>
-            <Field label="Embedding 模型" htmlFor="ai-embed-model" hint="语义检索和后台向量化用它。多模态接口会把图/视频一并送进去；纯文本模型会退回文件名。不填就不建索引。">
-              <Input id="ai-embed-model" value={draft.embeddingModel} onChange={e => setDraft({ ...draft, embeddingModel: e.target.value })} placeholder="text-embedding-3-small" />
-            </Field>
-            <Field label="Embedding Base URL" htmlFor="ai-embed-base" hint="留空则跟对话同一地址。独立向量服务填到 /v1 这一层。">
-              <Input id="ai-embed-base" value={draft.embeddingBaseUrl} onChange={e => setDraft({ ...draft, embeddingBaseUrl: e.target.value })} placeholder="https://embed.example.com/v1" />
-            </Field>
-            <Field label="Embedding API Key" htmlFor="ai-embed-key" hint="只在单独填了向量地址时使用；没有就留空。跟对话共用地址时走上面那把 Key。">
-              <Input id="ai-embed-key" type="password" autoComplete="off" value={draft.embeddingApiKey} onChange={e => setDraft({ ...draft, embeddingApiKey: e.target.value })} placeholder="可选" />
-            </Field>
-            <label className="flex cursor-pointer items-start gap-2.5 text-sm">
-              <input id="ai-auto-embed" type="checkbox" className="mt-0.5 size-4 accent-current" checked={draft.autoEmbed} onChange={e => setDraft({ ...draft, autoEmbed: e.target.checked })} />
-              <span>
-                <span className="font-medium">自动向量化</span>
-                <span className="mt-0.5 block text-xs text-muted-foreground">保存笔记、传附件时后台打向量。模型没启动就先关掉，起来后再打开，避免队列空转。</span>
-              </span>
-            </label>
-            <FormError>{formErr}</FormError>
-            <Button className="w-fit" disabled={saving || !canConfigureCurrent || !draft.workspaceIds.length || !draft.workspaceIds.includes(wsId)} onClick={() => void save()}>{saving ? "保存中…" : `保存并应用到 ${draft.workspaceIds.length || 0} 个工作区`}</Button>
-          </div>
-        </SectionCard>
-
-        <SectionCard title="已配置的提供商" desc={providers.length ? `${providers.length} 个，按最近添加排序` : undefined}>
-          {providers.length === 0
-            ? <EmptyState icon={<Bot className="size-5" />} title="还没接模型" text="配置之前，AI 写作、问答和自动索引都是关着的。" />
-            : providers.map((p, i) => <Row key={p.id} first={i === 0} icon={<Bot className="size-4" />}
-              title={p.chatModel} desc={`${p.baseUrl} · Key ${p.keySuffix ? `••••${p.keySuffix}` : "无"} · 向量 ${p.embeddingModel || "未配"}${p.embeddingBaseUrl ? ` @ ${p.embeddingBaseUrl}` : ""} · ${p.autoEmbed === false ? "自动向量化关" : "自动向量化开"} · ${p.workspaceIds.map(workspaceName).join("、")}`}
-              actions={p.canEditScope || p.canManage ? <>{p.canManage && p.embeddingModel ? <Button variant="ghost" size="sm" disabled={embedBusy === p.id} onClick={() => void toggleAutoEmbed(p, p.autoEmbed === false)}>{p.autoEmbed === false ? "打开自动向量化" : "关闭自动向量化"}</Button> : null}{p.canEditScope && <Button variant="ghost" size="sm" onClick={() => openScopeEdit(p)}><Pencil />调整范围</Button>}{p.canManage && <Button variant="ghost" size="icon" className="text-destructive" aria-label={`移除 ${p.chatModel}`} onClick={() => void remove(p)}><Trash2 /></Button>}</> : undefined} />)}
-        </SectionCard>
+  return <SettingsShell wsId={wsId} current="integrations" counts={{integrations:providers.length}} loading={loading} title="AI 与自动化" subtitle="按渠道管理模型与凭据，并清楚掌握每一篇笔记的向量化状态。">
+    <Tabs.Root value={pageTab} onValueChange={setPageTab}>
+      <Tabs.List className="mb-5 inline-flex max-w-full overflow-x-auto rounded-xl border border-border bg-background p-1 shadow-sm">{[["ai","模型渠道"],["index","量化队列"],["mcp","MCP 钥匙"]].map(([v,label])=><Tabs.Trigger key={v} value={v} className="shrink-0 rounded-lg px-4 py-2 text-sm text-muted-foreground outline-none transition data-[state=active]:bg-foreground data-[state=active]:text-background data-[state=active]:shadow-sm focus-visible:ring-2 focus-visible:ring-ring/40">{label}</Tabs.Trigger>)}</Tabs.List>
+      <Tabs.Content value="ai" className="space-y-5 outline-none">
+        {aiErr&&<FormError>{aiErr}</FormError>}
+        <section className="relative overflow-hidden rounded-2xl border border-border bg-background p-5 shadow-sm sm:p-6"><div className="pointer-events-none absolute -right-16 -top-20 size-64 rounded-full bg-primary/10 blur-3xl"/><div className="relative flex flex-col gap-5 sm:flex-row sm:items-center"><div className="grid size-12 shrink-0 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-sm"><Sparkles className="size-5"/></div><div className="min-w-0 flex-1"><h2 className="text-lg font-semibold tracking-[-0.025em]">模型和凭据，各归其位</h2><p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">先添加服务渠道，再从接口自动读取模型。对话模型可多选并指定默认项；Embedding 是独立能力，需要时再打开。</p></div><Button className="h-10 px-4" disabled={!canConfigureCurrent} onClick={openNew}><Plus/>添加渠道</Button></div><div className="relative mt-5 grid grid-cols-3 gap-2 border-t border-border pt-4 sm:max-w-lg"><Stat value={providers.length} label="渠道"/><Stat value={modelCount} label="对话模型"/><Stat value={activeProviders} label="正在使用"/></div></section>
+        {providers.length===0?<section className="rounded-2xl border border-dashed border-border bg-background"><EmptyState icon={<Server className="size-5"/>} title="还没有模型渠道" text="添加一次地址和密钥，就能自动发现并管理这个渠道下的多个模型。" action={<Button onClick={openNew}><Plus/>添加第一个渠道</Button>}/></section>:<div className="grid gap-4 xl:grid-cols-2">{providers.map(p=><ProviderCard key={p.id} provider={p} workspaceNames={p.workspaceIds.map(workspaceName)} onEdit={()=>editDraft(p)} onSync={()=>void syncProvider(p)} onIndex={()=>setPageTab("index")} onToggle={()=>void toggleEnabled(p)} onRemove={()=>void remove(p)}/>)}<button type="button" onClick={openNew} className="group min-h-48 rounded-2xl border border-dashed border-border bg-background p-5 text-left text-muted-foreground outline-none transition hover:border-primary/40 hover:bg-primary/[0.025] hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40"><span className="grid size-10 place-items-center rounded-xl border border-border bg-muted transition group-hover:border-primary/30 group-hover:bg-primary/10 group-hover:text-primary"><Plus className="size-4"/></span><span className="mt-8 block text-sm font-medium">添加另一个渠道</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">例如自托管模型网关、企业服务或另一组配额独立的 API。</span></button></div>}
       </Tabs.Content>
-
-      <Tabs.Content value="mcp" className="outline-none">
-        <McpPanel workspaces={spaces} defaultWorkspaceId={wsId || undefined} />
-      </Tabs.Content>
+      <Tabs.Content value="index" className="outline-none"><VectorIndexDashboard wsId={wsId} canManage={canConfigureCurrent}/></Tabs.Content>
+      <Tabs.Content value="mcp" className="outline-none"><McpPanel workspaces={spaces} defaultWorkspaceId={wsId||undefined}/></Tabs.Content>
     </Tabs.Root>
 
-    <Dialog open={scopeEdit !== null} onOpenChange={open => { if (!open) setScopeEdit(null); }}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>调整 {scopeEdit?.chatModel} 的适用范围</DialogTitle>
-          <DialogDescription>只改工作区绑定，模型参数和已保存的 API Key 都不会改变。</DialogDescription>
-        </DialogHeader>
-        <div className="max-h-64 overflow-auto rounded-lg border p-1">
-          {manageableSpaces.map(w => <label key={w.id} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-sm hover:bg-muted">
-            <input type="checkbox" className="size-4 accent-current" checked={scopeIds.includes(w.id)} onChange={() => toggleScope(w.id)} />
-            <span className="truncate">{w.name}</span>
-          </label>)}
-        </div>
-        <FormError>{scopeErr}</FormError>
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => setScopeEdit(null)}>取消</Button>
-          <Button disabled={scopeBusy || !scopeIds.length} onClick={() => void saveScope()}>{scopeBusy ? "保存中…" : "保存范围"}</Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+    <Dialog open={editor!==null} onOpenChange={open=>{if(!open)resetEditor();}}><DialogContent className="max-h-[calc(100vh-2rem)] max-w-3xl gap-0 overflow-hidden p-0"><DialogHeader className="border-b border-border px-5 py-4 pr-12 sm:px-6"><DialogTitle>{editor==="new"?"添加模型渠道":`编辑 ${editor?.name}`}</DialogTitle><DialogDescription>凭据属于渠道；读取或手动添加这个渠道支持的模型。</DialogDescription></DialogHeader><div className="overflow-y-auto px-5 py-5 sm:px-6"><div className="space-y-6">
+      <EditorSection number="1" title="连接渠道" desc="只在这里维护地址和密钥。保存后密钥不会再次明文显示。"><div className="grid gap-4"><Field label="渠道名称" htmlFor="provider-name"><Input id="provider-name" value={draft.name} onChange={e=>setDraft(d=>({...d,name:e.target.value}))} placeholder="例如：团队 OpenAI"/></Field><Field label="Base URL" htmlFor="provider-url" hint="填写到 /v1 这一层；系统会自动请求 /models。"><Input id="provider-url" value={draft.baseUrl} onChange={e=>{setDraft(d=>({...d,baseUrl:e.target.value}));setConnectionOk(false);}} placeholder="https://api.openai.com/v1"/></Field><Field label={editor==="new"?"API Key":`API Key${editor?.keySuffix?` · 已保存 ••••${editor.keySuffix}`:" · 当前无密钥"}`} htmlFor="provider-key" hint={editor==="new"?"无鉴权的本地服务可以留空。":"留空表示沿用已保存密钥；输入新值才会替换。"}><div className="flex flex-col gap-2 sm:flex-row"><Input id="provider-key" type="password" autoComplete="new-password" value={draft.apiKey} onChange={e=>setDraft(d=>({...d,apiKey:e.target.value,clearApiKey:false}))} placeholder={editor==="new"?"sk-…":"不修改"}/><Button variant="outline" className="h-9" disabled={discovering!==null} onClick={()=>void discover("chat")}>{discovering==="chat"?<LoaderCircle className="animate-spin"/>:<RefreshCw/>}{connectionOk?"重新读取":"连接并读取模型"}</Button></div></Field>{editor!=="new"&&editor?.keySuffix&&<button type="button" className={cn("w-fit text-xs",draft.clearApiKey?"text-destructive":"text-muted-foreground hover:text-destructive")} onClick={()=>setDraft(d=>({...d,clearApiKey:!d.clearApiKey,apiKey:""}))}>{draft.clearApiKey?"保存后将移除密钥 · 点此撤销":"移除已保存密钥"}</button>}</div>{connectionOk&&<p className="mt-3 flex items-center gap-1.5 text-xs text-[var(--good)]"><CheckCircle2 className="size-3.5"/>连接正常，模型列表已更新</p>}</EditorSection>
+      <EditorSection number="2" title="选择对话模型" desc="可同时启用多个；知识问答和 AI 写作使用你指定的默认模型。"><ModelPicker catalog={catalog} selected={draft.chatModels} search={catalogSearch} setSearch={setCatalogSearch} onToggle={toggleModel}/><div className="mt-3 flex gap-2"><Input value={manualModel} onChange={e=>setManualModel(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();addManualModel();}}} placeholder="没有列出来？输入准确模型 ID"/><Button variant="outline" onClick={addManualModel} disabled={!manualModel.trim()}><Plus/>添加</Button></div>{draft.chatModels.length>0&&<div className="mt-4 grid gap-1.5"><label htmlFor="default-model" className="text-sm font-medium">默认模型</label><select id="default-model" value={draft.chatModel} onChange={e=>setDraft(d=>({...d,chatModel:e.target.value}))} className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm shadow-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/20">{draft.chatModels.map(m=><option key={m}>{m}</option>)}</select></div>}</EditorSection>
+      <EditorSection number="3" title="语义检索与向量化" desc="可选能力。不开启时，渠道仍可用于写作和普通问答。"><ToggleRow checked={draft.embeddingEnabled} onChange={checked=>setDraft(d=>({...d,embeddingEnabled:checked}))} title="启用 Embedding" text="为 AI 可读笔记建立向量索引，支持语义和混合检索。"/>{draft.embeddingEnabled&&<div className="mt-4 space-y-4 rounded-xl border border-border bg-muted/30 p-4"><ToggleRow checked={draft.separateEmbedding} onChange={checked=>setDraft(d=>({...d,separateEmbedding:checked}))} title="使用独立的 Embedding 服务" text={draft.separateEmbedding?"向量请求使用下面的地址和密钥。":"默认复用上面的渠道地址和 API Key，无需重复配置。"}/>{draft.separateEmbedding&&<><Field label="Embedding Base URL" htmlFor="embedding-url"><Input id="embedding-url" value={draft.embeddingBaseUrl} onChange={e=>setDraft(d=>({...d,embeddingBaseUrl:e.target.value}))} placeholder="https://embedding.example.com/v1"/></Field><Field label={editor!=="new"&&editor?.embeddingKeySuffix?`Embedding API Key · 已保存 ••••${editor.embeddingKeySuffix}`:"Embedding API Key"} htmlFor="embedding-key" hint={editor!=="new"?"留空表示不修改。":undefined}><div className="flex flex-col gap-2 sm:flex-row"><Input id="embedding-key" type="password" value={draft.embeddingApiKey} onChange={e=>setDraft(d=>({...d,embeddingApiKey:e.target.value,clearEmbeddingApiKey:false}))} placeholder={editor==="new"?"sk-…":"不修改"}/><Button variant="outline" disabled={discovering!==null} onClick={()=>void discover("embedding")}>{discovering==="embedding"?<LoaderCircle className="animate-spin"/>:<RefreshCw/>}读取模型</Button></div></Field></>}<Field label="Embedding 模型" htmlFor="embedding-model" hint="可从读取结果里选择，也可以直接输入准确模型 ID。"><Input id="embedding-model" list="embedding-models" value={draft.embeddingModel} onChange={e=>setDraft(d=>({...d,embeddingModel:e.target.value}))} placeholder="text-embedding-3-small"/><datalist id="embedding-models">{catalog.filter(looksLikeEmbedding).map(m=><option key={m} value={m}/>)}</datalist></Field><ToggleRow checked={draft.autoEmbed} onChange={checked=>setDraft(d=>({...d,autoEmbed:checked}))} title="自动更新索引" text="笔记和附件稳定五分钟后自动重建向量。"/></div>}</EditorSection>
+      <EditorSection number="4" title="适用范围" desc="一份渠道可以安全复用到多个由你管理的工作区。"><div className="grid gap-2 sm:grid-cols-2">{manageableSpaces.map(w=>{const checked=draft.workspaceIds.includes(w.id);return <label key={w.id} className={cn("flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition",checked?"border-primary/35 bg-primary/5":"border-border hover:bg-muted/50")}><input type="checkbox" className="sr-only" checked={checked} onChange={()=>setDraft(d=>({...d,workspaceIds:checked?d.workspaceIds.filter(x=>x!==w.id):[...d.workspaceIds,w.id]}))}/><span className={cn("grid size-5 place-items-center rounded-md border",checked?"border-primary bg-primary text-primary-foreground":"border-border")}>{checked&&<Check className="size-3.5"/>}</span><span className="min-w-0 truncate text-sm font-medium">{w.name}</span>{w.id===wsId&&<Badge className="ml-auto">当前</Badge>}</label>;})}</div></EditorSection>
+    </div><FormError className="mt-5">{formErr}</FormError></div><div className="flex items-center justify-end gap-2 border-t border-border bg-muted/25 px-5 py-4 sm:px-6"><Button variant="ghost" onClick={resetEditor}>取消</Button><Button disabled={saving||!canConfigureCurrent} onClick={()=>void save()}>{saving?<><LoaderCircle className="animate-spin"/>保存中…</>:editor==="new"?"添加渠道":"保存更改"}</Button></div></DialogContent></Dialog>
   </SettingsShell>;
 }
+
+function VectorIndexDashboard({wsId,canManage}:{wsId:string;canManage:boolean}){
+  const toast=useToast();const[data,setData]=useState<IndexData|null>(null),[loading,setLoading]=useState(true),[error,setError]=useState(""),[status,setStatus]=useState<IndexState|"processing"|"all">("all"),[query,setQuery]=useState(""),[busy,setBusy]=useState(false);
+  const load=useCallback(async()=>{try{const params=new URLSearchParams({limit:"100"});if(status!=="all")params.set("status",status);if(query.trim())params.set("q",query.trim());const result=await api<IndexData>(`/api/v1/workspaces/${wsId}/ai/index-status?${params}`);setData(result);setError("");}catch(e){setError((e as Error).message);}finally{setLoading(false);}},[wsId,status,query]);
+  useEffect(()=>{setLoading(true);void load();},[load]);
+  useEffect(()=>{if(!data||(data.summary.pending+data.summary.running)===0)return;const id=window.setInterval(()=>void load(),4000);return()=>window.clearInterval(id);},[data,load]);
+  async function rebuild(scope:"all"|"incomplete"|"failed"|"stale"|"missing",noteIds?:string[]){setBusy(true);try{const r=await api<{queued:number}>(`/api/v1/workspaces/${wsId}/ai/index/rebuild`,{method:"POST",body:JSON.stringify({scope,noteIds})});toast.success("已加入向量队列",r.queued?`${r.queued} 篇笔记会在后台处理。`:"没有需要重复加入的笔记。");await load();}catch(e){toast.error("无法开始向量化",(e as Error).message);}finally{setBusy(false);}}
+  const s=data?.summary,done=s?.indexed??0,eligible=s?.eligible??0,percent=eligible?Math.round(done/eligible*100):0;
+  const filters:Array<{id:IndexState|"processing"|"all";label:string;count:number}>=[{id:"all",label:"全部",count:s?.total??0},{id:"processing",label:"处理中",count:(s?.running??0)+(s?.pending??0)},{id:"stale",label:"待更新",count:s?.stale??0},{id:"missing",label:"未向量化",count:s?.missing??0},{id:"failed",label:"失败",count:s?.failed??0},{id:"indexed",label:"已完成",count:s?.indexed??0},{id:"excluded",label:"已排除",count:s?.excluded??0}];
+  if(loading&&!data)return <div className="grid min-h-64 place-items-center rounded-2xl border border-border bg-background"><LoaderCircle className="size-5 animate-spin text-muted-foreground"/></div>;
+  return <div className="space-y-4">{error&&<FormError>{error}</FormError>}
+    <section className="overflow-hidden rounded-2xl border border-border bg-background shadow-sm"><div className="grid gap-5 p-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:p-6"><div><div className="flex items-center gap-2"><span className={cn("size-2 rounded-full",data?.provider.configured?"bg-[var(--good)]":"bg-[var(--warning)]")}/><h2 className="text-base font-semibold">量化队列与进度</h2><Badge>{data?.provider.model??"未配置模型"}</Badge></div><p className="mt-2 text-sm text-muted-foreground">哪些笔记完成了、从未量化、等待更新或处理失败，都在这里。处理期间每 4 秒自动刷新。</p><div className="mt-5 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-all duration-500" style={{width:`${percent}%`}}/></div><div className="mt-2 flex justify-between text-xs text-muted-foreground"><span>{done} / {eligible} 篇已完成</span><span>{percent}%</span></div></div><Button className="h-10" disabled={busy||!canManage||!data?.provider.configured} onClick={()=>void rebuild("incomplete")}>{busy?<LoaderCircle className="animate-spin"/>:<Play/>}开始量化待办</Button></div>
+      {!data?.provider.configured&&<div className="border-t border-border bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] px-5 py-3 text-xs text-muted-foreground"><AlertTriangle className="mr-1.5 inline size-3.5 text-[var(--warning)]"/>请先在“模型渠道”里启用 Embedding，之后才能开始向量化。</div>}
+    </section>
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-4"><IndexMetric icon={<Activity/>} label="正在处理" value={(s?.running??0)+(s?.pending??0)} tone="primary"/><IndexMetric icon={<CheckCircle2/>} label="已完成" value={s?.indexed??0} tone="good"/><IndexMetric icon={<Clock3/>} label="需要更新" value={s?.stale??0} tone="warning"/><IndexMetric icon={<CircleSlash2/>} label="从未向量化" value={s?.missing??0} tone="muted"/></div>
+    <section className="overflow-hidden rounded-2xl border border-border bg-background shadow-sm"><div className="flex flex-col gap-3 border-b border-border p-4 lg:flex-row lg:items-center"><div className="flex max-w-full gap-1 overflow-x-auto">{filters.map(f=><button key={f.id} type="button" onClick={()=>setStatus(f.id)} className={cn("shrink-0 rounded-lg px-3 py-1.5 text-xs transition",status===f.id?"bg-foreground font-medium text-background":"text-muted-foreground hover:bg-muted hover:text-foreground")}>{f.label}<span className="ml-1.5 opacity-70">{f.count}</span></button>)}</div><div className="relative ml-auto w-full lg:w-64"><Search className="absolute left-3 top-2.5 size-4 text-muted-foreground"/><Input className="pl-9" value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜索笔记或笔记本"/></div><Button variant="outline" size="sm" onClick={()=>void load()}><RefreshCw/>刷新</Button><Button variant="ghost" size="sm" disabled={busy||!canManage||!data?.provider.configured} onClick={()=>void rebuild("all")}><RefreshCw/>重建全部</Button></div>
+      {data?.notes.length?<div>{data.notes.map((n,i)=><IndexNoteRow key={n.id} note={n} first={i===0} busy={busy} onRun={()=>void rebuild("incomplete",[n.id])}/>)}</div>:<EmptyState icon={<FileText className="size-5"/>} title="这个筛选下没有笔记" text={query?"换个关键词试试。":"目前没有需要展示的项目。"}/>} {data&&data.total>data.notes.length&&<div className="border-t border-border px-4 py-3 text-center text-xs text-muted-foreground">显示前 {data.notes.length} 条，共 {data.total} 条；使用状态或搜索缩小范围。</div>}
+    </section>
+  </div>;
+}
+
+const STATE_META:Record<IndexState,{label:string;className:string}>={indexed:{label:"已完成",className:"border-[color-mix(in_srgb,var(--good)_35%,transparent)] text-[var(--good)]"},pending:{label:"排队中",className:"border-primary/30 text-primary"},running:{label:"处理中",className:"border-primary/30 text-primary"},stale:{label:"待更新",className:"border-[color-mix(in_srgb,var(--warning)_35%,transparent)] text-[var(--warning)]"},missing:{label:"未向量化",className:""},failed:{label:"失败",className:"border-destructive/35 text-destructive"},excluded:{label:"已排除",className:"opacity-70"}};
+function IndexNoteRow({note:n,first,busy,onRun}:{note:IndexNote;first:boolean;busy:boolean;onRun:()=>void}){const meta=STATE_META[n.status],canRun=["missing","stale","failed"].includes(n.status);return <div className={cn("flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center",!first&&"border-t border-border")}><span className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground"><FileText className="size-4"/></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{n.title||"无标题"}</p><p className="mt-0.5 truncate text-xs text-muted-foreground">{n.notebookTitle} · {n.chunks?`${n.chunks} 个向量分块 · `:""}{n.indexedAt?`上次完成 ${formatTime(n.indexedAt)}`:`更新于 ${formatTime(n.updatedAt)}`}</p>{n.lastError&&n.status==="failed"&&<p className="mt-1 line-clamp-2 text-xs text-destructive">{n.lastError}</p>}</div><Badge className={meta.className}>{n.status==="running"&&<LoaderCircle className="mr-1 size-3 animate-spin"/>}{meta.label}</Badge>{canRun&&<Button variant="ghost" size="sm" disabled={busy} onClick={onRun}><Play/>开始</Button>}</div>}
+function formatTime(value:string){const d=new Date(value),diff=Date.now()-d.getTime(),min=Math.floor(diff/60000);if(min<1)return"刚刚";if(min<60)return`${min} 分钟前`;const h=Math.floor(min/60);if(h<24)return`${h} 小时前`;return d.toLocaleDateString("zh-CN",{month:"short",day:"numeric"});}
+function IndexMetric({icon,label,value,tone}:{icon:ReactNode;label:string;value:number;tone:"primary"|"good"|"warning"|"muted"}){const cls={primary:"bg-primary/10 text-primary",good:"bg-[color-mix(in_srgb,var(--good)_10%,transparent)] text-[var(--good)]",warning:"bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning)]",muted:"bg-muted text-muted-foreground"}[tone];return <div className="rounded-xl border border-border bg-background p-4"><div className={cn("grid size-8 place-items-center rounded-lg [&_svg]:size-4",cls)}>{icon}</div><p className="mt-3 text-2xl font-semibold tabular-nums tracking-tight">{value}</p><p className="mt-0.5 text-xs text-muted-foreground">{label}</p></div>}
+function Stat({value,label}:{value:number;label:string}){return <div><p className="text-lg font-semibold tabular-nums tracking-tight">{value}</p><p className="text-[11px] text-muted-foreground">{label}</p></div>}
+function ProviderCard({provider:p,workspaceNames,onEdit,onSync,onIndex,onToggle,onRemove}:{provider:Provider;workspaceNames:string[];onEdit:()=>void;onSync:()=>void;onIndex:()=>void;onToggle:()=>void;onRemove:()=>void}){const models=p.chatModels?.length?p.chatModels:[p.chatModel];return <article className={cn("group flex min-h-60 flex-col overflow-hidden rounded-2xl border bg-background shadow-sm transition hover:-translate-y-0.5 hover:shadow-md",p.enabled?"border-border":"border-border opacity-70")}><div className="flex items-start gap-3 p-5"><span className="grid size-11 shrink-0 place-items-center rounded-xl bg-foreground text-background"><Server className="size-[18px]"/></span><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold">{p.name}</h3><span className={cn("size-1.5 rounded-full",p.enabled?"bg-[var(--good)]":"bg-muted-foreground")}/><span className="text-[11px] text-muted-foreground">{p.enabled?"运行中":"已停用"}</span></div><p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">{p.baseUrl}</p></div>{p.canManage&&<Button variant="ghost" size="icon" aria-label={`编辑 ${p.name}`} onClick={onEdit}><Pencil/></Button>}</div><div className="mx-5 grid grid-cols-2 gap-3 rounded-xl bg-muted/45 p-3"><Meta icon={<Layers3/>} label="对话模型" value={`${models.length} 个`}/><Meta icon={<KeyRound/>} label="凭据" value={p.keySuffix?`•••• ${p.keySuffix}`:"无需密钥"}/></div><div className="flex flex-wrap gap-1.5 px-5 py-4">{models.slice(0,4).map(m=><Badge key={m} className={cn("max-w-full gap-1 bg-background",m===p.chatModel&&"border-primary/30 text-foreground")}><span className="truncate">{m}</span>{m===p.chatModel&&<span className="text-[9px] text-primary">默认</span>}</Badge>)}{models.length>4&&<Badge>+{models.length-4}</Badge>}</div><div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border px-5 py-3"><span className="mr-auto flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">{p.embeddingModel?<><Database className="size-3.5 text-primary"/><span className="truncate">{p.embeddingModel}</span></>:<><CircleSlash2 className="size-3.5"/>未启用向量</>}</span>{p.embeddingModel&&<Button variant="ghost" size="sm" onClick={onIndex}><Activity/>查看量化</Button>}{p.canManage&&<><Button variant="ghost" size="sm" onClick={onSync}><RefreshCw/>同步模型</Button><Button variant="ghost" size="sm" onClick={onToggle}>{p.enabled?"停用":"启用"}</Button><Button variant="ghost" size="icon" className="text-destructive" aria-label={`移除 ${p.name}`} onClick={onRemove}><Trash2/></Button></>}</div><div className="border-t border-border bg-muted/20 px-5 py-2 text-[10px] text-muted-foreground">适用于 {workspaceNames.join("、")}</div></article>}
+function Meta({icon,label,value}:{icon:ReactNode;label:string;value:string}){return <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><span className="[&_svg]:size-3.5">{icon}</span><span>{label}</span><span className="ml-auto truncate font-medium text-foreground">{value}</span></div>}
+function EditorSection({number,title,desc,children}:{number:string;title:string;desc:string;children:ReactNode}){return <section className="grid gap-4 sm:grid-cols-[160px_minmax(0,1fr)]"><div><div className="flex items-center gap-2"><span className="grid size-6 place-items-center rounded-full bg-foreground text-[11px] font-semibold text-background">{number}</span><h3 className="text-sm font-semibold">{title}</h3></div><p className="mt-2 text-xs leading-5 text-muted-foreground sm:pl-8">{desc}</p></div><div>{children}</div></section>}
+function ToggleRow({checked,onChange,title,text}:{checked:boolean;onChange:(checked:boolean)=>void;title:string;text:string}){return <div className="flex cursor-pointer items-start gap-3" onClick={()=>onChange(!checked)}><button type="button" role="switch" aria-checked={checked} className={cn("relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",checked?"bg-primary":"bg-muted-foreground/30")}><span className={cn("absolute top-0.5 size-4 rounded-full bg-white shadow-sm transition",checked?"left-[18px]":"left-0.5")}/></button><span><span className="block text-sm font-medium">{title}</span><span className="mt-0.5 block text-xs leading-5 text-muted-foreground">{text}</span></span></div>}
+function ModelPicker({catalog,selected,search,setSearch,onToggle}:{catalog:string[];selected:string[];search:string;setSearch:(v:string)=>void;onToggle:(id:string)=>void}){const shown=useMemo(()=>catalog.filter(id=>id.toLowerCase().includes(search.toLowerCase())&&!looksLikeEmbedding(id)).slice(0,100),[catalog,search]);if(!catalog.length)return <div className="rounded-xl border border-dashed border-border p-5 text-center"><Bot className="mx-auto size-5 text-muted-foreground"/><p className="mt-2 text-sm font-medium">先连接渠道读取模型</p><p className="mt-1 text-xs text-muted-foreground">如果服务不支持 /models，也可以在下面手动输入模型 ID。</p></div>;return <div className="overflow-hidden rounded-xl border border-border"><div className="flex items-center gap-2 border-b border-border px-3"><Search className="size-4 text-muted-foreground"/><input value={search} onChange={e=>setSearch(e.target.value)} className="h-10 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground" placeholder={`搜索 ${catalog.length} 个已读取模型`}/>{search&&<button type="button" className="text-muted-foreground hover:text-foreground" onClick={()=>setSearch("")} aria-label="清除搜索"><X className="size-4"/></button>}</div><div className="max-h-52 overflow-y-auto p-1.5">{shown.length?shown.map(id=>{const checked=selected.includes(id);return <button key={id} type="button" onClick={()=>onToggle(id)} className={cn("flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-sm outline-none transition hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/40",checked&&"bg-primary/5")}><span className={cn("grid size-5 shrink-0 place-items-center rounded-md border",checked?"border-primary bg-primary text-primary-foreground":"border-border")}>{checked&&<Check className="size-3.5"/>}</span><span className="min-w-0 flex-1 truncate font-mono text-xs">{id}</span>{checked&&<span className="text-[10px] text-primary">已启用</span>}</button>}):<p className="p-4 text-center text-xs text-muted-foreground">没有匹配的模型</p>}</div><div className="flex items-center justify-between border-t border-border bg-muted/25 px-3 py-2 text-[11px] text-muted-foreground"><span>已选 {selected.length} 个</span><span>最多显示 100 个结果</span></div></div>}

@@ -416,7 +416,9 @@ export const themes = pgTable("themes", {
 export const aiProviders = pgTable("ai_providers", {
   id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id), ownerUserId: uuid("owner_user_id"),
   workspaceIds: jsonb("workspace_ids").notNull().default([]),
-  kind: text("kind").notNull().default("openai-compatible"), baseUrl: text("base_url").notNull(), chatModel: text("chat_model").notNull(), embeddingModel: text("embedding_model"),
+  /** Provider 是一条渠道/凭据，不再是一条模型。chat_model 只保留为当前默认模型，chat_models 才是渠道下可选模型集合。 */
+  name: text("name").notNull().default("OpenAI 兼容渠道"),
+  kind: text("kind").notNull().default("openai-compatible"), baseUrl: text("base_url").notNull(), chatModel: text("chat_model").notNull(), chatModels: jsonb("chat_models").notNull().default([]), embeddingModel: text("embedding_model"),
   embeddingBaseUrl: text("embedding_base_url"), embeddingApiKey: text("embedding_api_key"),
   autoEmbed: boolean("auto_embed").notNull().default(true),
   apiKey: text("api_key").notNull(), enabled: boolean("enabled").notNull().default(true), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 process.env.DATABASE_URL ||= "postgres://unit:unit@127.0.0.1:1/unit";
-const { INDEX_NOTE_DEBOUNCE_MS, indexNoteDelayMs } = await import("./ai-index.ts");
+const { INDEX_NOTE_DEBOUNCE_MS, classifyIndexState, indexNoteDelayMs } = await import("./ai-index.ts");
 const { embedEndpoint, mediaCaption, toEmbedDataUrl, IMAGE_EMBED_MAX_BYTES, VIDEO_EMBED_MAX_BYTES } = await import("./ai.ts");
 
 test("没有向量或强制立刻跑时不防抖", () => {
@@ -13,6 +13,17 @@ test("没有向量或强制立刻跑时不防抖", () => {
 test("已有向量的保存要等五分钟", () => {
   assert.equal(indexNoteDelayMs({ hasChunks: true }), INDEX_NOTE_DEBOUNCE_MS);
   assert.equal(INDEX_NOTE_DEBOUNCE_MS, 5 * 60 * 1000);
+});
+
+test("索引状态优先展示队列与失败，再判断缺失和过期", () => {
+  const base = { aiIndex: true, chunks: 2, updatedAt: "2026-01-02T00:00:00Z", indexedAt: "2026-01-02T00:00:00Z" };
+  assert.equal(classifyIndexState({ ...base, aiIndex: false, jobStatus: "running" }), "excluded");
+  assert.equal(classifyIndexState({ ...base, jobStatus: "running" }), "running");
+  assert.equal(classifyIndexState({ ...base, jobStatus: "pending" }), "pending");
+  assert.equal(classifyIndexState({ ...base, jobStatus: "failed" }), "failed");
+  assert.equal(classifyIndexState({ ...base, chunks: 0, indexedAt: null }), "missing");
+  assert.equal(classifyIndexState({ ...base, indexedAt: "2026-01-01T00:00:00Z" }), "stale");
+  assert.equal(classifyIndexState(base), "indexed");
 });
 
 test("向量地址可独立，没填就继承对话地址", () => {

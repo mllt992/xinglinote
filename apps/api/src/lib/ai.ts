@@ -66,6 +66,42 @@ function authHeaders(apiKey: string): Record<string, string> {
   return headers;
 }
 
+/**
+ * OpenAI-compatible providers expose their catalog at /models. Keep discovery in the
+ * same guarded request path as inference so a settings form cannot become an SSRF proxy.
+ * A few compatible servers return the array directly; accepting both shapes costs
+ * nothing and makes local providers much less fiddly.
+ */
+export async function discoverAiModels(baseUrl: string, apiKey: string, timeoutMs = 15_000) {
+  let response: Response;
+  try {
+    response = await safeFetch(`${baseUrl.replace(/\/$/, "")}/models`, {
+      method: "GET",
+      headers: authHeaders(apiKey),
+      signal: AbortSignal.timeout(timeoutMs),
+    }, "AI 提供商地址");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/timeout|aborted|AbortError/i.test(message)) throw fail("AI_PROVIDER_ERROR", "连接超时，请检查地址或网络");
+    throw error;
+  }
+  const raw = await response.text();
+  if (!response.ok) throw fail("AI_PROVIDER_ERROR", providerErrorHint(response.status, raw));
+  let parsed: unknown;
+  try { parsed = raw ? JSON.parse(raw) : {}; }
+  catch { throw fail("AI_PROVIDER_ERROR", "模型列表返回的不是 JSON"); }
+  const source = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === "object" && Array.isArray((parsed as { data?: unknown }).data)
+      ? (parsed as { data: unknown[] }).data
+      : [];
+  const models = source
+    .map(item => typeof item === "string" ? item : item && typeof item === "object" ? (item as { id?: unknown; name?: unknown }).id ?? (item as { name?: unknown }).name : "")
+    .filter((id): id is string => typeof id === "string" && !!id.trim())
+    .map(id => id.trim());
+  return [...new Set(models)].sort((a, b) => a.localeCompare(b));
+}
+
 function embedBodyInput(input: EmbedInput[]) {
   if (input.every(x => typeof x === "string")) return input;
   return input.map(x => {

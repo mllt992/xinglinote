@@ -6,6 +6,18 @@ type DbLike = Pick<typeof db, "select" | "insert" | "update" | "delete">;
 
 /** 已有向量的笔记保存后，要再等这么久没改动才重嵌。 */
 export const INDEX_NOTE_DEBOUNCE_MS = 5 * 60 * 1000;
+export type IndexState = "indexed" | "pending" | "running" | "stale" | "missing" | "failed" | "excluded";
+
+/** Queue state wins over stored chunks; otherwise compare the latest chunk with the note edit time. */
+export function classifyIndexState(input: { aiIndex: boolean; chunks: number; jobStatus?: string | null; indexedAt?: Date | string | null; updatedAt: Date | string }): IndexState {
+  if (!input.aiIndex) return "excluded";
+  if (input.jobStatus === "running") return "running";
+  if (input.jobStatus === "pending") return "pending";
+  if (input.jobStatus === "failed") return "failed";
+  if (!input.chunks) return "missing";
+  if (input.indexedAt && new Date(input.indexedAt).getTime() < new Date(input.updatedAt).getTime()) return "stale";
+  return "indexed";
+}
 
 export function indexNoteDelayMs(opts: { immediate?: boolean; hasChunks?: boolean }) {
   if (opts.immediate || !opts.hasChunks) return 0;
