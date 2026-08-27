@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 process.env.DATABASE_URL ||= "postgres://unit:unit@127.0.0.1:1/unit";
-const { INDEX_NOTE_DEBOUNCE_MS, classifyIndexState, indexNoteDelayMs } = await import("./ai-index.ts");
+const { INDEX_NOTE_DEBOUNCE_MS, classifyIndexState, indexNoteDelayMs, shouldRunIndexNoteJob } = await import("./ai-index.ts");
 const { embedEndpoint, mediaCaption, toEmbedDataUrl, IMAGE_EMBED_MAX_BYTES, VIDEO_EMBED_MAX_BYTES } = await import("./ai.ts");
 
 test("没有向量或强制立刻跑时不防抖", () => {
@@ -49,9 +49,9 @@ test("多模态 data URL 带 mime，超限阈值固定", () => {
   assert.equal(VIDEO_EMBED_MAX_BYTES, 16 * 1024 * 1024);
 });
 
-test("自动向量化默认开，关掉就不该打接口", () => {
-  const skip = (p: { embeddingModel?: string | null; autoEmbed?: boolean }) => !p.embeddingModel || p.autoEmbed === false;
-  assert.equal(skip({ embeddingModel: "e1", autoEmbed: true }), false);
-  assert.equal(skip({ embeddingModel: "e1", autoEmbed: false }), true);
-  assert.equal(skip({ embeddingModel: null, autoEmbed: true }), true);
+test("关闭自动向量化只跳过自动任务，手动任务仍能强制执行", () => {
+  assert.equal(shouldRunIndexNoteJob({ embeddingModel: "e1", autoEmbed: true }), true);
+  assert.equal(shouldRunIndexNoteJob({ embeddingModel: "e1", autoEmbed: false }), false);
+  assert.equal(shouldRunIndexNoteJob({ embeddingModel: "e1", autoEmbed: false, force: true }), true);
+  assert.equal(shouldRunIndexNoteJob({ embeddingModel: null, autoEmbed: true, force: true }), false);
 });

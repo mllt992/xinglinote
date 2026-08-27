@@ -171,7 +171,7 @@ aiRoutes.post("/workspaces/:id/ai/index/rebuild",async c=>{
   const selected=rows.filter(n=>n.aiIndex&&n.status!=="running"&&(!body.noteIds||body.noteIds.includes(n.id))&&(
     body.noteIds?true:body.scope==="all"?true:body.scope==="incomplete"?["missing","stale","failed"].includes(n.status):n.status===body.scope
   ));
-  for(const n of selected)await enqueueIndexNote(db,n.id);
+  for(const n of selected)await enqueueIndexNote(db,n.id,{force:true});
   return ok(c,{queued:selected.length});
 });
 

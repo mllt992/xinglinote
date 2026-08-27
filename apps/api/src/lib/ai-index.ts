@@ -24,6 +24,11 @@ export function indexNoteDelayMs(opts: { immediate?: boolean; hasChunks?: boolea
   return INDEX_NOTE_DEBOUNCE_MS;
 }
 
+/** 自动任务尊重 autoEmbed；设置页手动发起的任务可以显式强制执行。 */
+export function shouldRunIndexNoteJob(input: { embeddingModel?: string | null; autoEmbed?: boolean; force?: boolean }) {
+  return !!input.embeddingModel && (input.force === true || input.autoEmbed !== false);
+}
+
 function pendingIndexNote(noteId: string) {
   return and(
     eq(backgroundJobs.type, "index_note"),
@@ -36,13 +41,20 @@ function pendingIndexNote(noteId: string) {
  * 同一篇只留一条 pending。
  * 应用层入队（换模型、搬家、PDF 抽完）一律立刻跑；保存路径的 5 分钟防抖在触发器里。
  */
-export async function enqueueIndexNote(tx: DbLike, noteId: string) {
+export async function enqueueIndexNote(tx: DbLike, noteId: string, opts: { force?: boolean } = {}) {
   const [pending] = await tx.select({ id: backgroundJobs.id }).from(backgroundJobs).where(pendingIndexNote(noteId)).limit(1);
   if (pending) {
-    await tx.update(backgroundJobs).set({ runAfter: new Date() }).where(eq(backgroundJobs.id, pending.id));
+    await tx.update(backgroundJobs).set({
+      runAfter: new Date(),
+      ...(opts.force ? { payload: { noteId, force: true } } : {}),
+    }).where(eq(backgroundJobs.id, pending.id));
     return;
   }
-  await tx.insert(backgroundJobs).values({ type: "index_note", payload: { noteId }, runAfter: new Date() });
+  await tx.insert(backgroundJobs).values({
+    type: "index_note",
+    payload: opts.force ? { noteId, force: true } : { noteId },
+    runAfter: new Date(),
+  });
 }
 
 export async function cancelIndexNote(tx: DbLike, noteId: string) {
