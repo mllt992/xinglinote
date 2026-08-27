@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type PointerEvent } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  Activity, Archive, CalendarRange, ChevronRight, Clock, Kanban, MoreHorizontal, Plus, RotateCcw, Timer,
+  Activity, Archive, CalendarRange, ChevronRight, Clock, Kanban, MoreHorizontal, Plus, RotateCcw, Timer, X,
 } from "lucide-react";
 import { api, type Me } from "../api";
 import { cn } from "../lib/utils";
@@ -89,6 +89,9 @@ function fmtClock(sec: number) {
 }
 function flattenTasks(tasks: Task[]) {
   return tasks.flatMap(t => [t, ...(t.children ?? [])]);
+}
+function pickTask(detail: Detail, id: string) {
+  return flattenTasks(detail.tasks).find(t => t.id === id) ?? detail.cancelled.find(t => t.id === id) ?? null;
 }
 function healthTone(band: HealthBand) {
   return band === "steady" ? "text-[var(--good)]" : band === "tight" ? "text-amber-600 dark:text-amber-400" : "text-destructive";
@@ -202,10 +205,18 @@ export function ProjectPage() {
   useEffect(() => { if (wsId) saveLastWorkspace(wsId); }, [wsId]);
   const load = useCallback(async () => {
     try {
-      setData(await api<Detail>(`/api/v1/projects/${projectId}`));
+      const next = await api<Detail>(`/api/v1/projects/${projectId}`);
+      setData(next);
       setError("");
-    } catch (e) { setError((e as Error).message); setData(null); }
+      return next;
+    } catch (e) { setError((e as Error).message); setData(null); return null; }
   }, [projectId]);
+  const reloadEditing = useCallback(async (id: string) => {
+    const next = await load();
+    if (!next) return;
+    const hit = pickTask(next, id);
+    if (hit) setEditing(hit);
+  }, [load]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { api<{ members: Member[] }>(`/api/v1/workspaces/${wsId}/members`).then(r => setMembers(r.members)).catch(() => {}); }, [wsId]);
   useEffect(() => {
@@ -279,7 +290,7 @@ export function ProjectPage() {
     </header>
     {p.status === "archived" && <div className="border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground">已归档，只读。创建者或管理员可以从右上角拉回。</div>}
     <div className="min-h-0 flex-1">
-      {view === "board" && <BoardView tasks={data.tasks} cancelled={data.cancelled} canEdit={!readonly} onOpen={setEditing} onQuickCreate={async title => {
+      {view === "board" && <BoardView tasks={data.tasks} cancelled={data.cancelled} canEdit={!readonly} onOpen={t => setEditing(pickTask(data, t.id) ?? t)} onQuickCreate={async title => {
         try {
           await api(`/api/v1/projects/${projectId}/tasks`, { method: "POST", body: JSON.stringify({ title }) });
           await load();
@@ -290,7 +301,7 @@ export function ProjectPage() {
           await load();
         } catch (e) { toast.error("挪不动", (e as Error).message); }
       }} />}
-      {view === "gantt" && <GanttView tasks={data.tasks} milestones={data.milestones} canEdit={!readonly} onOpen={setEditing} onFillDate={setEditing} onReschedule={async (id, startAt, dueAt) => {
+      {view === "gantt" && <GanttView tasks={data.tasks} milestones={data.milestones} canEdit={!readonly} onOpen={t => setEditing(pickTask(data, t.id) ?? t)} onFillDate={t => setEditing(pickTask(data, t.id) ?? t)} onReschedule={async (id, startAt, dueAt) => {
         try {
           await api(`/api/v1/project-tasks/${id}/reschedule`, { method: "POST", body: JSON.stringify({ startAt, dueAt }) });
           await load();
@@ -303,7 +314,7 @@ export function ProjectPage() {
       }} />}
       {view === "time" && <TimeView projectId={projectId} data={data} liveSeconds={liveRunning} canEdit={!readonly} onStart={startTimer} onStop={stopTimer} onLogged={() => void load()} />}
       {view === "pulse" && <PulseView project={p} pulse={data.pulse} onOpen={id => {
-        const hit = flattenTasks(data.tasks).find(t => t.id === id);
+        const hit = pickTask(data, id);
         if (hit) setEditing(hit);
       }} />}
     </div>
@@ -329,7 +340,15 @@ export function ProjectPage() {
       onOpenNote={id => nav(`/w/${wsId}/n/${id}`)}
       onCreateChild={editing && !editing.parentId && !readonly ? async title => {
         await api(`/api/v1/projects/${projectId}/tasks`, { method: "POST", body: JSON.stringify({ title, parentId: editing.id, status: editing.status === "cancelled" ? "todo" : editing.status }) });
-        await load();
+        await reloadEditing(editing.id);
+      } : undefined}
+      onToggleChild={editing && !readonly ? async (id, done) => {
+        await api(`/api/v1/project-tasks/${id}`, { method: "PATCH", body: JSON.stringify({ status: done ? "done" : "todo" }) });
+        await reloadEditing(editing.id);
+      } : undefined}
+      onDeleteChild={editing && !readonly ? async id => {
+        await api(`/api/v1/project-tasks/${id}`, { method: "DELETE" });
+        await reloadEditing(editing.id);
       } : undefined}
     />
     <ProjectDialog
@@ -689,13 +708,15 @@ function ProjectDialog({ open, onOpenChange, onSubmit, project, canChangeVisibil
   </DialogContent></Dialog>;
 }
 
-function TaskDialog({ open, task, wsId, members, canEdit, onOpenChange, onSubmit, onDelete, onOpenNote, onCreateChild }: {
+function TaskDialog({ open, task, wsId, members, canEdit, onOpenChange, onSubmit, onDelete, onOpenNote, onCreateChild, onToggleChild, onDeleteChild }: {
   open: boolean; task: Task | null; wsId: string; members: Member[]; canEdit: boolean;
   onOpenChange: (v: boolean) => void;
   onSubmit: (body: Record<string, unknown>) => Promise<void>;
   onDelete?: () => Promise<void>;
   onOpenNote: (id: string) => void;
   onCreateChild?: (title: string) => Promise<void>;
+  onToggleChild?: (id: string, done: boolean) => Promise<void>;
+  onDeleteChild?: (id: string) => Promise<void>;
 }) {
   const [title, setTitle] = useState("");
   const [bodyMd, setBodyMd] = useState("");
@@ -722,7 +743,7 @@ function TaskDialog({ open, task, wsId, members, canEdit, onOpenChange, onSubmit
     setAssigneeUserId(task?.assigneeUserId ?? ""); setChildTitle(""); setErr("");
     setSourceNoteId(task?.sourceNoteId ?? null); setSourceNoteTitle(task?.sourceNoteTitle ?? null);
     setNoteQuery(""); setNoteHits([]);
-  }, [open, task]);
+  }, [open, task?.id]);
   useEffect(() => {
     if (!open || !canEdit) return;
     const q = noteQuery.trim();
@@ -783,23 +804,48 @@ function TaskDialog({ open, task, wsId, members, canEdit, onOpenChange, onSubmit
         </div>}
       </div>}
       {!canEdit && sourceNoteId && <button type="button" className="text-xs underline" onClick={() => onOpenNote(sourceNoteId)}>打开挂着的笔记{sourceNoteTitle ? `《${sourceNoteTitle}》` : ""}</button>}
-      {onCreateChild && <div className="flex gap-2">
-        <Input value={childTitle} onChange={e => setChildTitle(e.target.value)} placeholder="加一层子任务" disabled={busy} onKeyDown={e => {
-          if (e.key !== "Enter") return;
-          e.preventDefault();
-          const next = childTitle.trim();
-          if (!next || busy) return;
-          setBusy(true); setErr("");
-          void onCreateChild(next).then(() => setChildTitle("")).catch(x => setErr((x as Error).message)).finally(() => setBusy(false));
-        }} />
-        <Button type="button" size="sm" variant="outline" disabled={busy || !childTitle.trim()} onClick={() => {
-          const next = childTitle.trim();
-          if (!next || busy) return;
-          setBusy(true); setErr("");
-          void onCreateChild(next).then(() => setChildTitle("")).catch(x => setErr((x as Error).message)).finally(() => setBusy(false));
-        }}>加上</Button>
+      {(onCreateChild || !!task?.children?.length) && <div className="space-y-2">
+        {onCreateChild && <div className="flex gap-2">
+          <Input value={childTitle} onChange={e => setChildTitle(e.target.value)} placeholder="加一层子任务" disabled={busy} onKeyDown={e => {
+            if (e.key !== "Enter") return;
+            e.preventDefault();
+            const next = childTitle.trim();
+            if (!next || busy) return;
+            setBusy(true); setErr("");
+            void onCreateChild(next).then(() => setChildTitle("")).catch(x => setErr((x as Error).message)).finally(() => setBusy(false));
+          }} />
+          <Button type="button" size="sm" variant="outline" disabled={busy || !childTitle.trim()} onClick={() => {
+            const next = childTitle.trim();
+            if (!next || busy) return;
+            setBusy(true); setErr("");
+            void onCreateChild(next).then(() => setChildTitle("")).catch(x => setErr((x as Error).message)).finally(() => setBusy(false));
+          }}>加上</Button>
+        </div>}
+        {!!task?.children?.length && <>
+          <p className="text-xs text-muted-foreground">{task.children.filter(c => c.status === "done").length}/{task.children.length} 子任务</p>
+          <ul className="max-h-40 overflow-y-auto rounded-md border">
+            {task.children.map(child => <li key={child.id} className="flex items-center gap-2 px-2 py-1.5">
+              <input
+                type="checkbox"
+                className="size-3.5 shrink-0 accent-[var(--foreground)]"
+                checked={child.status === "done"}
+                disabled={!onToggleChild || busy || child.status === "cancelled"}
+                onChange={e => {
+                  if (!onToggleChild) return;
+                  setBusy(true); setErr("");
+                  void onToggleChild(child.id, e.target.checked).catch(x => setErr((x as Error).message)).finally(() => setBusy(false));
+                }}
+                aria-label={`完成 ${child.title}`}
+              />
+              <span className={cn("min-w-0 flex-1 truncate text-sm", (child.status === "done" || child.status === "cancelled") && "text-muted-foreground line-through")}>{child.title}</span>
+              {onDeleteChild && <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0" disabled={busy} aria-label={`删除 ${child.title}`} onClick={() => {
+                setBusy(true); setErr("");
+                void onDeleteChild(child.id).catch(x => setErr((x as Error).message)).finally(() => setBusy(false));
+              }}><X className="size-3.5" /></Button>}
+            </li>)}
+          </ul>
+        </>}
       </div>}
-      {!!task?.children?.length && <p className="text-xs text-muted-foreground">{task.children.filter(c => c.status === "done").length}/{task.children.length} 子任务</p>}
       {err && <p className="text-sm text-destructive">{err}</p>}
       <div className="flex justify-end gap-2">
         {task && canEdit && task.status !== "cancelled" && <Button type="button" variant="outline" disabled={busy} onClick={async () => {
