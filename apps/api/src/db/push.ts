@@ -251,6 +251,7 @@ const statements = [
   `ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS workspace_ids jsonb NOT NULL DEFAULT '[]'::jsonb`,
   `ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS embedding_base_url text`,
   `ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS embedding_api_key text`,
+  `ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS auto_embed boolean NOT NULL DEFAULT true`,
   `UPDATE ai_providers SET workspace_ids = jsonb_build_array(workspace_id) WHERE workspace_ids = '[]'::jsonb AND workspace_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS ai_providers_workspace_ids_idx ON ai_providers USING gin (workspace_ids)`,
   `CREATE TABLE IF NOT EXISTS ai_chunks (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), note_id uuid NOT NULL REFERENCES notes(id) ON DELETE CASCADE, workspace_id uuid NOT NULL REFERENCES workspaces(id), notebook_id uuid NOT NULL REFERENCES notebooks(id), chunk_index integer NOT NULL, content text NOT NULL, embedding double precision[], created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(note_id,chunk_index))`,

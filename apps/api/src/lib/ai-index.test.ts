@@ -37,3 +37,10 @@ test("多模态 data URL 带 mime，超限阈值固定", () => {
   assert.equal(IMAGE_EMBED_MAX_BYTES, 8 * 1024 * 1024);
   assert.equal(VIDEO_EMBED_MAX_BYTES, 16 * 1024 * 1024);
 });
+
+test("自动向量化默认开，关掉就不该打接口", () => {
+  const skip = (p: { embeddingModel?: string | null; autoEmbed?: boolean }) => !p.embeddingModel || p.autoEmbed === false;
+  assert.equal(skip({ embeddingModel: "e1", autoEmbed: true }), false);
+  assert.equal(skip({ embeddingModel: "e1", autoEmbed: false }), true);
+  assert.equal(skip({ embeddingModel: null, autoEmbed: true }), true);
+});

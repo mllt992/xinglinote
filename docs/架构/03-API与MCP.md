@@ -158,8 +158,8 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | PATCH | `/api/v1/moderation/:id` | action=approve \| reject；待审和已处理都能改，note 为说明 |
 | POST | `/api/v1/ai/write` | 写作，回 diff |
 | POST | `/api/v1/ai/ask` | SSE 流 |
-| GET/POST | `/api/v1/workspaces/:id/ai/provider` | 工作区 AI 提供商。POST：`baseUrl`、`chatModel`、可选 `embeddingModel` / `embeddingBaseUrl` / `embeddingApiKey` / `apiKey` / `workspaceIds` |
-| PATCH/DELETE | `/api/v1/ai/providers/:id` | 改绑定范围 / 删除 |
+| GET/POST | `/api/v1/workspaces/:id/ai/provider` | 工作区 AI 提供商。POST：`baseUrl`、`chatModel`、可选 `embeddingModel` / `embeddingBaseUrl` / `embeddingApiKey` / `apiKey` / `autoEmbed`（默认 true） / `workspaceIds` |
+| PATCH/DELETE | `/api/v1/ai/providers/:id` | 改绑定范围、开关自动向量化 / 删除 |
 | CRUD | `/api/v1/mcp-tokens` | POST 响应含一次性 secret 与配置 JSON；`workspaceIds[]`（兼容单数 `workspaceId`） |
 | POST | `/api/v1/mcp-tokens/:id/rotate` | |
 | GET | `/api/v1/workspaces/:id/mcp-audit` | `tokenId` / `tool` / `result` / `limit`；Admin 看本区，本人看自己的 |

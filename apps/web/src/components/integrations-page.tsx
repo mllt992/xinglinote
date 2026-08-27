@@ -14,11 +14,11 @@ import { useToast } from "./ui/toast";
 
 type Provider = {
   id: string; baseUrl: string; chatModel: string; embeddingModel?: string | null; embeddingBaseUrl?: string | null;
-  keySuffix: string; embeddingKeySuffix?: string; workspaceIds: string[]; canEditScope: boolean; canManage: boolean;
+  autoEmbed?: boolean; keySuffix: string; embeddingKeySuffix?: string; workspaceIds: string[]; canEditScope: boolean; canManage: boolean;
 };
 type Ws = { id: string; name: string; role: string };
 
-const DEFAULTS = { baseUrl: "https://api.openai.com/v1", chatModel: "gpt-4o-mini", apiKey: "", embeddingModel: "", embeddingBaseUrl: "", embeddingApiKey: "" };
+const DEFAULTS = { baseUrl: "https://api.openai.com/v1", chatModel: "gpt-4o-mini", apiKey: "", embeddingModel: "", embeddingBaseUrl: "", embeddingApiKey: "", autoEmbed: true };
 
 /**
  * AI 与 MCP。原来挂在全局的 /settings/integrations?workspace=xxx 下，页面上却没有一处告诉你
@@ -40,6 +40,7 @@ export function IntegrationsPage() {
   const [scopeIds, setScopeIds] = useState<string[]>([]);
   const [scopeBusy, setScopeBusy] = useState(false);
   const [scopeErr, setScopeErr] = useState("");
+  const [embedBusy, setEmbedBusy] = useState<string | null>(null);
 
   /** 新存的提供商要拿服务端给的 id 和 Key 后四位，只能回表；工作区列表是给 MCP 面板用的，不跟着动。 */
   const loadProviders = useCallback(async () => {
@@ -101,16 +102,29 @@ export function IntegrationsPage() {
         embeddingModel: draft.embeddingModel.trim() || undefined,
         embeddingBaseUrl: draft.embeddingBaseUrl.trim() || undefined,
         embeddingApiKey: draft.embeddingApiKey.trim() || undefined,
+        autoEmbed: draft.autoEmbed,
         workspaceIds: draft.workspaceIds,
         personal: false,
       }) });
       setDraft({ ...draft, apiKey: "", embeddingApiKey: "" });
       toast.success("已保存", draft.embeddingModel.trim()
-        ? `${draft.workspaceIds.length} 个工作区会立刻排队重建向量索引。之后改笔记要等五分钟没再动才重嵌。`
+        ? (draft.autoEmbed
+          ? `${draft.workspaceIds.length} 个工作区会立刻排队重建向量索引。之后改笔记要等五分钟没再动才重嵌。`
+          : "已保存，但自动向量化是关的。模型起来后再打开，才会排队。")
         : `${draft.workspaceIds.length} 个工作区的 AI 写作和问答会走它。没填 Embedding 模型，语义检索不会建索引。`);
       void loadProviders();
     } catch (e) { setFormErr((e as Error).message); }
     finally { setSaving(false); }
+  }
+
+  async function toggleAutoEmbed(p: Provider, autoEmbed: boolean) {
+    setEmbedBusy(p.id);
+    try {
+      await api(`/api/v1/ai/providers/${p.id}`, { method: "PATCH", body: JSON.stringify({ autoEmbed }) });
+      setProviders(list => list.map(x => x.id === p.id ? { ...x, autoEmbed } : x));
+      toast.success(autoEmbed ? "已打开自动向量化" : "已关闭自动向量化", autoEmbed ? "绑定工作区里 AI 可读的笔记会立刻排队。" : "模型没启动时先关着，队列不会去打挂掉的接口。");
+    } catch (e) { toast.error("切换失败", (e as Error).message); }
+    finally { setEmbedBusy(null); }
   }
 
   async function remove(p: Provider) {
@@ -164,6 +178,13 @@ export function IntegrationsPage() {
             <Field label="Embedding API Key" htmlFor="ai-embed-key" hint="只在单独填了向量地址时使用；没有就留空。跟对话共用地址时走上面那把 Key。">
               <Input id="ai-embed-key" type="password" autoComplete="off" value={draft.embeddingApiKey} onChange={e => setDraft({ ...draft, embeddingApiKey: e.target.value })} placeholder="可选" />
             </Field>
+            <label className="flex cursor-pointer items-start gap-2.5 text-sm">
+              <input id="ai-auto-embed" type="checkbox" className="mt-0.5 size-4 accent-current" checked={draft.autoEmbed} onChange={e => setDraft({ ...draft, autoEmbed: e.target.checked })} />
+              <span>
+                <span className="font-medium">自动向量化</span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">保存笔记、传附件时后台打向量。模型没启动就先关掉，起来后再打开，避免队列空转。</span>
+              </span>
+            </label>
             <FormError>{formErr}</FormError>
             <Button className="w-fit" disabled={saving || !canConfigureCurrent || !draft.workspaceIds.length || !draft.workspaceIds.includes(wsId)} onClick={() => void save()}>{saving ? "保存中…" : `保存并应用到 ${draft.workspaceIds.length || 0} 个工作区`}</Button>
           </div>
@@ -173,8 +194,8 @@ export function IntegrationsPage() {
           {providers.length === 0
             ? <EmptyState icon={<Bot className="size-5" />} title="还没接模型" text="配置之前，AI 写作、问答和自动索引都是关着的。" />
             : providers.map((p, i) => <Row key={p.id} first={i === 0} icon={<Bot className="size-4" />}
-              title={p.chatModel} desc={`${p.baseUrl} · Key ${p.keySuffix ? `••••${p.keySuffix}` : "无"} · 向量 ${p.embeddingModel || "未配"}${p.embeddingBaseUrl ? ` @ ${p.embeddingBaseUrl}` : ""} · ${p.workspaceIds.map(workspaceName).join("、")}`}
-              actions={p.canEditScope || p.canManage ? <>{p.canEditScope && <Button variant="ghost" size="sm" onClick={() => openScopeEdit(p)}><Pencil />调整范围</Button>}{p.canManage && <Button variant="ghost" size="icon" className="text-destructive" aria-label={`移除 ${p.chatModel}`} onClick={() => void remove(p)}><Trash2 /></Button>}</> : undefined} />)}
+              title={p.chatModel} desc={`${p.baseUrl} · Key ${p.keySuffix ? `••••${p.keySuffix}` : "无"} · 向量 ${p.embeddingModel || "未配"}${p.embeddingBaseUrl ? ` @ ${p.embeddingBaseUrl}` : ""} · ${p.autoEmbed === false ? "自动向量化关" : "自动向量化开"} · ${p.workspaceIds.map(workspaceName).join("、")}`}
+              actions={p.canEditScope || p.canManage ? <>{p.canManage && p.embeddingModel ? <Button variant="ghost" size="sm" disabled={embedBusy === p.id} onClick={() => void toggleAutoEmbed(p, p.autoEmbed === false)}>{p.autoEmbed === false ? "打开自动向量化" : "关闭自动向量化"}</Button> : null}{p.canEditScope && <Button variant="ghost" size="sm" onClick={() => openScopeEdit(p)}><Pencil />调整范围</Button>}{p.canManage && <Button variant="ghost" size="icon" className="text-destructive" aria-label={`移除 ${p.chatModel}`} onClick={() => void remove(p)}><Trash2 /></Button>}</> : undefined} />)}
         </SectionCard>
       </Tabs.Content>
 
