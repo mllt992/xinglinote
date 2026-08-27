@@ -4,10 +4,11 @@ import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { fail, nextSortKey } from "@kb/shared";
 import { db } from "../db/client.ts";
 import {
-  aiChunks, attachments, auditLogs, backgroundJobs, calendarItems, folders, links,
+  aiChunks, attachments, auditLogs, calendarItems, folders, links,
   mcpTokens, notebookMembers, notebooks, notes, posts, shareLinks, workspaceMembers, workspaces,
 } from "../db/schema.ts";
 import { env } from "../env.ts";
+import { enqueueIndexNote } from "./ai-index.ts";
 import { mcpTokenCoversWorkspace, tokenWorkspaceIds } from "./mcp-workspaces.ts";
 import { isBlobPath } from "./blob-path.ts";
 import { noteCandidates, rebuildLinks } from "./links.ts";
@@ -104,7 +105,7 @@ export async function moveNotebook(notebookId: string, targetWorkspaceId: string
         // 删掉重排队，让目标区自己的模型重建；目标区没配 AI 就一直空着，也对。
         await tx.delete(aiChunks).where(inArray(aiChunks.noteId, noteIds));
         for (const n of noteRows) {
-          if (n.aiIndex && !n.trashedAt) await tx.insert(backgroundJobs).values({ type: "index_note", payload: { noteId: n.id } });
+          if (n.aiIndex && !n.trashedAt) await enqueueIndexNote(tx, n.id);
         }
         // 留在原区的圈子动态还挂着这些笔记，而动态列表是不做鉴权直接把标题显出来的。
         await tx.update(posts).set({ noteId: null })

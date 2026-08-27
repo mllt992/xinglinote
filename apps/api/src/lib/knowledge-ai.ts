@@ -4,7 +4,7 @@ import { scoreNote, tokenize, type QueryPart } from "@kb/core";
 import { db } from "../db/client.ts";
 import { aiUsage, attachments, notes } from "../db/schema.ts";
 import { noteAccess } from "./note-access.ts";
-import { aiProvider, chatAi, embed, vector } from "./ai.ts";
+import { aiProvider, chatAi, embed, mediaCaption, vector } from "./ai.ts";
 import { likeContains } from "./like.ts";
 
 type RetrieveInput = {
@@ -230,19 +230,32 @@ export async function retrieve(input: RetrieveInput): Promise<KnowledgeSourceHit
     const prefilter = likeAny(needles);
     if (prefilter) where.push(prefilter);
     const rows = await db.select(noteCols).from(notes).where(and(...where)).limit(KEYWORD_PREFILTER);
-    const pdfText = new Map<string, string>();
+    const extraText = new Map<string, string>();
     if (rows.length) {
-      const files = await db.select({ noteId: attachments.noteId, text: attachments.extractedText }).from(attachments)
+      const files = await db.select({
+        noteId: attachments.noteId,
+        text: attachments.extractedText,
+        filename: attachments.filename,
+        mime: attachments.mime,
+      }).from(attachments)
         .where(and(
           inArray(attachments.noteId, rows.map(n => n.id)),
-          eq(attachments.extractStatus, "ok"),
           isNull(attachments.trashedAt),
         ));
-      for (const f of files) if (f.text) pdfText.set(f.noteId, `${pdfText.get(f.noteId) ?? ""}\n${f.text}`);
+      for (const f of files) {
+        const bits = [
+          f.text,
+          f.mime.startsWith("image/") ? mediaCaption("image", f.filename) : "",
+          f.mime.startsWith("video/") ? mediaCaption("video", f.filename) : "",
+          !f.text && !f.mime.startsWith("image/") && !f.mime.startsWith("video/") ? mediaCaption("file", f.filename) : "",
+        ].filter(Boolean);
+        if (!bits.length) continue;
+        extraText.set(f.noteId, `${extraText.get(f.noteId) ?? ""}\n${bits.join("\n")}`);
+      }
     }
     const ranked = rankKeywordNotes(
       input.query,
-      rows.map(n => ({ id: n.id, title: n.title, bodyMd: n.bodyMd, tags: n.tags as string[], extraText: pdfText.get(n.id) })),
+      rows.map(n => ({ id: n.id, title: n.title, bodyMd: n.bodyMd, tags: n.tags as string[], extraText: extraText.get(n.id) })),
       20,
     );
     ranked.forEach((hit, rank) => cands.push({ key: `kw-${hit.noteId}`, hit, rank }));

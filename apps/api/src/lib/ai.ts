@@ -4,7 +4,7 @@ import { db } from "../db/client.ts";
 import { aiProviders } from "../db/schema.ts";
 import { aiProviderCoversWorkspace } from "./ai-provider-workspaces.ts";
 import { extractChatContent, providerErrorHint } from "./ai-chat.ts";
-import { cacheGet, cacheSet, embedCacheKey, EMBED_CACHE_TTL_SEC } from "./cache.ts";
+import { cacheGet, cacheSet, embedCacheKey, embedMediaCacheKey, EMBED_CACHE_TTL_SEC } from "./cache.ts";
 import { safeFetch } from "./net-guard.ts";
 import { open } from "./secrets.ts";
 
@@ -12,6 +12,27 @@ export { extractChatContent } from "./ai-chat.ts";
 
 export type Provider = typeof aiProviders.$inferSelect;
 export type ChatProvider = { baseUrl: string; chatModel: string; apiKey: string };
+/** 文本是字符串；图/视频带 data URL，可附文件名作 caption。 */
+export type EmbedInput = string | { text?: string; image?: string; video?: string; sha256?: string };
+
+export const IMAGE_EMBED_MAX_BYTES = 8 * 1024 * 1024;
+export const VIDEO_EMBED_MAX_BYTES = 16 * 1024 * 1024;
+export const TEXT_ATTACH_MAX_CHARS = 200_000;
+export const INDEX_MAX_IMAGES = 20;
+export const INDEX_MAX_VIDEOS = 4;
+
+export function mediaCaption(kind: "image" | "video" | "file", filename: string) {
+  const label = kind === "image" ? "图片" : kind === "video" ? "视频" : "附件";
+  return `[${label}] ${filename}`;
+}
+
+export function toEmbedDataUrl(mime: string, bytes: Buffer) {
+  return `data:${mime};base64,${bytes.toString("base64")}`;
+}
+
+function isMediaInput(input: EmbedInput): input is { text?: string; image?: string; video?: string; sha256?: string } {
+  return typeof input !== "string" && !!(input.image || input.video);
+}
 
 /** 本人的私有配置优先，其次才是工作区公用的那份。 */
 export async function aiProvider(wsId: string, userId?: string) {
@@ -23,16 +44,67 @@ export async function aiProvider(wsId: string, userId?: string) {
   return rows.find(p => p.ownerUserId === userId) ?? rows.find(p => !p.ownerUserId);
 }
 
+/** 向量可以跟对话不是同一个地址；没填就继承对话那份。 */
+export function embedEndpoint(p: Pick<Provider, "baseUrl" | "embeddingBaseUrl" | "embeddingModel">) {
+  return {
+    baseUrl: (p.embeddingBaseUrl?.trim() || p.baseUrl).replace(/\/$/, ""),
+    model: p.embeddingModel ?? "",
+  };
+}
+
+function providerKey(value: string | null | undefined) {
+  if (!value) return "";
+  return open(value);
+}
+
+function authHeaders(apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+    headers["x-api-key"] = apiKey;
+  }
+  return headers;
+}
+
+function embedBodyInput(input: EmbedInput[]) {
+  if (input.every(x => typeof x === "string")) return input;
+  return input.map(x => {
+    if (typeof x === "string") return x;
+    const item: { text?: string; image?: string; video?: string } = {};
+    if (x.text) item.text = x.text;
+    if (x.image) item.image = x.image;
+    if (x.video) item.video = x.video;
+    return item;
+  });
+}
+
+function cacheKeyForEmbed(p: Provider, input: EmbedInput) {
+  const { baseUrl, model } = embedEndpoint(p);
+  if (typeof input === "string") return embedCacheKey(baseUrl, model, input);
+  const kind = input.image ? "image" as const : input.video ? "video" as const : null;
+  if (kind && input.sha256) return embedMediaCacheKey(baseUrl, model, kind, input.sha256, input.text ?? "");
+  return embedCacheKey(baseUrl, model, `${input.text ?? ""}\0${input.image ? "image" : input.video ? "video" : "text"}`);
+}
+
+function fallbackText(input: EmbedInput) {
+  if (typeof input === "string") return input;
+  return input.text ?? "";
+}
+
 /**
  * baseUrl 是用户填的，所以每次真正发请求前都要再过一遍出站护栏（DNS 可能被改指向），
  * 并且必须带超时——一个吊住不返回的 provider 会把请求和 worker 任务一起占死。
  */
-async function embedRemote(p: Provider, input: string[]) {
+async function embedRemote(p: Provider, input: EmbedInput[], timeoutMs = 30_000) {
   if (!input.length) return [] as number[][];
-  const r = await safeFetch(`${p.baseUrl}/embeddings`, {
+  const { baseUrl, model } = embedEndpoint(p);
+  const independent = !!p.embeddingBaseUrl?.trim();
+  const apiKey = providerKey(independent ? p.embeddingApiKey : p.apiKey);
+  const r = await safeFetch(`${baseUrl}/embeddings`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${open(p.apiKey)}` },
-    body: JSON.stringify({ model: p.embeddingModel, input }),
+    headers: authHeaders(apiKey),
+    body: JSON.stringify({ model, input: embedBodyInput(input) }),
+    signal: AbortSignal.timeout(timeoutMs),
   }, "AI 提供商地址");
   if (!r.ok) throw fail("AI_PROVIDER_ERROR", `Embedding 请求失败 (${r.status})`);
   const d = (await r.json()) as { data?: Array<{ index: number; embedding: number[] }> };
@@ -49,25 +121,46 @@ function parseCachedVector(raw: string): number[] | undefined {
   }
 }
 
-/** 按条查缓存，未命中的才打 embedding API。问句和笔记切块共用。 */
-export async function embed(p: Provider, input: string[]) {
+async function fillMissing(p: Provider, missing: Array<{ i: number; input: EmbedInput; key: string }>, out: Array<number[] | undefined>, timeoutMs: number) {
+  if (!missing.length) return;
+  const vecs = await embedRemote(p, missing.map(m => m.input), timeoutMs);
+  if (vecs.length !== missing.length) throw fail("AI_PROVIDER_ERROR", "Embedding 返回条数对不上");
+  for (let j = 0; j < missing.length; j++) {
+    const vec = vecs[j]!;
+    out[missing[j]!.i] = vec;
+    await cacheSet(missing[j]!.key, JSON.stringify(vec), EMBED_CACHE_TTL_SEC);
+  }
+}
+
+/** 按条查缓存，未命中的才打 embedding API。问句和笔记切块共用。图/视频失败则退回文件名文本。 */
+export async function embed(p: Provider, input: EmbedInput[]) {
   if (!p.embeddingModel) throw fail("AI_NOT_CONFIGURED", "请先配置 Embedding 模型");
   const out: Array<number[] | undefined> = new Array(input.length);
-  const missing: Array<{ i: number; text: string; key: string }> = [];
+  const missingText: Array<{ i: number; input: EmbedInput; key: string }> = [];
+  const missingMedia: Array<{ i: number; input: EmbedInput; key: string }> = [];
   for (let i = 0; i < input.length; i++) {
-    const text = input[i] ?? "";
-    const key = embedCacheKey(p.baseUrl, p.embeddingModel, text);
+    const item = input[i] ?? "";
+    const key = cacheKeyForEmbed(p, item);
     const hit = parseCachedVector((await cacheGet(key)) ?? "");
     if (hit) out[i] = hit;
-    else missing.push({ i, text, key });
+    else if (typeof item !== "string" && (item.image || item.video)) missingMedia.push({ i, input: item, key });
+    else missingText.push({ i, input: typeof item === "string" ? item : fallbackText(item), key });
   }
-  if (missing.length) {
-    const vecs = await embedRemote(p, missing.map(m => m.text));
-    if (vecs.length !== missing.length) throw fail("AI_PROVIDER_ERROR", "Embedding 返回条数对不上");
-    for (let j = 0; j < missing.length; j++) {
-      const vec = vecs[j]!;
-      out[missing[j]!.i] = vec;
-      await cacheSet(missing[j]!.key, JSON.stringify(vec), EMBED_CACHE_TTL_SEC);
+  await fillMissing(p, missingText, out, 30_000);
+  for (const m of missingMedia) {
+    try {
+      await fillMissing(p, [m], out, 60_000);
+    } catch {
+      const text = fallbackText(m.input);
+      const key = cacheKeyForEmbed(p, text);
+      const hit = parseCachedVector((await cacheGet(key)) ?? "");
+      if (hit) out[m.i] = hit;
+      else {
+        const [vec] = await embedRemote(p, [text], 30_000);
+        if (!vec) throw fail("AI_PROVIDER_ERROR", "Embedding 返回条数对不上");
+        out[m.i] = vec;
+        await cacheSet(key, JSON.stringify(vec), EMBED_CACHE_TTL_SEC);
+      }
     }
   }
   return out as number[][];
@@ -79,7 +172,7 @@ export async function chatAi(p: ChatProvider, messages: Array<{ role: string; co
   try {
     r = await safeFetch(`${p.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${open(p.apiKey)}`, "x-api-key": open(p.apiKey) },
+      headers: authHeaders(providerKey(p.apiKey)),
       body: JSON.stringify({
         model: p.chatModel,
         messages,
@@ -112,21 +205,26 @@ export function plain(md: string) {
     .trim();
 }
 
-export function chunks(title: string, body: string, target = 1800, overlap = 280) {
-  const text = `${title}\n${plain(body)}`.trim();
+export function splitText(text: string, target = 1800, overlap = 280) {
+  const src = text.trim();
+  if (!src) return [] as string[];
   const out: string[] = [];
   let at = 0;
-  while (at < text.length) {
-    let end = Math.min(text.length, at + target);
-    if (end < text.length) {
-      const cut = Math.max(text.lastIndexOf("\n", end), text.lastIndexOf("。", end), text.lastIndexOf(" ", end));
+  while (at < src.length) {
+    let end = Math.min(src.length, at + target);
+    if (end < src.length) {
+      const cut = Math.max(src.lastIndexOf("\n", end), src.lastIndexOf("。", end), src.lastIndexOf(" ", end));
       if (cut > at + target / 2) end = cut + 1;
     }
-    out.push(text.slice(at, end));
-    if (end >= text.length) break;
+    out.push(src.slice(at, end));
+    if (end >= src.length) break;
     at = Math.max(at + 1, end - overlap);
   }
   return out;
+}
+
+export function chunks(title: string, body: string, target = 1800, overlap = 280) {
+  return splitText(`${title}\n${plain(body)}`, target, overlap);
 }
 
 export function vector(v: number[]) {

@@ -12,10 +12,13 @@ import { FormError } from "./ui/form-error";
 import { Input } from "./ui/input";
 import { useToast } from "./ui/toast";
 
-type Provider = { id: string; baseUrl: string; chatModel: string; keySuffix: string; workspaceIds: string[]; canEditScope: boolean; canManage: boolean };
+type Provider = {
+  id: string; baseUrl: string; chatModel: string; embeddingModel?: string | null; embeddingBaseUrl?: string | null;
+  keySuffix: string; embeddingKeySuffix?: string; workspaceIds: string[]; canEditScope: boolean; canManage: boolean;
+};
 type Ws = { id: string; name: string; role: string };
 
-const DEFAULTS = { baseUrl: "https://api.openai.com/v1", chatModel: "gpt-4o-mini", apiKey: "" };
+const DEFAULTS = { baseUrl: "https://api.openai.com/v1", chatModel: "gpt-4o-mini", apiKey: "", embeddingModel: "", embeddingBaseUrl: "", embeddingApiKey: "" };
 
 /**
  * AI 与 MCP。原来挂在全局的 /settings/integrations?workspace=xxx 下，页面上却没有一处告诉你
@@ -84,16 +87,27 @@ export function IntegrationsPage() {
 
   async function save() {
     setFormErr("");
-    if (!draft.baseUrl.trim() || !draft.chatModel.trim()) return setFormErr("Base URL 和模型名都不能留空。");
-    if (!draft.apiKey.trim()) return setFormErr("要保存就得带上 API Key；密钥只存服务端，不会回传前端。");
+    if (!draft.baseUrl.trim() || !draft.chatModel.trim()) return setFormErr("对话的 Base URL 和模型名都不能留空。");
+    if (draft.embeddingBaseUrl.trim() && !draft.embeddingModel.trim()) return setFormErr("单独配了向量地址，就要填 Embedding 模型名。");
     if (!draft.workspaceIds.length) return setFormErr("至少选择一个工作区。");
     if (!draft.workspaceIds.includes(wsId)) return setFormErr("当前工作区必须保留在适用范围内。");
     if (!canConfigureCurrent) return setFormErr("只有 Owner 或 Admin 能配置当前工作区的 AI。");
     setSaving(true);
     try {
-      await api(`/api/v1/workspaces/${wsId}/ai/provider`, { method: "POST", body: JSON.stringify({ ...draft, personal: false }) });
-      setDraft({ ...draft, apiKey: "" });
-      toast.success("已保存", `${draft.workspaceIds.length} 个工作区的 AI 写作、问答和索引都会走它。`);
+      await api(`/api/v1/workspaces/${wsId}/ai/provider`, { method: "POST", body: JSON.stringify({
+        baseUrl: draft.baseUrl.trim(),
+        chatModel: draft.chatModel.trim(),
+        apiKey: draft.apiKey,
+        embeddingModel: draft.embeddingModel.trim() || undefined,
+        embeddingBaseUrl: draft.embeddingBaseUrl.trim() || undefined,
+        embeddingApiKey: draft.embeddingApiKey.trim() || undefined,
+        workspaceIds: draft.workspaceIds,
+        personal: false,
+      }) });
+      setDraft({ ...draft, apiKey: "", embeddingApiKey: "" });
+      toast.success("已保存", draft.embeddingModel.trim()
+        ? `${draft.workspaceIds.length} 个工作区会立刻排队重建向量索引。之后改笔记要等五分钟没再动才重嵌。`
+        : `${draft.workspaceIds.length} 个工作区的 AI 写作和问答会走它。没填 Embedding 模型，语义检索不会建索引。`);
       void loadProviders();
     } catch (e) { setFormErr((e as Error).message); }
     finally { setSaving(false); }
@@ -120,7 +134,7 @@ export function IntegrationsPage() {
 
       <Tabs.Content value="ai" className="space-y-4 outline-none">
         {aiErr && <FormError>{aiErr}</FormError>}
-        <SectionCard title="接入模型" desc="任何 OpenAI 兼容的接口都行：官方、Azure、或者自建的中转。">
+        <SectionCard title="接入模型" desc="对话和向量都可以是 OpenAI 兼容接口。向量可以另填地址。配上后会给已打开 AI 可读的笔记建索引，正文、PDF、图片和视频都会进；之后改一篇要等五分钟没再动才重嵌。">
           <div className="grid gap-4 p-4">
             <Field label="适用工作区" hint="一份配置可以复用到多个工作区；这里只列出你有管理权限的工作区。">
               <div className="max-h-44 overflow-auto rounded-lg border p-1">
@@ -132,14 +146,23 @@ export function IntegrationsPage() {
                   </label>)}
               </div>
             </Field>
-            <Field label="Base URL" htmlFor="ai-base" hint="要带到 /v1 这一层，末尾不用加斜杠。">
+            <Field label="对话 Base URL" htmlFor="ai-base" hint="要带到 /v1 这一层，末尾不用加斜杠。">
               <Input id="ai-base" value={draft.baseUrl} onChange={e => setDraft({ ...draft, baseUrl: e.target.value })} placeholder={DEFAULTS.baseUrl} />
             </Field>
             <Field label="对话模型" htmlFor="ai-model" hint="AI 写作、问答和摘要都用它。">
               <Input id="ai-model" value={draft.chatModel} onChange={e => setDraft({ ...draft, chatModel: e.target.value })} placeholder={DEFAULTS.chatModel} />
             </Field>
-            <Field label="API Key" htmlFor="ai-key" hint="只存在服务端，保存后前端只看得到后四位。">
+            <Field label="对话 API Key" htmlFor="ai-key" hint="没有 Key 的兼容接口可以留空。保存后前端只看得到后四位。">
               <Input id="ai-key" type="password" autoComplete="off" value={draft.apiKey} onChange={e => setDraft({ ...draft, apiKey: e.target.value })} placeholder="sk-…" />
+            </Field>
+            <Field label="Embedding 模型" htmlFor="ai-embed-model" hint="语义检索和后台向量化用它。多模态接口会把图/视频一并送进去；纯文本模型会退回文件名。不填就不建索引。">
+              <Input id="ai-embed-model" value={draft.embeddingModel} onChange={e => setDraft({ ...draft, embeddingModel: e.target.value })} placeholder="text-embedding-3-small" />
+            </Field>
+            <Field label="Embedding Base URL" htmlFor="ai-embed-base" hint="留空则跟对话同一地址。独立向量服务填到 /v1 这一层。">
+              <Input id="ai-embed-base" value={draft.embeddingBaseUrl} onChange={e => setDraft({ ...draft, embeddingBaseUrl: e.target.value })} placeholder="https://embed.example.com/v1" />
+            </Field>
+            <Field label="Embedding API Key" htmlFor="ai-embed-key" hint="只在单独填了向量地址时使用；没有就留空。跟对话共用地址时走上面那把 Key。">
+              <Input id="ai-embed-key" type="password" autoComplete="off" value={draft.embeddingApiKey} onChange={e => setDraft({ ...draft, embeddingApiKey: e.target.value })} placeholder="可选" />
             </Field>
             <FormError>{formErr}</FormError>
             <Button className="w-fit" disabled={saving || !canConfigureCurrent || !draft.workspaceIds.length || !draft.workspaceIds.includes(wsId)} onClick={() => void save()}>{saving ? "保存中…" : `保存并应用到 ${draft.workspaceIds.length || 0} 个工作区`}</Button>
@@ -150,7 +173,7 @@ export function IntegrationsPage() {
           {providers.length === 0
             ? <EmptyState icon={<Bot className="size-5" />} title="还没接模型" text="配置之前，AI 写作、问答和自动索引都是关着的。" />
             : providers.map((p, i) => <Row key={p.id} first={i === 0} icon={<Bot className="size-4" />}
-              title={p.chatModel} desc={`${p.baseUrl} · Key ••••${p.keySuffix} · ${p.workspaceIds.map(workspaceName).join("、")}`}
+              title={p.chatModel} desc={`${p.baseUrl} · Key ${p.keySuffix ? `••••${p.keySuffix}` : "无"} · 向量 ${p.embeddingModel || "未配"}${p.embeddingBaseUrl ? ` @ ${p.embeddingBaseUrl}` : ""} · ${p.workspaceIds.map(workspaceName).join("、")}`}
               actions={p.canEditScope || p.canManage ? <>{p.canEditScope && <Button variant="ghost" size="sm" onClick={() => openScopeEdit(p)}><Pencil />调整范围</Button>}{p.canManage && <Button variant="ghost" size="icon" className="text-destructive" aria-label={`移除 ${p.chatModel}`} onClick={() => void remove(p)}><Trash2 /></Button>}</> : undefined} />)}
         </SectionCard>
       </Tabs.Content>

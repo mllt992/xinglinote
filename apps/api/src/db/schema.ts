@@ -417,6 +417,7 @@ export const aiProviders = pgTable("ai_providers", {
   id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id), ownerUserId: uuid("owner_user_id"),
   workspaceIds: jsonb("workspace_ids").notNull().default([]),
   kind: text("kind").notNull().default("openai-compatible"), baseUrl: text("base_url").notNull(), chatModel: text("chat_model").notNull(), embeddingModel: text("embedding_model"),
+  embeddingBaseUrl: text("embedding_base_url"), embeddingApiKey: text("embedding_api_key"),
   apiKey: text("api_key").notNull(), enabled: boolean("enabled").notNull().default(true), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 export const aiChunks=pgTable("ai_chunks",{id:uuid("id").defaultRandom().primaryKey(),noteId:uuid("note_id").notNull().references(()=>notes.id),workspaceId:uuid("workspace_id").notNull().references(()=>workspaces.id),notebookId:uuid("notebook_id").notNull().references(()=>notebooks.id),chunkIndex:integer("chunk_index").notNull(),content:text("content").notNull(),embedding:text("embedding"),createdAt:timestamp("created_at",{withTimezone:true}).defaultNow().notNull()});

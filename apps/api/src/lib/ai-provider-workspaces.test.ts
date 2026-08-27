@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { providerWorkspaceIds, resolveProviderWorkspaceIds } from "./ai-provider-workspaces.ts";
+
+process.env.DATABASE_URL ||= "postgres://unit:unit@127.0.0.1:1/unit";
+const { providerWorkspaceIds, resolveProviderWorkspaceIds } = await import("./ai-provider-workspaces.ts");
 
 test("Provider 旧行回退到 workspace_id", () => {
   assert.deepEqual(providerWorkspaceIds({ workspaceId: "legacy" }), ["legacy"]);

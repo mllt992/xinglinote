@@ -490,8 +490,7 @@ export async function completeCalendarItem(item: typeof calendarItems.$inferSele
         if (mergeInto) await db.update(noteVersions).set({ version, bodyMd: written.bodyMd, title: written.title, createdAt: new Date() }).where(eq(noteVersions.id, mergeInto));
         else await db.insert(noteVersions).values({ noteId: note.id, version, title: written.title, bodyMd: written.bodyMd, editorId: actorId, source: source === "mcp" ? "mcp" : "task_toggle" });
         await writeNoteFile({ ...written, noteId: written.id });
-        // 回写不触发 note.rewrite_links（防环），但索引与向量必须跟上
-        await db.insert(backgroundJobs).values({ type: "index_note", payload: { noteId: note.id } });
+        // 回写不触发 note.rewrite_links（防环）。向量由 notes 触发器排队，已有索引的篇会再等 5 分钟。
         noteWritten = true;
       }
     } else noteWritten = true;

@@ -6,6 +6,7 @@ import { ALLOWED_MIME, assertAttachmentType } from "./file-type.ts";
 import { decodeImageData } from "./image-data.ts";
 import { putBlob, releaseBlob } from "./blobs.ts";
 import { hashBytes } from "./blob-path.ts";
+import { enqueueIndexNote } from "./ai-index.ts";
 import { assertUserStorage } from "./quota.ts";
 
 export { decodeImageData };
@@ -62,6 +63,7 @@ export async function saveNoteAttachment(input: {
   if (same) {
     if (same.trashedAt) {
       await db.update(attachments).set({ trashedAt: null }).where(eq(attachments.id, same.id));
+      await enqueueIndexNote(db, same.noteId);
       return attachmentDto({ ...same, trashedAt: null });
     }
     return attachmentDto(same);
@@ -94,12 +96,14 @@ export async function saveNoteAttachment(input: {
           extractedText: extracted.extractedText,
           extractStatus: "ok",
         }).where(eq(attachments.id, a.id));
+        await enqueueIndexNote(db, a.noteId);
         return { ...attachmentDto(a), extractStatus: "ok" };
       }
       await db.update(attachments).set({ extractStatus: "pending" }).where(eq(attachments.id, a.id));
       await db.insert(backgroundJobs).values({ type: "extract_pdf", payload: { attachmentId: a.id } });
       return { ...attachmentDto(a), extractStatus: "pending" };
     }
+    await enqueueIndexNote(db, a.noteId);
     return attachmentDto(a);
   } catch (e) {
     await releaseBlob(blob.sha256);

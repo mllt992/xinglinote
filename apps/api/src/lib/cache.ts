@@ -24,6 +24,11 @@ export function embedCacheKey(baseUrl: string, model: string, text: string) {
   return `kb:emb:v1:${h}`;
 }
 
+/** 图/视频按内容哈希缓存，避免把 data URL 整段塞进 Redis key。 */
+export function embedMediaCacheKey(baseUrl: string, model: string, kind: "image" | "video", sha256: string, caption: string) {
+  return embedCacheKey(baseUrl, model, `media:${kind}:${sha256}:${caption}`);
+}
+
 function memGet(key: string): string | undefined {
   const hit = mem.get(key);
   if (!hit) return;

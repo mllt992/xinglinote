@@ -6,7 +6,8 @@ import { pushToUser } from "../../api/src/lib/push.ts";
 import { syncSubscription } from "../../api/src/lib/ics.ts";
 import { sendMail } from "../../api/src/lib/mail.ts";
 import { env } from "../../api/src/env.ts";
-import { aiProvider,chunks,embed,vector } from "../../api/src/lib/ai.ts";
+import { aiProvider,embed,vector } from "../../api/src/lib/ai.ts";
+import { noteIndexPieces } from "../../api/src/lib/ai-index-content.ts";
 import { backupDue, executeBackupRun } from "../../api/src/lib/backup.ts";
 import { upload,remove } from "../../api/src/lib/backup-transfer.ts";
 import { open } from "../../api/src/lib/secrets.ts";
@@ -14,6 +15,7 @@ import { pruneNoteVersions } from "../../api/src/lib/versions.ts";
 import { purgeNotes, purgeWorkspaceProjects } from "../../api/src/lib/trash.ts";
 import { dropWorkspaceFromMcpTokens } from "../../api/src/lib/mcp-workspaces.ts";
 import { dropWorkspaceFromAiProviders } from "../../api/src/lib/ai-provider-workspaces.ts";
+import { enqueueIndexNote } from "../../api/src/lib/ai-index.ts";
 import { extractPdfText } from "../../api/src/lib/pdf-text.ts";
 import { readStoredFile, releaseStoredFile } from "../../api/src/lib/blobs.ts";
 import { applyModeration } from "../../api/src/lib/moderation.ts";
@@ -34,7 +36,8 @@ async function claim(){return db.transaction(async tx=>{const[job]=await tx.sele
 async function execute(job:typeof backgroundJobs.$inferSelect){
   if(job.type==="extract_pdf"){const[a]=await db.select().from(attachments).where(eq(attachments.id,(job.payload as {attachmentId:string}).attachmentId));if(!a)return;
   try{const bytes=await readStoredFile(a);const text=await extractPdfText(new Uint8Array(bytes));
-   await db.update(attachments).set({extractedText:text||null,extractStatus:text?"ok":"failed"}).where(eq(attachments.id,a.id));}
+   await db.update(attachments).set({extractedText:text||null,extractStatus:text?"ok":"failed"}).where(eq(attachments.id,a.id));
+   if(text)await enqueueIndexNote(db,a.noteId);}
   catch{await db.update(attachments).set({extractStatus:"failed"}).where(eq(attachments.id,a.id));}   // 抽不出来就只留文件
   return;}
  if(job.type==="prune_versions"){await pruneNoteVersions();return;}
@@ -52,7 +55,7 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
  if(job.type==="expire_shares"){await db.update(shareLinks).set({status:"expired"}).where(and(eq(shareLinks.status,"active"),lt(shareLinks.expiresAt,new Date())));await db.delete(savedShares).where(and(eq(savedShares.status,"dismissed"),lt(savedShares.dismissedAt,new Date(Date.now()-180*86400000))));return;}
  if(job.type==="test_backup_target"){const targetId=String((job.payload as {targetId?:string}).targetId??''),[t]=await db.select().from(backupTargets).where(eq(backupTargets.id,targetId));if(!t)throw new Error('backup target missing');const credentials=JSON.parse(open(t.credentials)),path=`connection-test-${crypto.randomUUID()}.txt`;await upload(t,credentials,path,Buffer.from('knowledge backup target test'));await remove(t,credentials,path);return;}
   if(job.type==="backup_workspace"||job.type==="backup_instance"||job.type==="backup_run"){const{targetId,runId}=job.payload as {targetId:string;runId:string};const[t]=await db.select().from(backupTargets).where(eq(backupTargets.id,targetId));if(!t)throw new Error('backup target missing');await executeBackupRun(t,runId);return;}
- if(job.type==="index_note"){const noteId=String((job.payload as {noteId?:string}).noteId??"");const[n]=await db.select().from(notes).where(eq(notes.id,noteId));if(!n||!n.aiIndex||n.trashedAt){await db.delete(aiChunks).where(eq(aiChunks.noteId,noteId));return;}if(await restoring(n.workspaceId))throw new Error("workspace restore in progress");const p=await aiProvider(n.workspaceId);if(!p?.embeddingModel)return;   /* 没配 AI 就不是错误，等配好了再重建索引，别把队列堵死 */const pieces=chunks(n.title,n.bodyMd),vectors=await embed(p,pieces);if(vectors.length!==pieces.length)throw new Error("embedding result count mismatch");await db.transaction(async tx=>{await tx.delete(aiChunks).where(eq(aiChunks.noteId,n.id));for(let i=0;i<pieces.length;i++)await tx.insert(aiChunks).values({noteId:n.id,workspaceId:n.workspaceId,notebookId:n.notebookId,chunkIndex:i,content:pieces[i],embedding:vector(vectors[i])});});return;}
+ if(job.type==="index_note"){const noteId=String((job.payload as {noteId?:string}).noteId??"");const[n]=await db.select().from(notes).where(eq(notes.id,noteId));if(!n||!n.aiIndex||n.trashedAt){await db.delete(aiChunks).where(eq(aiChunks.noteId,noteId));return;}if(await restoring(n.workspaceId))throw new Error("workspace restore in progress");const p=await aiProvider(n.workspaceId);if(!p?.embeddingModel)return;   /* 没配 AI 就不是错误，等配好了再重建索引，别把队列堵死 */const pieces=await noteIndexPieces(n),vectors=await embed(p,pieces.map(x=>x.input));if(vectors.length!==pieces.length)throw new Error("embedding result count mismatch");await db.transaction(async tx=>{await tx.delete(aiChunks).where(eq(aiChunks.noteId,n.id));for(let i=0;i<pieces.length;i++)await tx.insert(aiChunks).values({noteId:n.id,workspaceId:n.workspaceId,notebookId:n.notebookId,chunkIndex:i,content:pieces[i]!.content,embedding:vector(vectors[i]!)});});return;}
  if(job.type==="delete_workspace"){
    const workspaceId=String((job.payload as {workspaceId?:string}).workspaceId??"");
    const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,workspaceId));

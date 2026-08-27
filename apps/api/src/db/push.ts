@@ -249,12 +249,33 @@ const statements = [
   )`,
   `CREATE TABLE IF NOT EXISTS ai_providers (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), workspace_id uuid NOT NULL REFERENCES workspaces(id), owner_user_id uuid, kind text NOT NULL DEFAULT 'openai-compatible', base_url text NOT NULL, chat_model text NOT NULL, embedding_model text, api_key text NOT NULL, enabled boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`,
   `ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS workspace_ids jsonb NOT NULL DEFAULT '[]'::jsonb`,
+  `ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS embedding_base_url text`,
+  `ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS embedding_api_key text`,
   `UPDATE ai_providers SET workspace_ids = jsonb_build_array(workspace_id) WHERE workspace_ids = '[]'::jsonb AND workspace_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS ai_providers_workspace_ids_idx ON ai_providers USING gin (workspace_ids)`,
   `CREATE TABLE IF NOT EXISTS ai_chunks (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), note_id uuid NOT NULL REFERENCES notes(id) ON DELETE CASCADE, workspace_id uuid NOT NULL REFERENCES workspaces(id), notebook_id uuid NOT NULL REFERENCES notebooks(id), chunk_index integer NOT NULL, content text NOT NULL, embedding double precision[], created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(note_id,chunk_index))`,
   `CREATE INDEX IF NOT EXISTS ai_chunks_note_idx ON ai_chunks(note_id)`,
   `CREATE OR REPLACE FUNCTION kb_cosine_distance(a double precision[],b double precision[]) RETURNS double precision LANGUAGE sql IMMUTABLE STRICT AS $$ SELECT CASE WHEN sqrt(sa)*sqrt(sb)=0 THEN 1 ELSE 1-dot/(sqrt(sa)*sqrt(sb)) END FROM (SELECT sum(x*y) dot,sum(x*x) sa,sum(y*y) sb FROM unnest(a,b) z(x,y)) q $$`,
-  `CREATE OR REPLACE FUNCTION kb_note_index_sync() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.ai_index=false OR NEW.trashed_at IS NOT NULL THEN DELETE FROM ai_chunks WHERE note_id=NEW.id; ELSE INSERT INTO background_jobs(type,payload) VALUES('index_note',jsonb_build_object('noteId',NEW.id)); END IF; RETURN NEW; END $$`,
+  `CREATE OR REPLACE FUNCTION kb_note_index_sync() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  delay interval;
+BEGIN
+  IF NEW.ai_index=false OR NEW.trashed_at IS NOT NULL THEN
+    DELETE FROM ai_chunks WHERE note_id=NEW.id;
+    UPDATE background_jobs SET status='done', finished_at=now()
+      WHERE type='index_note' AND status='pending' AND payload->>'noteId'=NEW.id::text;
+    RETURN NEW;
+  END IF;
+  -- 还没有向量就立刻排；已经有的要等 5 分钟没再改，避免连改几个字打一轮 embedding。
+  IF EXISTS (SELECT 1 FROM ai_chunks WHERE note_id=NEW.id) THEN delay := interval '5 minutes'; ELSE delay := interval '0'; END IF;
+  UPDATE background_jobs SET run_after=now()+delay
+    WHERE type='index_note' AND status='pending' AND payload->>'noteId'=NEW.id::text;
+  IF NOT FOUND THEN
+    INSERT INTO background_jobs(type,payload,run_after)
+    VALUES('index_note', jsonb_build_object('noteId',NEW.id), now()+delay);
+  END IF;
+  RETURN NEW;
+END $$`,
   `DROP TRIGGER IF EXISTS notes_ai_index_sync ON notes`,
   `CREATE TRIGGER notes_ai_index_sync AFTER INSERT OR UPDATE OF title,body_md,ai_index,trashed_at,notebook_id ON notes FOR EACH ROW EXECUTE FUNCTION kb_note_index_sync()`,
   `CREATE TABLE IF NOT EXISTS ai_usage (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL, workspace_id uuid NOT NULL, action text NOT NULL, model text, input_tokens integer NOT NULL DEFAULT 0, output_tokens integer NOT NULL DEFAULT 0, created_at timestamptz NOT NULL DEFAULT now())`,

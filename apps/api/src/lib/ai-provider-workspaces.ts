@@ -1,7 +1,8 @@
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { aiProviders, backgroundJobs, notes } from "../db/schema.ts";
+import { aiProviders, notes } from "../db/schema.ts";
+import { enqueueIndexNote } from "./ai-index.ts";
 import { memberRole } from "./workspace.ts";
 
 type DbLike = Pick<typeof db, "select" | "insert" | "update" | "delete">;
@@ -50,7 +51,7 @@ export async function canManageProvider(userId: string, p: { ownerUserId: string
   return true;
 }
 
-/** Provider 变动后把现有 AI 可读笔记补进索引队列；分批避免大工作区撑爆单条 INSERT。 */
+/** Provider 变动后把现有 AI 可读笔记立刻补进索引队列（换模型不能再等 5 分钟）。 */
 export async function enqueueAiIndexForWorkspaces(tx: DbLike, workspaceIds: string[]) {
   const ids = [...new Set(workspaceIds)];
   if (!ids.length) return;
@@ -59,9 +60,7 @@ export async function enqueueAiIndexForWorkspaces(tx: DbLike, workspaceIds: stri
     eq(notes.aiIndex, true),
     isNull(notes.trashedAt),
   ));
-  for (let at = 0; at < rows.length; at += 500) {
-    await tx.insert(backgroundJobs).values(rows.slice(at, at + 500).map(n => ({ type: "index_note", payload: { noteId: n.id } })));
-  }
+  for (const n of rows) await enqueueIndexNote(tx, n.id);
 }
 
 /** 工作区被物理删除时缩小 Provider 范围；最后一个绑定也没了才删配置。 */
