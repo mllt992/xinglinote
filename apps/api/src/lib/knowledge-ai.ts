@@ -4,7 +4,7 @@ import { scoreNote, tokenize, type QueryPart } from "@kb/core";
 import { db } from "../db/client.ts";
 import { aiUsage, attachments, notes } from "../db/schema.ts";
 import { noteAccess } from "./note-access.ts";
-import { aiProvider, chatAi, embed, mediaCaption, vector } from "./ai.ts";
+import { aiEmbeddingProvider, aiProvider, chatAi, embed, mediaCaption, vector } from "./ai.ts";
 import { likeContains } from "./like.ts";
 
 type RetrieveInput = {
@@ -213,7 +213,7 @@ const GENERAL_SYSTEM = [
 ].join("\n");
 
 export async function retrieve(input: RetrieveInput): Promise<KnowledgeSourceHit[]> {
-  const p = await aiProvider(input.workspaceId, input.userId);
+  const p = await aiEmbeddingProvider(input.workspaceId, input.userId);
   const mode = input.mode ?? "hybrid";
   const limit = Math.min(20, input.limit ?? 8);
   type Cand = { key: string; hit: KnowledgeHit; rank: number };

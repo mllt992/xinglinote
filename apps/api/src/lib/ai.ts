@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { aiProviders } from "../db/schema.ts";
+import { aiProviders, workspaceAiSettings } from "../db/schema.ts";
 import { aiProviderCoversWorkspace } from "./ai-provider-workspaces.ts";
 import { extractChatContent, providerErrorHint } from "./ai-chat.ts";
 import { cacheGet, cacheSet, embedCacheKey, embedMediaCacheKey, EMBED_CACHE_TTL_SEC } from "./cache.ts";
@@ -34,8 +34,8 @@ function isMediaInput(input: EmbedInput): input is { text?: string; image?: stri
   return typeof input !== "string" && !!(input.image || input.video);
 }
 
-/** 本人的私有配置优先，其次才是工作区公用的那份。 */
-export async function aiProvider(wsId: string, userId?: string) {
+/** 旧数据没有工作区模型分配时的兼容路径：本人私有配置优先，其次才是公用渠道。 */
+async function legacyProvider(wsId: string, userId?: string) {
   const rows = await db
     .select()
     .from(aiProviders)
@@ -44,7 +44,44 @@ export async function aiProvider(wsId: string, userId?: string) {
   return rows.find(p => p.ownerUserId === userId) ?? rows.find(p => !p.ownerUserId);
 }
 
-/** 向量可以跟对话不是同一个地址；没填就继承对话那份。 */
+async function assignedChannel(wsId: string, providerId: string) {
+  const [row] = await db.select().from(aiProviders).where(and(
+    eq(aiProviders.id, providerId),
+    eq(aiProviders.enabled, true),
+    aiProviderCoversWorkspace(wsId),
+  ));
+  return row;
+}
+
+/** 工作区明确选择的对话渠道与模型；没有新配置时兼容旧 Provider 行。 */
+export async function aiProvider(wsId: string, userId?: string) {
+  const [settings] = await db.select().from(workspaceAiSettings).where(eq(workspaceAiSettings.workspaceId, wsId));
+  if (settings) {
+    if (!settings.chatProviderId || !settings.chatModel) return undefined;
+    const p = await assignedChannel(wsId, settings.chatProviderId);
+    return p ? { ...p, chatModel: settings.chatModel } : undefined;
+  }
+  return legacyProvider(wsId, userId);
+}
+
+/** Worker 与语义检索使用工作区明确选择的 Embedding 渠道。 */
+export async function aiEmbeddingProvider(wsId: string, userId?: string) {
+  const [settings] = await db.select().from(workspaceAiSettings).where(eq(workspaceAiSettings.workspaceId, wsId));
+  if (settings) {
+    if (!settings.embeddingProviderId || !settings.embeddingModel) return undefined;
+    const p = await assignedChannel(wsId, settings.embeddingProviderId);
+    return p ? {
+      ...p,
+      embeddingModel: settings.embeddingModel,
+      embeddingBaseUrl: null,
+      embeddingApiKey: null,
+      autoEmbed: settings.autoEmbed,
+    } : undefined;
+  }
+  return legacyProvider(wsId, userId);
+}
+
+/** 新配置总是直接使用所选渠道；旧行仍可通过 embeddingBaseUrl 兼容。 */
 export function embedEndpoint(p: Pick<Provider, "baseUrl" | "embeddingBaseUrl" | "embeddingModel">) {
   return {
     baseUrl: (p.embeddingBaseUrl?.trim() || p.baseUrl).replace(/\/$/, ""),

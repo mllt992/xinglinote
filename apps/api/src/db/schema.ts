@@ -416,12 +416,22 @@ export const themes = pgTable("themes", {
 export const aiProviders = pgTable("ai_providers", {
   id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id), ownerUserId: uuid("owner_user_id"),
   workspaceIds: jsonb("workspace_ids").notNull().default([]),
-  /** Provider 是一条渠道/凭据，不再是一条模型。chat_model 只保留为当前默认模型，chat_models 才是渠道下可选模型集合。 */
+  /** Provider 只是一条渠道/凭据；chat_model 与 embedding_* 是旧数据兼容列，chat_models 保存渠道模型目录。 */
   name: text("name").notNull().default("OpenAI 兼容渠道"),
   kind: text("kind").notNull().default("openai-compatible"), baseUrl: text("base_url").notNull(), chatModel: text("chat_model").notNull(), chatModels: jsonb("chat_models").notNull().default([]), embeddingModel: text("embedding_model"),
   embeddingBaseUrl: text("embedding_base_url"), embeddingApiKey: text("embedding_api_key"),
   autoEmbed: boolean("auto_embed").notNull().default(true),
   apiKey: text("api_key").notNull(), enabled: boolean("enabled").notNull().default(true), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+export const workspaceAiSettings = pgTable("workspace_ai_settings", {
+  workspaceId: uuid("workspace_id").primaryKey().references(() => workspaces.id, { onDelete: "cascade" }),
+  chatProviderId: uuid("chat_provider_id").references(() => aiProviders.id, { onDelete: "set null" }),
+  chatModel: text("chat_model"),
+  embeddingProviderId: uuid("embedding_provider_id").references(() => aiProviders.id, { onDelete: "set null" }),
+  embeddingModel: text("embedding_model"),
+  autoEmbed: boolean("auto_embed").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 export const aiChunks=pgTable("ai_chunks",{id:uuid("id").defaultRandom().primaryKey(),noteId:uuid("note_id").notNull().references(()=>notes.id),workspaceId:uuid("workspace_id").notNull().references(()=>workspaces.id),notebookId:uuid("notebook_id").notNull().references(()=>notebooks.id),chunkIndex:integer("chunk_index").notNull(),content:text("content").notNull(),embedding:text("embedding"),createdAt:timestamp("created_at",{withTimezone:true}).defaultNow().notNull()});
 

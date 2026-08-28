@@ -1,15 +1,15 @@
 import { Hono } from "hono";
-import { and, desc, eq, ilike, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { aiProviders, aiUsage, backgroundJobs, instanceSettings, notes, workspaces } from "../db/schema.ts";
+import { aiChunks, aiProviders, aiUsage, backgroundJobs, instanceSettings, notes, workspaceAiSettings, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { aiProviderCoversWorkspace, assertProviderWorkspaces, canManageProvider, enqueueAiIndexForWorkspaces, providerWorkspaceIds, resolveProviderWorkspaceIds } from "../lib/ai-provider-workspaces.ts";
 import { memberRole } from "../lib/workspace.ts";
 import { open, seal, suffix } from "../lib/secrets.ts";
-import { aiProvider as provider, chatAi as chat, discoverAiModels } from "../lib/ai.ts";
+import { aiEmbeddingProvider as embeddingProvider, aiProvider as provider, chatAi as chat, discoverAiModels } from "../lib/ai.ts";
 import { assertSafeOutboundUrl } from "../lib/net-guard.ts";
 import { askKnowledge,retrieve } from "../lib/knowledge-ai.ts";
 import { noteAccess } from "../lib/note-access.ts";
@@ -19,24 +19,18 @@ async function member(c:Parameters<typeof currentUser>[0],wsId:string){const u=a
 /** 真正调模型才看总闸。列表/删除配置只要求是成员——不然设置页「AI 与 MCP」会因为 instance_settings 多了一列或 AI 关掉整页 500。 */
 async function ctx(c:Parameters<typeof currentUser>[0],wsId:string){const {u,role}=await member(c,wsId);const [inst]=await db.select({aiEnabled:instanceSettings.aiEnabled}).from(instanceSettings);const [ws]=await db.select({aiEnabled:workspaces.aiEnabled}).from(workspaces).where(eq(workspaces.id,wsId));if(!inst?.aiEnabled||!ws?.aiEnabled)throw fail("FORBIDDEN","AI 已关闭");return{u,role,ws};}
 function keySuffix(value:string|null|undefined){if(!value)return "";try{return suffix(value);}catch{return "";}}
-function optionalUrl(value:string|undefined,what:string){const v=value?.trim();if(!v)return undefined;try{return new URL(v).href.replace(/\/$/,"");}catch{throw fail("VALIDATION",`${what}不是合法的 URL`);}}
-const modelList=z.array(z.string().trim().min(1).max(200)).min(1).max(200).transform(xs=>[...new Set(xs)]);
+const modelList=z.array(z.string().trim().min(1).max(200)).max(200).transform(xs=>[...new Set(xs)]);
 const providerFields=z.object({
   name:z.string().trim().min(1).max(80),
   baseUrl:z.string().url(),
-  chatModel:z.string().trim().min(1).max(200),
-  chatModels:modelList,
-  embeddingModel:z.string().trim().min(1).max(200).optional().nullable(),
-  embeddingBaseUrl:z.string().optional().nullable(),
-  embeddingApiKey:z.string().optional(),
+  models:modelList.default([]),
   apiKey:z.string().optional(),
-  autoEmbed:z.boolean().default(true),
   enabled:z.boolean().default(true),
   personal:z.boolean().default(false),
   workspaceIds:z.array(z.string().uuid()).min(1).max(50).optional(),
 });
-const providerBody=providerFields.refine(v=>v.chatModels.includes(v.chatModel),{message:"默认模型必须在已选模型中",path:["chatModel"]});
-const providerPatch=providerFields.partial().extend({clearApiKey:z.boolean().optional(),clearEmbeddingApiKey:z.boolean().optional()}).refine(v=>!v.chatModels||!v.chatModel||v.chatModels.includes(v.chatModel),{message:"默认模型必须在已选模型中",path:["chatModel"]});
+const providerBody=providerFields;
+const providerPatch=providerFields.partial().extend({clearApiKey:z.boolean().optional()});
 
 type IndexRow={id:string;title:string;notebookTitle:string;updatedAt:string;indexedAt:string|null;chunks:number;jobStatus:string|null;runAfter:string|null;lastError:string|null;aiIndex:boolean;status:IndexState};
 async function workspaceIndexRows(workspaceId:string):Promise<IndexRow[]> {
@@ -69,23 +63,30 @@ async function workspaceIndexRows(workspaceId:string):Promise<IndexRow[]> {
 }
 
 aiRoutes.get("/workspaces/:id/ai/provider",async c=>{
-  const {u,role}=await member(c,c.req.param("id"));
-  const rows=await db.select().from(aiProviders).where(aiProviderCoversWorkspace(c.req.param("id"))).orderBy(desc(aiProviders.createdAt));
+  const workspaceId=c.req.param("id");const {u,role}=await member(c,workspaceId);
+  const rows=await db.select().from(aiProviders).where(aiProviderCoversWorkspace(workspaceId)).orderBy(desc(aiProviders.createdAt));
   const visible=rows.filter(p=>!p.ownerUserId||p.ownerUserId===u.id);
+  const [stored]=await db.select().from(workspaceAiSettings).where(eq(workspaceAiSettings.workspaceId,workspaceId));
+  const legacyChat=stored?null:await provider(workspaceId,u.id),legacyEmbedding=stored?null:await embeddingProvider(workspaceId,u.id);
   return ok(c,{providers:await Promise.all(visible.map(async p=>({
-    id:p.id,name:p.name,kind:p.kind,baseUrl:p.baseUrl,chatModel:p.chatModel,
-    chatModels:Array.isArray(p.chatModels)&&p.chatModels.length?p.chatModels:[p.chatModel],
-    embeddingModel:p.embeddingModel,embeddingBaseUrl:p.embeddingBaseUrl,autoEmbed:p.autoEmbed,
-    keySuffix:keySuffix(p.apiKey),embeddingKeySuffix:keySuffix(p.embeddingApiKey),ownerUserId:p.ownerUserId,
+    id:p.id,name:p.name,kind:p.kind,baseUrl:p.baseUrl,
+    models:Array.isArray(p.chatModels)?p.chatModels:[],
+    keySuffix:keySuffix(p.apiKey),ownerUserId:p.ownerUserId,
     workspaceIds:providerWorkspaceIds(p),enabled:p.enabled,
     canEditScope:p.ownerUserId===u.id||(!p.ownerUserId&&(role==="owner"||role==="admin")),
     canManage:await canManageProvider(u.id,p),
-  })))});
+  }))),settings:{
+    chatProviderId:stored?.chatProviderId??legacyChat?.id??null,
+    chatModel:stored?.chatModel??legacyChat?.chatModel??null,
+    embeddingProviderId:stored?.embeddingProviderId??legacyEmbedding?.id??null,
+    embeddingModel:stored?.embeddingModel??legacyEmbedding?.embeddingModel??null,
+    autoEmbed:stored?.autoEmbed??legacyEmbedding?.autoEmbed??true,
+  }});
 });
 
 aiRoutes.post("/ai/providers/discover-models",async c=>{
   const u=await currentUser(c);if(!u)throw fail("UNAUTHENTICATED","未登录");
-  const body=z.object({baseUrl:z.string().url(),apiKey:z.string().optional(),providerId:z.string().uuid().optional(),target:z.enum(["chat","embedding"]).default("chat")}).parse(await c.req.json());
+  const body=z.object({baseUrl:z.string().url(),apiKey:z.string().optional(),providerId:z.string().uuid().optional()}).parse(await c.req.json());
   const baseUrl=body.baseUrl.replace(/\/$/,"");
   await assertSafeOutboundUrl(baseUrl,"AI 提供商地址");
   let apiKey=body.apiKey??"";
@@ -93,11 +94,10 @@ aiRoutes.post("/ai/providers/discover-models",async c=>{
     const [saved]=await db.select().from(aiProviders).where(eq(aiProviders.id,body.providerId));
     if(!saved)throw fail("NOT_FOUND","配置不存在");
     if(!await canManageProvider(u.id,saved))throw fail("FORBIDDEN","无权使用这份配置");
-    const savedUrl=(body.target==="embedding"?(saved.embeddingBaseUrl||saved.baseUrl):saved.baseUrl).replace(/\/$/,"");
+    const savedUrl=saved.baseUrl.replace(/\/$/,"");
     // Never forward a stored secret to a newly entered endpoint.
     if(savedUrl===baseUrl){
-      const secret=body.target==="embedding"&&saved.embeddingBaseUrl?saved.embeddingApiKey:saved.apiKey;
-      apiKey=secret?open(secret):"";
+      apiKey=saved.apiKey?open(saved.apiKey):"";
     }
   }
   return ok(c,{models:await discoverAiModels(baseUrl,apiKey)});
@@ -110,13 +110,8 @@ aiRoutes.post("/workspaces/:id/ai/provider",async c=>{
   if(!workspaceIds.includes(routeWorkspaceId))throw fail("VALIDATION","绑定范围必须包含当前工作区");
   await assertProviderWorkspaces(u.id,workspaceIds,body.personal);
   const baseUrl=body.baseUrl.replace(/\/$/,"");await assertSafeOutboundUrl(baseUrl,"AI 提供商地址");
-  const embeddingBaseUrl=optionalUrl(body.embeddingBaseUrl??undefined,"Embedding 提供商地址");
-  if(embeddingBaseUrl)await assertSafeOutboundUrl(embeddingBaseUrl,"Embedding 提供商地址");
-  const p=await db.transaction(async tx=>{
-    const [saved]=await tx.insert(aiProviders).values({workspaceId:workspaceIds[0]!,workspaceIds,ownerUserId:body.personal?u.id:null,name:body.name,baseUrl,chatModel:body.chatModel,chatModels:body.chatModels,embeddingModel:body.embeddingModel||null,embeddingBaseUrl:body.embeddingModel?embeddingBaseUrl:null,embeddingApiKey:body.embeddingModel&&embeddingBaseUrl&&body.embeddingApiKey?seal(body.embeddingApiKey):null,autoEmbed:!!body.embeddingModel&&body.autoEmbed,apiKey:seal(body.apiKey??""),enabled:body.enabled}).returning();
-    if(body.embeddingModel&&body.autoEmbed)await enqueueAiIndexForWorkspaces(tx,workspaceIds);return saved;
-  });
-  return ok(c,{id:p.id,keySuffix:keySuffix(p.apiKey),embeddingKeySuffix:keySuffix(p.embeddingApiKey),autoEmbed:p.autoEmbed,workspaceIds},201);
+  const [p]=await db.insert(aiProviders).values({workspaceId:workspaceIds[0]!,workspaceIds,ownerUserId:body.personal?u.id:null,name:body.name,baseUrl,chatModel:"",chatModels:body.models,embeddingModel:null,embeddingBaseUrl:null,embeddingApiKey:null,autoEmbed:false,apiKey:seal(body.apiKey??""),enabled:body.enabled}).returning();
+  return ok(c,{id:p!.id,keySuffix:keySuffix(p!.apiKey),workspaceIds},201);
 });
 
 aiRoutes.patch("/ai/providers/:id",async c=>{
@@ -127,25 +122,47 @@ aiRoutes.patch("/ai/providers/:id",async c=>{
   const before=providerWorkspaceIds(p);const workspaceIds=body.workspaceIds?resolveProviderWorkspaceIds({workspaceIds:body.workspaceIds}):before;
   const changed=[...new Set([...before,...workspaceIds])].filter(id=>before.includes(id)!==workspaceIds.includes(id));
   if(body.workspaceIds){if(p.ownerUserId){if(p.ownerUserId!==u.id)throw fail("FORBIDDEN","无权调整这份私人配置");await assertProviderWorkspaces(u.id,workspaceIds,true);}else await assertProviderWorkspaces(u.id,changed.length?changed:workspaceIds,false);}
+  const refs=await db.select().from(workspaceAiSettings).where(or(eq(workspaceAiSettings.chatProviderId,p.id),eq(workspaceAiSettings.embeddingProviderId,p.id)));
+  if(body.enabled===false&&refs.length)throw fail("VALIDATION","渠道正在被工作区使用，请先更换工作区模型配置");
+  const removed=before.filter(id=>!workspaceIds.includes(id));
+  if(refs.some(r=>removed.includes(r.workspaceId)))throw fail("VALIDATION","渠道仍被已取消范围的工作区使用，请先更换该工作区模型配置");
   const baseUrl=(body.baseUrl??p.baseUrl).replace(/\/$/,"");await assertSafeOutboundUrl(baseUrl,"AI 提供商地址");
-  const embeddingModel=body.embeddingModel===undefined?p.embeddingModel:(body.embeddingModel||null);
-  const embeddingBaseUrl=body.embeddingBaseUrl===undefined?p.embeddingBaseUrl:optionalUrl(body.embeddingBaseUrl??undefined,"Embedding 提供商地址")??null;
-  if(embeddingBaseUrl)await assertSafeOutboundUrl(embeddingBaseUrl,"Embedding 提供商地址");
-  const chatModels=body.chatModels??(Array.isArray(p.chatModels)&&p.chatModels.length?p.chatModels as string[]:[p.chatModel]);
-  const chatModel=body.chatModel??p.chatModel;if(!chatModels.includes(chatModel))throw fail("VALIDATION","默认模型必须在已选模型中");
-  const turnOn=body.autoEmbed===true&&!p.autoEmbed;
-  const modelChanged=embeddingModel!==p.embeddingModel||embeddingBaseUrl!==p.embeddingBaseUrl;
+  const models=body.models??(Array.isArray(p.chatModels)?p.chatModels as string[]:[]);
+  const connectionChanged=baseUrl!==p.baseUrl||body.apiKey!==undefined||body.clearApiKey===true;
   const saved=await db.transaction(async tx=>{
     const [row]=await tx.update(aiProviders).set({
-      workspaceId:workspaceIds[0]!,workspaceIds,name:body.name??p.name,baseUrl,chatModel,chatModels,
-      embeddingModel,embeddingBaseUrl:embeddingModel?embeddingBaseUrl:null,
+      workspaceId:workspaceIds[0]!,workspaceIds,name:body.name??p.name,baseUrl,chatModels:models,
       apiKey:body.clearApiKey?seal(""):body.apiKey!==undefined?seal(body.apiKey):p.apiKey,
-      embeddingApiKey:body.clearEmbeddingApiKey||!embeddingModel?null:body.embeddingApiKey!==undefined?seal(body.embeddingApiKey):p.embeddingApiKey,
-      autoEmbed:embeddingModel?(body.autoEmbed??p.autoEmbed):false,enabled:body.enabled??p.enabled,updatedAt:new Date(),
+      enabled:body.enabled??p.enabled,updatedAt:new Date(),
     }).where(eq(aiProviders.id,p.id)).returning();
-    if(changed.length||modelChanged||turnOn)await enqueueAiIndexForWorkspaces(tx,changed.length?changed:workspaceIds);return row;
+    if(connectionChanged){const embeddingWorkspaces=refs.filter(r=>r.embeddingProviderId===p.id&&r.embeddingModel).map(r=>r.workspaceId);if(embeddingWorkspaces.length){await tx.delete(aiChunks).where(inArray(aiChunks.workspaceId,embeddingWorkspaces));const auto=refs.filter(r=>r.embeddingProviderId===p.id&&r.autoEmbed).map(r=>r.workspaceId);if(auto.length)await enqueueAiIndexForWorkspaces(tx,auto);}}
+    return row;
   });
-  return ok(c,{workspaceIds,autoEmbed:saved?.autoEmbed,enabled:saved?.enabled});
+  return ok(c,{workspaceIds,enabled:saved?.enabled});
+});
+
+aiRoutes.patch("/workspaces/:id/ai/settings",async c=>{
+  const workspaceId=c.req.param("id");const {role}=await ctx(c,workspaceId);
+  if(role!=="owner"&&role!=="admin")throw fail("FORBIDDEN","只有 Owner 或 Admin 能配置工作区模型");
+  const body=z.object({
+    chatProviderId:z.string().uuid().nullable(),chatModel:z.string().trim().min(1).max(200).nullable(),
+    embeddingProviderId:z.string().uuid().nullable(),embeddingModel:z.string().trim().min(1).max(200).nullable(),
+    autoEmbed:z.boolean().default(true),
+  }).refine(v=>(v.chatProviderId===null)===(v.chatModel===null),{message:"对话渠道与模型必须同时选择",path:["chatModel"]})
+    .refine(v=>(v.embeddingProviderId===null)===(v.embeddingModel===null),{message:"Embedding 渠道与模型必须同时选择",path:["embeddingModel"]})
+    .parse(await c.req.json());
+  const selectedIds=[...new Set([body.chatProviderId,body.embeddingProviderId].filter((id):id is string=>!!id))];
+  const selected=selectedIds.length?await db.select().from(aiProviders).where(inArray(aiProviders.id,selectedIds)):[];
+  for(const id of selectedIds){const p=selected.find(x=>x.id===id);if(!p||!p.enabled||p.ownerUserId||!providerWorkspaceIds(p).includes(workspaceId))throw fail("VALIDATION","所选渠道不可用于当前工作区");}
+  const [old]=await db.select().from(workspaceAiSettings).where(eq(workspaceAiSettings.workspaceId,workspaceId));
+  const embeddingChanged=!old||old.embeddingProviderId!==body.embeddingProviderId||old.embeddingModel!==body.embeddingModel;
+  const turnOn=body.autoEmbed&&!old?.autoEmbed;
+  await db.transaction(async tx=>{
+    await tx.insert(workspaceAiSettings).values({...body,workspaceId,updatedAt:new Date()}).onConflictDoUpdate({target:workspaceAiSettings.workspaceId,set:{...body,updatedAt:new Date()}});
+    if(embeddingChanged)await tx.delete(aiChunks).where(eq(aiChunks.workspaceId,workspaceId));
+    if(body.embeddingProviderId&&body.embeddingModel&&body.autoEmbed&&(embeddingChanged||turnOn))await enqueueAiIndexForWorkspaces(tx,[workspaceId]);
+  });
+  return ok(c,{});
 });
 
 aiRoutes.get("/workspaces/:id/ai/index-status",async c=>{
@@ -158,14 +175,14 @@ aiRoutes.get("/workspaces/:id/ai/index-status",async c=>{
   const filtered=all.filter(n=>(!status||(status==="processing"?["pending","running"].includes(n.status):n.status===status))&&(!q||n.title.toLocaleLowerCase().includes(q)||n.notebookTitle.toLocaleLowerCase().includes(q)));
   const summary={indexed:0,pending:0,running:0,stale:0,missing:0,failed:0,excluded:0,total:all.length,eligible:0};
   for(const row of all){summary[row.status]++;if(row.aiIndex)summary.eligible++;}
-  const p=await provider(workspaceId,u.id);
+  const p=await embeddingProvider(workspaceId,u.id);
   return ok(c,{summary,notes:filtered.slice(offset,offset+limit),total:filtered.length,provider:{configured:!!p?.embeddingModel,model:p?.embeddingModel??null,autoEmbed:p?.autoEmbed??false}});
 });
 
 aiRoutes.post("/workspaces/:id/ai/index/rebuild",async c=>{
   const workspaceId=c.req.param("id");const {u,role}=await ctx(c,workspaceId);
   if(role!=="owner"&&role!=="admin")throw fail("FORBIDDEN","只有 Owner 或 Admin 能重建向量索引");
-  const p=await provider(workspaceId,u.id);if(!p?.embeddingModel)throw fail("AI_NOT_CONFIGURED","请先给模型渠道配置 Embedding 模型");
+  const p=await embeddingProvider(workspaceId,u.id);if(!p?.embeddingModel)throw fail("AI_NOT_CONFIGURED","请先给当前工作区选择 Embedding 渠道和模型");
   const body=z.object({scope:z.enum(["all","incomplete","failed","stale","missing"]).default("incomplete"),noteIds:z.array(z.string().uuid()).max(500).optional()}).parse(await c.req.json().catch(()=>({})));
   const rows=await workspaceIndexRows(workspaceId);
   const selected=rows.filter(n=>n.aiIndex&&n.status!=="running"&&(!body.noteIds||body.noteIds.includes(n.id))&&(
@@ -175,7 +192,7 @@ aiRoutes.post("/workspaces/:id/ai/index/rebuild",async c=>{
   return ok(c,{queued:selected.length});
 });
 
-aiRoutes.delete("/ai/providers/:id",async c=>{const u=await currentUser(c);if(!u)throw fail("UNAUTHENTICATED","未登录");const [p]=await db.select().from(aiProviders).where(eq(aiProviders.id,c.req.param("id")));if(!p)throw fail("NOT_FOUND","配置不存在");if(!await canManageProvider(u.id,p))throw fail("FORBIDDEN","要删除共享配置，需要管理它绑定的全部工作区");const workspaceIds=providerWorkspaceIds(p);await db.transaction(async tx=>{await tx.delete(aiProviders).where(eq(aiProviders.id,p.id));await enqueueAiIndexForWorkspaces(tx,workspaceIds);});return ok(c,{});});
+aiRoutes.delete("/ai/providers/:id",async c=>{const u=await currentUser(c);if(!u)throw fail("UNAUTHENTICATED","未登录");const [p]=await db.select().from(aiProviders).where(eq(aiProviders.id,c.req.param("id")));if(!p)throw fail("NOT_FOUND","配置不存在");if(!await canManageProvider(u.id,p))throw fail("FORBIDDEN","要删除共享配置，需要管理它绑定的全部工作区");const [ref]=await db.select({workspaceId:workspaceAiSettings.workspaceId}).from(workspaceAiSettings).where(or(eq(workspaceAiSettings.chatProviderId,p.id),eq(workspaceAiSettings.embeddingProviderId,p.id))).limit(1);if(ref)throw fail("VALIDATION","渠道正在被工作区使用，请先更换工作区模型配置");await db.delete(aiProviders).where(eq(aiProviders.id,p.id));return ok(c,{});});
 aiRoutes.post("/ai/write",async c=>{const body=z.object({noteId:z.string().uuid(),expectedVersion:z.number().int().positive(),action:z.enum(["polish","shorten","expand","translate","continue","custom"]),text:z.string().min(1).max(50000),language:z.string().optional(),instruction:z.string().trim().min(1).max(500).optional()}).parse(await c.req.json());const [n]=await db.select().from(notes).where(eq(notes.id,body.noteId));if(!n||n.trashedAt)throw fail("NOT_FOUND","笔记不存在");const {u}=await ctx(c,n.workspaceId);await noteAccess(n.id,u.id,"edit");if(n.version!==body.expectedVersion)throw fail("CONFLICT_VERSION","笔记已被其他操作更新，请刷新后重试");const p=await provider(n.workspaceId,u.id);if(!p)throw fail("AI_NOT_CONFIGURED","请先配置 AI 提供商");const instruction={polish:"润色以下文字，保持原意，只输出结果",shorten:"缩短以下文字，只输出结果",expand:"扩写以下文字，只输出结果",translate:`翻译成${body.language??"中文"}，只输出结果`,continue:"续写以下文字，只输出续写内容",custom:`${body.instruction??""}。只输出改写后的正文，不要解释`}[body.action];if(body.action==="custom"&&!body.instruction)throw fail("VALIDATION","自定义指令不能为空");const out=await chat(p,[{role:"system",content:"你是知识库写作助手。禁止输出可执行 HTML。"},{role:"user",content:`${instruction}\n\n${body.text}`}]);await db.insert(aiUsage).values({userId:u.id,workspaceId:n.workspaceId,action:`write:${body.action}`,model:p.chatModel,inputTokens:out.usage.prompt_tokens??0,outputTokens:out.usage.completion_tokens??0});return ok(c,{text:out.content,baseVersion:n.version});});
 const DIAGRAM_KINDS={auto:"自己挑最合适的图型",flowchart:"流程图 flowchart",sequence:"时序图 sequenceDiagram",class:"类图 classDiagram",state:"状态图 stateDiagram-v2",er:"实体关系图 erDiagram",mindmap:"思维导图 mindmap",gantt:"甘特图 gantt"} as const;
 /** 模型爱把代码块围栏、解释、``mermaid`` 字样一起吐出来。只留图本身。 */

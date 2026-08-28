@@ -257,6 +257,44 @@ const statements = [
   `ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS auto_embed boolean NOT NULL DEFAULT true`,
   `UPDATE ai_providers SET workspace_ids = jsonb_build_array(workspace_id) WHERE workspace_ids = '[]'::jsonb AND workspace_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS ai_providers_workspace_ids_idx ON ai_providers USING gin (workspace_ids)`,
+  `CREATE TABLE IF NOT EXISTS workspace_ai_settings (
+    workspace_id uuid PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+    chat_provider_id uuid REFERENCES ai_providers(id) ON DELETE SET NULL,
+    chat_model text,
+    embedding_provider_id uuid REFERENCES ai_providers(id) ON DELETE SET NULL,
+    embedding_model text,
+    auto_embed boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `INSERT INTO ai_providers(workspace_id,workspace_ids,owner_user_id,name,kind,base_url,chat_model,chat_models,embedding_model,embedding_base_url,embedding_api_key,auto_embed,api_key,enabled,created_at,updated_at)
+   SELECT p.workspace_id,p.workspace_ids,NULL,p.name || ' · Embedding',p.kind,p.embedding_base_url,'',jsonb_build_array(p.embedding_model),NULL,NULL,NULL,false,coalesce(p.embedding_api_key,''),p.enabled,p.created_at,p.updated_at
+   FROM ai_providers p
+   WHERE p.owner_user_id IS NULL AND p.embedding_model IS NOT NULL AND p.embedding_base_url IS NOT NULL
+     AND NOT EXISTS (
+       SELECT 1 FROM ai_providers q
+       WHERE q.owner_user_id IS NULL AND q.name=p.name || ' · Embedding' AND q.base_url=p.embedding_base_url AND q.workspace_ids=p.workspace_ids
+  )`,
+  `INSERT INTO workspace_ai_settings(workspace_id,chat_provider_id,chat_model,embedding_provider_id,embedding_model,auto_embed)
+   SELECT w.id,CASE WHEN cm.model IS NULL THEN NULL ELSE p.id END,cm.model,
+     CASE WHEN p.embedding_model IS NULL THEN NULL ELSE coalesce(ep.id,p.id) END,
+     p.embedding_model,p.auto_embed
+   FROM workspaces w
+   JOIN LATERAL (
+     SELECT x.* FROM ai_providers x
+     WHERE x.owner_user_id IS NULL AND x.enabled=true
+       AND (x.workspace_id=w.id OR x.workspace_ids @> jsonb_build_array(w.id::text))
+       AND (x.chat_model<>'' OR x.embedding_model IS NOT NULL)
+     ORDER BY x.created_at DESC,x.id DESC LIMIT 1
+   ) p ON true
+   LEFT JOIN LATERAL (
+     SELECT CASE
+       WHEN p.chat_model<>'' AND p.chat_model !~* '(embed|rerank|bge|e5-|gte-|jina|colbert)' THEN p.chat_model
+       ELSE (SELECT value FROM jsonb_array_elements_text(p.chat_models) value WHERE value !~* '(embed|rerank|bge|e5-|gte-|jina|colbert)' LIMIT 1)
+     END model
+   ) cm ON true
+   LEFT JOIN ai_providers ep ON ep.owner_user_id IS NULL AND ep.name=p.name || ' · Embedding' AND ep.base_url=p.embedding_base_url AND ep.workspace_ids=p.workspace_ids
+   ON CONFLICT (workspace_id) DO NOTHING`,
   `CREATE TABLE IF NOT EXISTS ai_chunks (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), note_id uuid NOT NULL REFERENCES notes(id) ON DELETE CASCADE, workspace_id uuid NOT NULL REFERENCES workspaces(id), notebook_id uuid NOT NULL REFERENCES notebooks(id), chunk_index integer NOT NULL, content text NOT NULL, embedding double precision[], created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(note_id,chunk_index))`,
   `CREATE INDEX IF NOT EXISTS ai_chunks_note_idx ON ai_chunks(note_id)`,
   `CREATE OR REPLACE FUNCTION kb_cosine_distance(a double precision[],b double precision[]) RETURNS double precision LANGUAGE sql IMMUTABLE STRICT AS $$ SELECT CASE WHEN sqrt(sa)*sqrt(sb)=0 THEN 1 ELSE 1-dot/(sqrt(sa)*sqrt(sb)) END FROM (SELECT sum(x*y) dot,sum(x*x) sa,sum(y*y) sb FROM unnest(a,b) z(x,y)) q $$`,

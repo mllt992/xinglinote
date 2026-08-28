@@ -20,21 +20,25 @@
 
 人在库里始终按 ACL 看。AI/MCP 检索额外要求 `ai_index=true`。
 
-### 2.2 Provider
+### 2.2 渠道与工作区模型
 
-一份 Provider 可同时绑定多个工作区，避免同一套模型参数和 Key 重复配置：
+`ai_providers` 只表示一条 OpenAI 兼容渠道：`base_url`、加密保存的 `api_key`、模型目录和工作区范围。同一渠道可以被多个工作区复用，也可以同时承担对话和 Embedding。
 
-- chat: OpenAI 兼容 `base_url` / `chat_model` / `api_key`（加密存；无 Key 的兼容接口允许空）
-- embedding: 可与对话分开。`embedding_model`、可选的 `embedding_base_url` / `embedding_api_key`
-  - 向量接口同样是 OpenAI 兼容：`POST {embedding_base_url 或 base_url}/embeddings`，body `{ model, input }`
-  - `embedding_base_url` 留空：向量与对话走同一地址、同一把 Key
-  - 填了独立向量地址：只打 `/embeddings`，Key 不再继承对话那把（没有就空着发）
-  - 未填 `embedding_model`：不建向量索引；语义检索按设计 05 退化
-- `auto_embed` 默认开。关：保存、传附件、换模型产生的自动任务不再打向量；设置页手动点“开始量化”或“重建全部”仍会执行。模型没启动时先关，免得自动队列对着挂掉的服务重试。再打开：立刻给绑定工作区里 `ai_index=true` 的笔记排队
+`workspace_ai_settings` 明确保存当前工作区的用途分配：
+
+- 对话：`chat_provider_id` + `chat_model`，用于写作、问答和图表生成
+- 向量：`embedding_provider_id` + `embedding_model`，用于 `POST {base_url}/embeddings`
+- 两种用途可选择同一渠道，也可选择两个渠道。所谓“独立 Embedding 服务”就是另一条普通渠道，不在渠道内部再嵌套一套 URL 和 Key
+- 未选 Embedding 渠道或模型：不建向量索引；语义检索按设计 05 退化
+- 旧 Provider 行中的 `chat_model`、`embedding_model`、`embedding_base_url`、`embedding_api_key` 只用于兼容迁移；独立 Embedding 连接会迁移为一条普通渠道
+- `auto_embed` 属于工作区模型配置，默认开。关：保存、传附件产生的自动任务不再打向量；设置页手动点“开始量化”或“重建全部”仍会执行。再打开：立刻给工作区里 `ai_index=true` 的笔记排队
+
+渠道范围和权限规则：
+
 - `workspace_ids` 是绑定范围；升级前只有 `workspace_id` 的旧行按单工作区兼容
 - 已有 Provider 可只调整适用工作区，不用重新输入模型参数或 Key
 - 工作区公用 Provider 只能绑定配置人在其中是 Owner / Admin 的工作区；调整范围时要能管理每个新增或移除的区，删除整份共享 Provider 则要能管理全部绑定区
-- 新建 Provider、改向量配置或调整绑定后，受影响工作区内已开启 `ai_index` 的笔记要立刻排队重建索引（换模型后旧向量不能混用）
+- 更换 Embedding 渠道、模型或连接凭据后，先删除受影响工作区的旧向量；开启自动更新时立即重新排队（不同模型的向量不能混用）
 - 删除某个工作区时，只从 Provider 的范围中移除该区；还有其他绑定时不删整份配置
 - `members_may_use_workspace_key` 默认 true
 - 成员可存自己的 key，优先于工作区 key
