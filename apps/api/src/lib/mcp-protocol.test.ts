@@ -18,6 +18,7 @@ test("只读钥匙看不到写工具，看得到搜索和今天", () => {
 test("读写钥匙有 create / replace，没有 trash 和 move", () => {
   const names = toolsFor({ rw: "write", allowDelete: false, feedPublic: false, feedWorkspace: false }).map(t => t.name);
   assert.ok(names.includes("create_note"));
+  assert.ok(names.includes("create_folder"));
   assert.ok(names.includes("replace_in_note"));
   assert.ok(names.includes("upload_image"));
   assert.equal(names.includes("trash_note"), false);
@@ -69,7 +70,7 @@ test("高影响写工具公开版本校验、确认和预览参数", () => {
 
 test("创建类工具公开 UUID 幂等键", () => {
   const tools = toolsFor({ rw: "manage", allowDelete: true, feedPublic: true, feedWorkspace: true });
-  for (const name of ["create_note", "create_task", "post_to_feed", "upload_image", "create_attachment_upload", "complete_attachment_upload"]) {
+  for (const name of ["create_note", "create_folder", "create_task", "post_to_feed", "upload_image", "create_attachment_upload", "complete_attachment_upload"]) {
     const tool = tools.find(t => t.name === name);
     const prop = (tool?.inputSchema.properties as { client_request_id?: { format?: string } } | undefined)?.client_request_id;
     assert.equal(prop?.format, "uuid", `${name} 缺少 client_request_id`);

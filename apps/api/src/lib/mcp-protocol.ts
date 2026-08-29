@@ -76,6 +76,18 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
     required: ["notebook_id"],
     annotations: read("目录"),
   },
+  create_folder: {
+    tier: "write",
+    description: "在笔记本根目录或指定父目录下新建文件夹。重试请带同一 client_request_id。",
+    properties: {
+      notebook_id: UUID,
+      parent_id: NUL_UUID,
+      title: { type: "string", minLength: 1, maxLength: 100 },
+      client_request_id: CLIENT_REQUEST_ID,
+    },
+    required: ["notebook_id", "title"],
+    annotations: write("新建文件夹"),
+  },
   search_notes: {
     tier: "read",
     description: "检索笔记。mode=keyword 只做关键词；semantic 语义；hybrid（默认）两者融合。每条返回 note_id、路径、版本和 ≤360 字摘录，可用 note_id 调 get_note 核验。默认 8 条。",
