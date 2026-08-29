@@ -30,6 +30,7 @@ async function call(secret, name, args = {}, extra = {}) {
   });
   const j = await r.json();
   if (j.error) { const e = new Error(j.error.message); e.data = j.error.data; throw e; }
+  if (j.result?.isError) { const e = new Error(j.result.structuredContent?.message ?? j.result.content?.[0]?.text ?? 'MCP 工具失败'); e.data = j.result.structuredContent; throw e; }
   return j.result.structuredContent;
 }
 
@@ -87,10 +88,16 @@ try {
   result.moveDryRunHasNoEffect = movePreview.dry_run === true && movePreview.current_version === after.version && afterMovePreview.version === after.version;
   const trashPreview = await call(manage.secret, 'trash_note', { id: created.id, expected_version: after.version, dry_run: true });
   result.trashDryRunHasNoEffect = trashPreview.effect === 'move_to_trash' && (await call(manage.secret, 'get_note', { id: created.id })).version === after.version;
-  let versionConflict = false;
+  let versionConflict = false, versionConflictActionable = false;
   try { await call(manage.secret, 'trash_note', { id: created.id, expected_version: after.version - 1 }); }
-  catch (e) { versionConflict = e.data?.code === 'CONFLICT_VERSION'; }
+  catch (e) {
+    versionConflict = e.data?.code === 'CONFLICT_VERSION';
+    versionConflictActionable = e.data?.expected_version === String(after.version - 1)
+      && e.data?.current_version === String(after.version)
+      && e.message.includes(`current_version=${after.version}`);
+  }
   result.trashRejectsStaleVersion = versionConflict;
+  result.versionConflictExposesCurrentVersion = versionConflictActionable;
   const feedPreview = await call(manage.secret, 'post_to_feed', { body: '公开发布预览', scope: 'public', dry_run: true });
   let confirmationRequired = false;
   try { await call(manage.secret, 'post_to_feed', { body: '不应发布', scope: 'public' }); }

@@ -4,6 +4,7 @@ import { fail, nextSortKey, normalizeTitle } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { aiChunks, auditLogs, calendarItems, folders, notes } from "../db/schema.ts";
 import { notePath, writeNoteFile } from "./files.ts";
+import { versionConflict } from "./mcp-errors.ts";
 
 /**
  * 把一篇笔记改到另一个目录（可顺带换本）。
@@ -21,7 +22,7 @@ export async function relocateNote(input: {
   expectedVersion?: number;
 }): Promise<{ id: string; notebookId: string; folderId: string | null; version: number }> {
   const { note: n, targetNotebook: nb, folderId, actorId, expectedVersion = n.version } = input;
-  if (expectedVersion !== n.version) throw fail("CONFLICT_VERSION", "版本冲突", { version: String(n.version) });
+  if (expectedVersion !== n.version) throw versionConflict(expectedVersion, n.version);
   if (nb.workspaceId !== n.workspaceId) throw fail("VALIDATION", "不能跨工作区移动笔记");
   if (folderId) {
     const [folder] = await db.select({ id: folders.id })
@@ -53,7 +54,7 @@ export async function relocateNote(input: {
       updatedBy: actorId,
       updatedAt: new Date(),
     }).where(and(eq(notes.id, n.id), eq(notes.version, expectedVersion))).returning();
-    if (!row) throw fail("CONFLICT_VERSION", "版本冲突", { version: String(n.version) });
+    if (!row) return undefined;
     if (changedNotebook) {
       await tx.update(aiChunks).set({ notebookId: nb.id }).where(eq(aiChunks.noteId, n.id));
       await tx.update(calendarItems).set({ notebookId: nb.id }).where(eq(calendarItems.sourceNoteId, n.id));
@@ -71,6 +72,11 @@ export async function relocateNote(input: {
     });
     return row;
   });
+
+  if (!saved) {
+    const [current] = await db.select({ version: notes.version }).from(notes).where(eq(notes.id, n.id));
+    throw versionConflict(expectedVersion, current?.version ?? n.version);
+  }
 
   await writeNoteFile({ ...saved, noteId: saved.id, bodyMd: saved.bodyMd });
   if (changedNotebook) {

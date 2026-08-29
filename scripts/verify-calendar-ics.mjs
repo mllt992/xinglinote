@@ -55,6 +55,7 @@ try {
   async function call(name, args = {}, key = secret) {
     const r = await fetch(base + '/mcp', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify({ jsonrpc: '2.0', id: ++seq, method: 'tools/call', params: { name, arguments: args } }) }).then(x => x.json());
     if (r.error) { const e = new Error(r.error.message); e.mcp = true; throw e; }
+    if (r.result?.isError) { const e = new Error(r.result.structuredContent?.message ?? r.result.content?.[0]?.text ?? 'MCP 工具失败'); e.mcp = true; e.data = r.result.structuredContent; throw e; }
     return r.result.structuredContent;
   }
   const tools = (await fetch(base + '/mcp', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${secret}` }, body: JSON.stringify({ jsonrpc: '2.0', id: ++seq, method: 'tools/list' }) }).then(x => x.json())).result.tools.map(t => t.name);

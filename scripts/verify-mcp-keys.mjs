@@ -12,6 +12,7 @@ async function tool(secret, name, args = {}) {
   const r = await fetch(base + '/mcp', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${secret}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) });
   const j = await r.json();
   if (j.error) throw new Error(j.error.message);
+  if (j.result?.isError) { const e = new Error(j.result.structuredContent?.message ?? j.result.content?.[0]?.text ?? 'MCP 工具失败'); e.data = j.result.structuredContent; throw e; }
   return j.result.structuredContent;
 }
 const c = (await q('/auth/login', { method: 'POST', body: JSON.stringify({ email: KB_EMAIL, password: KB_PASSWORD }) })).cookie;

@@ -106,7 +106,7 @@ try {
   result.feedToolShownWhenEnabled = (await listTools(feeder.secret)).includes('post_to_feed');
   const call = async (secret, name, args) => (await fetch(base + '/mcp', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${secret}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args } }) }).then(r => r.json()));
   result.feedPostWorks = (await call(feeder.secret, 'post_to_feed', { body: 'Agent 发的工作区动态', scope: 'workspace' })).result?.structuredContent?.scope === 'workspace';
-  result.feedPublicStillBlocked = !!(await call(feeder.secret, 'post_to_feed', { body: '不该进广场', scope: 'public' })).error;
+  { const blocked = await call(feeder.secret, 'post_to_feed', { body: '不该进广场', scope: 'public' }); result.feedPublicStillBlocked = !!blocked.error || blocked.result?.isError === true; }
   for (const t of [plain.id, feeder.id]) await q(`/mcp/tokens/${t}`, { method: 'DELETE' }, c).catch(() => {});
 } finally {
   await q(`/workspaces/${ws.id}`, { method: 'DELETE', body: JSON.stringify({ confirmName: ws.name }) }, c).catch(() => {});
