@@ -15,10 +15,11 @@ import {
   canWriteProject,
   scoreProjectHealth,
   type TaskStatus,
+  type WsRole,
 } from "@kb/core";
 import { fail, nextSortKey } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { auditLogs, notes, projectMilestones, projectTasks, projectTimeEntries, projects, users, workspaces } from "../db/schema.ts";
+import { auditLogs, notes, projectMilestones, projectTasks, projectTimeEntries, projects, users, workspaceMembers, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
@@ -74,6 +75,7 @@ const milestoneCreate = z.object({
   dueAt: z.string().datetime({ offset: true }),
   done: z.boolean().optional(),
 });
+const projectMove = z.object({ workspaceId: z.string().uuid() });
 
 async function requireUser(c: Parameters<typeof currentUser>[0]) {
   const user = await currentUser(c);
@@ -119,8 +121,11 @@ async function loadProject(c: Parameters<typeof currentUser>[0], id: string, mod
     if (role === "viewer" || ws.frozen) throw fail("FORBIDDEN", ws.frozen ? "工作区已冻结，暂时只读" : "只读成员不能改项目");
     throw fail("FORBIDDEN", "已归档的项目只读");
   }
-  if (mode === "archive" && !canArchiveProject(acl)) throw fail("FORBIDDEN", "只有创建者或管理员能改可见性 / 归档");
-  return { user, role, ws, project: row, acl, canEdit: canWriteProject({ ...acl, status: row.status === "archived" ? "active" : acl.status }), canArchive: canArchiveProject(acl) };
+  if (mode === "archive") {
+    if (ws.frozen) throw fail("FORBIDDEN", "工作区已冻结，暂时只读");
+    if (!canArchiveProject(acl)) throw fail("FORBIDDEN", "只有创建者或管理员能改可见性 / 归档");
+  }
+  return { user, role, ws, project: row, acl, canEdit: canWriteProject({ ...acl, status: row.status === "archived" ? "active" : acl.status }), canArchive: !ws.frozen && canArchiveProject(acl) };
 }
 
 async function loadTask(c: Parameters<typeof currentUser>[0], id: string, mode: "read" | "write" = "read") {
@@ -297,6 +302,75 @@ async function pulseOf(tasks: TaskRow[], entries: TimeRow[]) {
   return { byStatus, estimateMin, actualSeconds, days, overdue: overdue.map(t => ({ id: t.id, title: t.title, dueAt: t.dueAt })), stale: stale.map(t => ({ id: t.id, title: t.title, updatedAt: t.updatedAt })) };
 }
 
+type ProjectWorkspace = { id: string; name: string; role: WsRole; frozen: boolean };
+
+/** 单区和「所有工作区」共用一套列表装配，避免健康度、私有项目 ACL 和周节奏算出两种答案。 */
+async function projectList(userId: string, spaces: ProjectWorkspace[], archived: boolean) {
+  if (!spaces.length) return {
+    canEdit: false,
+    rhythm: { completedThisWeek: 0, minutesThisWeek: 0 },
+    workspaces: [],
+    projects: [],
+  };
+  const spaceById = new Map(spaces.map(space => [space.id, space]));
+  const rows = await db.select().from(projects)
+    .where(inArray(projects.workspaceId, spaces.map(space => space.id)))
+    .orderBy(asc(projects.sortKey), desc(projects.updatedAt));
+  const visible = rows.filter(row => {
+    const space = spaceById.get(row.workspaceId);
+    return !!space && canReadProject({
+      userId,
+      wsRole: space.role,
+      visibility: row.visibility as "workspace" | "private",
+      createdBy: row.createdBy,
+    });
+  });
+  const listed = archived ? visible.filter(row => row.status === "archived") : visible.filter(row => row.status !== "archived");
+  const ids = listed.map(row => row.id);
+  const tasks = ids.length ? await db.select().from(projectTasks).where(inArray(projectTasks.projectId, ids)) : [];
+  const entries = ids.length ? await db.select().from(projectTimeEntries).where(inArray(projectTimeEntries.projectId, ids)) : [];
+  const tasksBy = new Map<string, TaskRow[]>();
+  const entriesBy = new Map<string, TimeRow[]>();
+  for (const task of tasks) tasksBy.set(task.projectId, [...(tasksBy.get(task.projectId) ?? []), task]);
+  for (const entry of entries) entriesBy.set(entry.projectId, [...(entriesBy.get(entry.projectId) ?? []), entry]);
+
+  const weekStart = shanghaiWeekStart();
+  const weekTasks = tasks.filter(task => task.status === "done" && task.completedAt && task.completedAt >= weekStart);
+  const weekSeconds = entries.filter(entry => entry.endedAt && entry.endedAt >= weekStart).reduce((sum, entry) => sum + entry.seconds, 0);
+  const result = listed.map(row => {
+    const ts = tasksBy.get(row.id) ?? [];
+    const es = entriesBy.get(row.id) ?? [];
+    const space = spaceById.get(row.workspaceId)!;
+    const acl = {
+      userId,
+      wsRole: space.role,
+      frozen: space.frozen,
+      visibility: row.visibility as "workspace" | "private",
+      createdBy: row.createdBy,
+      status: row.status as "planning" | "active" | "paused" | "done" | "archived",
+    };
+    return projectDto(row, {
+      health: healthOf(row, ts, es),
+      taskCount: ts.filter(task => task.status !== "cancelled").length,
+      doneCount: ts.filter(task => task.status === "done").length,
+      estimateMin: ts.reduce((sum, task) => sum + (task.estimateMin ?? 0), 0),
+      actualSeconds: secondsOf(es, undefined, true),
+      canEdit: canWriteProject(acl),
+      canArchive: !space.frozen && canArchiveProject(acl),
+    });
+  });
+  return {
+    canEdit: spaces.some(space => space.role !== "viewer" && !space.frozen),
+    rhythm: { completedThisWeek: weekTasks.length, minutesThisWeek: Math.round(weekSeconds / 60) },
+    workspaces: spaces.map(space => ({
+      ...space,
+      canEdit: space.role !== "viewer" && !space.frozen,
+      projectCount: result.filter(project => project.workspaceId === space.id).length,
+    })),
+    projects: result,
+  };
+}
+
 // ── 列表 / 新建 ────────────────────────────────────────────────────────
 
 projectRoutes.get("/workspaces/:id/projects/running", async c => {
@@ -313,40 +387,17 @@ projectRoutes.get("/workspaces/:id/projects", async c => {
   const workspaceId = c.req.param("id");
   const { user, role, ws } = await workspaceContext(c, workspaceId);
   const archived = c.req.query("archived") === "1";
-  const rows = await db.select().from(projects).where(eq(projects.workspaceId, workspaceId)).orderBy(asc(projects.sortKey), desc(projects.updatedAt));
-  const visible = rows.filter(r => canReadProject({ userId: user.id, wsRole: role, visibility: r.visibility as "workspace" | "private", createdBy: r.createdBy }));
-  const listed = archived ? visible.filter(r => r.status === "archived") : visible.filter(r => r.status !== "archived");
-  const ids = listed.map(r => r.id);
-  const tasks = ids.length ? await db.select().from(projectTasks).where(inArray(projectTasks.projectId, ids)) : [];
-  const entries = ids.length ? await db.select().from(projectTimeEntries).where(inArray(projectTimeEntries.projectId, ids)) : [];
-  const tasksBy = new Map<string, TaskRow[]>();
-  const entriesBy = new Map<string, TimeRow[]>();
-  for (const t of tasks) tasksBy.set(t.projectId, [...(tasksBy.get(t.projectId) ?? []), t]);
-  for (const e of entries) entriesBy.set(e.projectId, [...(entriesBy.get(e.projectId) ?? []), e]);
+  return ok(c, await projectList(user.id, [{ id: ws.id, name: ws.name, role, frozen: ws.frozen }], archived));
+});
 
-  const weekStart = shanghaiWeekStart();
-  const weekTasks = tasks.filter(t => t.status === "done" && t.completedAt && t.completedAt >= weekStart);
-  const weekSeconds = entries.filter(e => e.endedAt && e.endedAt >= weekStart).reduce((s, e) => s + e.seconds, 0);
-
-  return ok(c, {
-    canEdit: role !== "viewer" && !ws.frozen,
-    rhythm: { completedThisWeek: weekTasks.length, minutesThisWeek: Math.round(weekSeconds / 60) },
-    projects: listed.map(row => {
-      const ts = tasksBy.get(row.id) ?? [];
-      const es = entriesBy.get(row.id) ?? [];
-      const health = healthOf(row, ts, es);
-      const acl = { userId: user.id, wsRole: role, frozen: ws.frozen, visibility: row.visibility as "workspace" | "private", createdBy: row.createdBy, status: row.status as "planning" | "active" | "paused" | "done" | "archived" };
-      return projectDto(row, {
-        health,
-        taskCount: ts.filter(t => t.status !== "cancelled").length,
-        doneCount: ts.filter(t => t.status === "done").length,
-        estimateMin: ts.reduce((s, t) => s + (t.estimateMin ?? 0), 0),
-        actualSeconds: secondsOf(es, undefined, true),
-        canEdit: canWriteProject(acl),
-        canArchive: canArchiveProject(acl),
-      });
-    }),
-  });
+projectRoutes.get("/projects", async c => {
+  const user = await requireUser(c);
+  const rows = await db.select({ id: workspaces.id, name: workspaces.name, frozen: workspaces.frozen, role: workspaceMembers.role })
+    .from(workspaceMembers)
+    .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
+    .where(eq(workspaceMembers.userId, user.id));
+  const spaces = rows.map(row => ({ ...row, role: row.role as WsRole }));
+  return ok(c, await projectList(user.id, spaces, c.req.query("archived") === "1"));
 });
 
 projectRoutes.post("/workspaces/:id/projects", async c => {
@@ -402,7 +453,7 @@ projectRoutes.get("/projects/:id", async c => {
       estimateMin: tasks.reduce((s, t) => s + (t.estimateMin ?? 0), 0),
       actualSeconds: secondsOf(entries, undefined, true),
       canEdit: canWriteProject({ ...acl, status: project.status === "archived" ? "active" : acl.status }) && project.status !== "archived" && !ws.frozen && role !== "viewer",
-      canArchive: canArchiveProject(acl),
+      canArchive: !ws.frozen && canArchiveProject(acl),
     }),
     tasks: parents.map(t => taskDto(t, {
       actualSeconds: secondsOf(entries, t.id, true),
@@ -449,7 +500,7 @@ projectRoutes.patch("/projects/:id", async c => {
     estimateMin: tasks.reduce((s, t) => s + (t.estimateMin ?? 0), 0),
     actualSeconds: secondsOf(entries, undefined, true),
     canEdit: saved.status !== "archived" && !ws.frozen && role !== "viewer",
-    canArchive: canArchiveProject(acl),
+    canArchive: !ws.frozen && canArchiveProject(acl),
   }));
 });
 
@@ -478,6 +529,61 @@ projectRoutes.post("/projects/:id/unarchive", async c => {
   }).where(eq(projects.id, project.id)).returning();
   await audit(project.workspaceId, user.id, "project.unarchive", "project", project.id);
   return ok(c, { id: saved.id, status: saved.status, archivedAt: saved.archivedAt });
+});
+
+projectRoutes.post("/projects/:id/move", async c => {
+  const body = projectMove.parse(await c.req.json());
+  const { user, ws: source, project } = await loadProject(c, c.req.param("id"), "archive");
+  if (body.workspaceId === project.workspaceId) throw fail("VALIDATION", "项目已经在这个工作区");
+  if (source.frozen) throw fail("FORBIDDEN", "源工作区已冻结，暂时不能移动项目");
+  const { role: targetRole, ws: target } = await workspaceContext(c, body.workspaceId);
+  if (targetRole === "viewer") throw fail("FORBIDDEN", "只能移动到你可编辑的工作区");
+  if (target.frozen) throw fail("FORBIDDEN", "目标工作区已冻结，暂时只读");
+
+  const [running] = await db.select({ id: projectTimeEntries.id }).from(projectTimeEntries)
+    .where(and(eq(projectTimeEntries.projectId, project.id), isNull(projectTimeEntries.endedAt)))
+    .limit(1);
+  if (running) throw fail("VALIDATION", "项目还有正在运行的计时，请先停止后再移动");
+  if (project.status !== "archived") {
+    const [{ value }] = await db.select({ value: count() }).from(projects)
+      .where(and(eq(projects.workspaceId, target.id), ne(projects.status, "archived")));
+    if (Number(value) >= MAX_ACTIVE_PROJECTS) throw fail("VALIDATION", `目标工作区最多 ${MAX_ACTIVE_PROJECTS} 个未归档项目`);
+  }
+
+  const tasks = await db.select().from(projectTasks).where(eq(projectTasks.projectId, project.id));
+  const assigneeIds = [...new Set(tasks.map(task => task.assigneeUserId).filter((id): id is string => !!id))];
+  const targetMembers = assigneeIds.length
+    ? await db.select({ userId: workspaceMembers.userId }).from(workspaceMembers)
+      .where(and(eq(workspaceMembers.workspaceId, target.id), inArray(workspaceMembers.userId, assigneeIds)))
+    : [];
+  const targetMemberIds = new Set(targetMembers.map(member => member.userId));
+  const clearedTaskIds = tasks.filter(task => task.assigneeUserId && !targetMemberIds.has(task.assigneeUserId)).map(task => task.id);
+  const keys = await db.select({ sortKey: projects.sortKey }).from(projects).where(eq(projects.workspaceId, target.id));
+  const movedAt = new Date();
+  const details = { fromWorkspaceId: source.id, toWorkspaceId: target.id, tasks: tasks.length, clearedAssignees: clearedTaskIds.length };
+
+  await db.transaction(async tx => {
+    await tx.update(projects).set({
+      workspaceId: target.id,
+      sortKey: nextSortKey(keys.map(key => key.sortKey)),
+      updatedBy: user.id,
+      updatedAt: movedAt,
+    }).where(eq(projects.id, project.id));
+    await tx.update(projectTasks).set({ workspaceId: target.id, updatedBy: user.id, updatedAt: movedAt })
+      .where(eq(projectTasks.projectId, project.id));
+    if (clearedTaskIds.length) {
+      await tx.update(projectTasks).set({ assigneeUserId: null }).where(inArray(projectTasks.id, clearedTaskIds));
+    }
+    await tx.insert(auditLogs).values([
+      { userId: user.id, workspaceId: source.id, actorType: "user", actorId: user.id, action: "project.move_out", targetType: "project", targetId: project.id, result: "ok", details },
+      { userId: user.id, workspaceId: target.id, actorType: "user", actorId: user.id, action: "project.move_in", targetType: "project", targetId: project.id, result: "ok", details },
+    ]);
+  });
+  return ok(c, {
+    id: project.id,
+    workspaceId: target.id,
+    moved: { tasks: tasks.length, clearedAssignees: clearedTaskIds.length },
+  });
 });
 
 // ── 任务 ──────────────────────────────────────────────────────────────

@@ -253,12 +253,14 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/v1/workspaces/:id/projects` | `?archived=1` 看归档；默认不含归档。带回健康度与本周节奏 |
+| GET | `/api/v1/projects` | 当前用户所有工作区的可见项目；`?archived=1` 看归档。带工作区摘要与汇总后的本周节奏 |
 | POST | `/api/v1/workspaces/:id/projects` | 建项目；未归档上限 200 |
 | GET | `/api/v1/workspaces/:id/projects/running` | 当前用户正在跑的一只计时 |
 | GET | `/api/v1/projects/:id` | 详情：任务树、里程碑、脉搏、正在跑的表 |
 | PATCH | `/api/v1/projects/:id` | 改标题/状态/色/期/可见性。改可见性或归档走 archive ACL |
 | POST | `/api/v1/projects/:id/archive` | 归档；列表默认不再出现，详情只读 |
 | POST | `/api/v1/projects/:id/unarchive` | 拉回，落成 `done` |
+| POST | `/api/v1/projects/:id/move` | `{ workspaceId }`；原地跨工作区移动，双端权限与冻结检查；同步任务工作区并清空目标区无效指派 |
 | POST | `/api/v1/projects/:id/tasks` | 建任务；可选挂笔记、一层子任务 |
 | PATCH | `/api/v1/project-tasks/:id` | 改字段；不回写笔记正文 |
 | POST | `/api/v1/project-tasks/:id/move` | `{ status, beforeId? }` 看板拖拽 |
