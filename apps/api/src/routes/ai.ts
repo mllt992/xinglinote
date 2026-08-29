@@ -28,13 +28,13 @@ const providerFields=z.object({
   apiKey:z.string().optional(),
   enabled:z.boolean().default(true),
   personal:z.boolean().default(false),
-  workspaceIds:z.array(z.string().uuid()).min(1).max(50).optional(),
+  workspaceIds:z.array(z.string().uuid()).min(1).max(10000).optional(),
 });
 const providerBody=providerFields;
 const providerPatch=providerFields.partial().extend({clearApiKey:z.boolean().optional()});
 
-type IndexRow={id:string;title:string;notebookTitle:string;updatedAt:string;indexedAt:string|null;chunks:number;jobStatus:string|null;runAfter:string|null;lastError:string|null;aiIndex:boolean;status:IndexState};
-async function workspaceIndexRows(workspaceId:string):Promise<IndexRow[]> {
+type IndexRow={id:string;title:string;notebookTitle:string;workspaceId:string;workspaceName:string;updatedAt:string;indexedAt:string|null;chunks:number;jobStatus:string|null;runAfter:string|null;lastError:string|null;aiIndex:boolean;status:IndexState};
+async function workspaceIndexRows(workspaceId?:string):Promise<IndexRow[]> {
   const rows=await db.execute(sql`
     WITH latest_jobs AS (
       SELECT DISTINCT ON (payload->>'noteId') payload->>'noteId' note_id,status,run_after,last_error,created_at
@@ -45,22 +45,42 @@ async function workspaceIndexRows(workspaceId:string):Promise<IndexRow[]> {
       SELECT note_id,count(*)::int chunks,max(created_at) indexed_at
       FROM ai_chunks GROUP BY note_id
     )
-    SELECT n.id,n.title,nb.title notebook_title,n.updated_at,n.ai_index,
+    SELECT n.id,n.title,nb.title notebook_title,w.id workspace_id,w.name workspace_name,w.ai_enabled workspace_ai_enabled,n.updated_at,n.ai_index,
       coalesce(cs.chunks,0)::int chunks,cs.indexed_at,lj.status job_status,lj.run_after,lj.last_error
     FROM notes n
     INNER JOIN notebooks nb ON nb.id=n.notebook_id
+    INNER JOIN workspaces w ON w.id=n.workspace_id
     LEFT JOIN chunk_state cs ON cs.note_id=n.id
     LEFT JOIN latest_jobs lj ON lj.note_id=n.id::text
-    WHERE n.workspace_id=${workspaceId}::uuid AND n.trashed_at IS NULL
+    WHERE n.trashed_at IS NULL ${workspaceId?sql`AND n.workspace_id=${workspaceId}::uuid`:sql``}
     ORDER BY n.updated_at DESC
   `);
   return (rows as unknown as Array<Record<string,unknown>>).map(r=>{
-    const aiIndex=Boolean(r.ai_index),chunks=Number(r.chunks??0),jobStatus=r.job_status?String(r.job_status):null;
+    const aiIndex=Boolean(r.ai_index)&&Boolean(r.workspace_ai_enabled),chunks=Number(r.chunks??0),jobStatus=r.job_status?String(r.job_status):null;
     const updatedAt=new Date(String(r.updated_at)).toISOString();
     const indexedAt=r.indexed_at?new Date(String(r.indexed_at)).toISOString():null;
     const status=classifyIndexState({aiIndex,chunks,jobStatus,indexedAt,updatedAt});
-    return{id:String(r.id),title:String(r.title),notebookTitle:String(r.notebook_title),updatedAt,indexedAt,chunks,jobStatus,runAfter:r.run_after?new Date(String(r.run_after)).toISOString():null,lastError:r.last_error?String(r.last_error):null,aiIndex,status};
+    return{id:String(r.id),title:String(r.title),notebookTitle:String(r.notebook_title),workspaceId:String(r.workspace_id),workspaceName:String(r.workspace_name),updatedAt,indexedAt,chunks,jobStatus,runAfter:r.run_after?new Date(String(r.run_after)).toISOString():null,lastError:r.last_error?String(r.last_error):null,aiIndex,status};
   });
+}
+
+/** 实例管理员用当前区选定的共享 Embedding 配置统一覆盖所有已开启 AI 的工作区。 */
+async function applyEmbeddingToInstance(source:Awaited<ReturnType<typeof embeddingProvider>>){
+  if(!source?.embeddingModel)throw fail("AI_NOT_CONFIGURED","请先给当前工作区选择 Embedding 渠道和模型");
+  if(source.ownerUserId)throw fail("VALIDATION","全站量化必须使用工作区共享渠道，不能使用私人渠道");
+  const enabled=await db.select({id:workspaces.id}).from(workspaces).where(eq(workspaces.aiEnabled,true));
+  const workspaceIds=enabled.map(w=>w.id);
+  if(!workspaceIds.length)return 0;
+  const old=await db.select().from(workspaceAiSettings).where(inArray(workspaceAiSettings.workspaceId,workspaceIds));
+  const previous=new Map(old.map(s=>[s.workspaceId,s]));
+  const changed=workspaceIds.filter(id=>{const s=previous.get(id);return !s||s.embeddingProviderId!==source.id||s.embeddingModel!==source.embeddingModel;});
+  const providerScope=[...new Set([...providerWorkspaceIds(source),...workspaceIds])];
+  await db.transaction(async tx=>{
+    await tx.update(aiProviders).set({workspaceIds:providerScope,updatedAt:new Date()}).where(eq(aiProviders.id,source.id));
+    for(const id of workspaceIds)await tx.insert(workspaceAiSettings).values({workspaceId:id,embeddingProviderId:source.id,embeddingModel:source.embeddingModel,autoEmbed:source.autoEmbed,updatedAt:new Date()}).onConflictDoUpdate({target:workspaceAiSettings.workspaceId,set:{embeddingProviderId:source.id,embeddingModel:source.embeddingModel,autoEmbed:source.autoEmbed,updatedAt:new Date()}});
+    if(changed.length)await tx.delete(aiChunks).where(inArray(aiChunks.workspaceId,changed));
+  });
+  return workspaceIds.length;
 }
 
 aiRoutes.get("/workspaces/:id/ai/provider",async c=>{
@@ -168,29 +188,33 @@ aiRoutes.patch("/workspaces/:id/ai/settings",async c=>{
 
 aiRoutes.get("/workspaces/:id/ai/index-status",async c=>{
   const workspaceId=c.req.param("id");const {u}=await member(c,workspaceId);
-  const all=await workspaceIndexRows(workspaceId);
+  const instanceWide=c.req.query("scope")==="instance";
+  if(instanceWide&&u.roleInstance!=="admin")throw fail("FORBIDDEN","仅实例管理员可查看全站量化状态");
+  const all=await workspaceIndexRows(instanceWide?undefined:workspaceId);
   const status=z.enum(["indexed","pending","running","processing","stale","missing","failed","excluded"]).optional().parse(c.req.query("status")||undefined);
   const q=(c.req.query("q")??"").trim().toLocaleLowerCase();
   const limit=z.coerce.number().int().min(1).max(100).default(50).parse(c.req.query("limit")||undefined);
   const offset=z.coerce.number().int().min(0).default(0).parse(c.req.query("offset")||undefined);
-  const filtered=all.filter(n=>(!status||(status==="processing"?["pending","running"].includes(n.status):n.status===status))&&(!q||n.title.toLocaleLowerCase().includes(q)||n.notebookTitle.toLocaleLowerCase().includes(q)));
+  const filtered=all.filter(n=>(!status||(status==="processing"?["pending","running"].includes(n.status):n.status===status))&&(!q||n.title.toLocaleLowerCase().includes(q)||n.notebookTitle.toLocaleLowerCase().includes(q)||n.workspaceName.toLocaleLowerCase().includes(q)));
   const summary={indexed:0,pending:0,running:0,stale:0,missing:0,failed:0,excluded:0,total:all.length,eligible:0};
   for(const row of all){summary[row.status]++;if(row.aiIndex)summary.eligible++;}
   const p=await embeddingProvider(workspaceId,u.id);
-  return ok(c,{summary,notes:filtered.slice(offset,offset+limit),total:filtered.length,provider:{configured:!!p?.embeddingModel,model:p?.embeddingModel??null,autoEmbed:p?.autoEmbed??false}});
+  return ok(c,{summary,notes:filtered.slice(offset,offset+limit),total:filtered.length,instanceWide,provider:{configured:!!p?.embeddingModel,model:p?.embeddingModel??null,autoEmbed:p?.autoEmbed??false}});
 });
 
 aiRoutes.post("/workspaces/:id/ai/index/rebuild",async c=>{
   const workspaceId=c.req.param("id");const {u,role}=await ctx(c,workspaceId);
-  if(role!=="owner"&&role!=="admin")throw fail("FORBIDDEN","只有 Owner 或 Admin 能重建向量索引");
+  const body=z.object({scope:z.enum(["all","incomplete","failed","stale","missing"]).default("incomplete"),noteIds:z.array(z.string().uuid()).max(500).optional(),instanceWide:z.boolean().default(false)}).parse(await c.req.json().catch(()=>({})));
+  if(body.instanceWide){if(u.roleInstance!=="admin")throw fail("FORBIDDEN","仅实例管理员可重建全站向量索引");}
+  else if(role!=="owner"&&role!=="admin")throw fail("FORBIDDEN","只有 Owner 或 Admin 能重建向量索引");
   const p=await embeddingProvider(workspaceId,u.id);if(!p?.embeddingModel)throw fail("AI_NOT_CONFIGURED","请先给当前工作区选择 Embedding 渠道和模型");
-  const body=z.object({scope:z.enum(["all","incomplete","failed","stale","missing"]).default("incomplete"),noteIds:z.array(z.string().uuid()).max(500).optional()}).parse(await c.req.json().catch(()=>({})));
-  const rows=await workspaceIndexRows(workspaceId);
+  const appliedWorkspaces=body.instanceWide?await applyEmbeddingToInstance(p):1;
+  const rows=await workspaceIndexRows(body.instanceWide?undefined:workspaceId);
   const selected=rows.filter(n=>n.aiIndex&&n.status!=="running"&&(!body.noteIds||body.noteIds.includes(n.id))&&(
     body.noteIds?true:body.scope==="all"?true:body.scope==="incomplete"?["missing","stale","failed"].includes(n.status):n.status===body.scope
   ));
   for(const n of selected)await enqueueIndexNote(db,n.id,{force:true});
-  return ok(c,{queued:selected.length});
+  return ok(c,{queued:selected.length,appliedWorkspaces});
 });
 
 aiRoutes.delete("/ai/providers/:id",async c=>{const u=await currentUser(c);if(!u)throw fail("UNAUTHENTICATED","未登录");const [p]=await db.select().from(aiProviders).where(eq(aiProviders.id,c.req.param("id")));if(!p)throw fail("NOT_FOUND","配置不存在");if(!await canManageProvider(u.id,p))throw fail("FORBIDDEN","要删除共享配置，需要管理它绑定的全部工作区");const [ref]=await db.select({workspaceId:workspaceAiSettings.workspaceId}).from(workspaceAiSettings).where(or(eq(workspaceAiSettings.chatProviderId,p.id),eq(workspaceAiSettings.embeddingProviderId,p.id))).limit(1);if(ref)throw fail("VALIDATION","渠道正在被工作区使用，请先更换工作区模型配置");await db.delete(aiProviders).where(eq(aiProviders.id,p.id));return ok(c,{});});

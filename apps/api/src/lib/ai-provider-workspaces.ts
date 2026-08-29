@@ -1,11 +1,16 @@
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { aiProviders, notes } from "../db/schema.ts";
+import { aiProviders, notes, users, workspaces } from "../db/schema.ts";
 import { enqueueIndexNote } from "./ai-index.ts";
 import { memberRole } from "./workspace.ts";
 
 type DbLike = Pick<typeof db, "select" | "insert" | "update" | "delete">;
+
+async function isInstanceAdmin(userId: string) {
+  const [user] = await db.select({ role: users.roleInstance }).from(users).where(eq(users.id, userId));
+  return user?.role === "admin";
+}
 
 /** Provider 绑定的工作区。旧行只有 workspace_id 时回退成单元素数组。 */
 export function providerWorkspaceIds(p: { workspaceId: string; workspaceIds?: unknown }): string[] {
@@ -33,6 +38,11 @@ export function aiProviderCoversWorkspace(wsId: string) {
 /** 公用配置会影响所有成员，每个绑定区都要是管理员；私人配置只要仍是成员。 */
 export async function assertProviderWorkspaces(userId: string, workspaceIds: string[], personal: boolean) {
   if (!workspaceIds.length) throw fail("VALIDATION", "至少选一个工作区");
+  if (!personal && await isInstanceAdmin(userId)) {
+    const existing = await db.select({ id: workspaces.id }).from(workspaces).where(inArray(workspaces.id, workspaceIds));
+    if (existing.length !== workspaceIds.length) throw fail("VALIDATION", "适用范围包含不存在的工作区");
+    return;
+  }
   for (const id of workspaceIds) {
     const role = await memberRole(id, userId);
     if (!role) throw fail("FORBIDDEN", "不是工作区成员");
@@ -44,6 +54,7 @@ export async function assertProviderWorkspaces(userId: string, workspaceIds: str
 
 export async function canManageProvider(userId: string, p: { ownerUserId: string | null; workspaceId: string; workspaceIds?: unknown }) {
   if (p.ownerUserId) return p.ownerUserId === userId;
+  if (await isInstanceAdmin(userId)) return true;
   for (const id of providerWorkspaceIds(p)) {
     const role = await memberRole(id, userId);
     if (role !== "owner" && role !== "admin") return false;
