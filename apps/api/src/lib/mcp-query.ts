@@ -1,4 +1,5 @@
 import { and, desc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { AppError } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { folders, notebooks, notes } from "../db/schema.ts";
 import { retrieve, snippetAround } from "./knowledge-ai.ts";
@@ -58,7 +59,7 @@ export async function searchNotesInScope(input: {
   accept: (noteId: string) => Promise<boolean>;
 }) {
   const hits = new Map<string, KnowledgeSourceHit>();
-  if (!input.workspaceIds.length) return [];
+  if (!input.workspaceIds.length) return { hits: [], degraded: false };
 
   const take = async (hit: KnowledgeSourceHit) => {
     if (input.notebookId && hit.notebookId !== input.notebookId) return;
@@ -96,23 +97,31 @@ export async function searchNotesInScope(input: {
     }
   }
 
+  let degraded = false;
   if (input.mode !== "keyword") {
     for (const workspaceId of input.workspaceIds) {
-      const rows = await retrieve({
-        workspaceId,
-        userId: input.userId,
-        query: input.query,
-        notebookId: input.notebookId,
-        mode: input.mode === "hybrid" ? "semantic" : input.mode,
-        limit: input.limit,
-        filterNoteId: input.accept,
-      });
-      for (const r of rows) {
-        const [n] = await db.select().from(notes).where(eq(notes.id, r.noteId));
-        if (!n || n.trashedAt) continue;
-        const tags = n.tags as string[];
-        if (input.tag && !tags.includes(input.tag)) continue;
-        await take({ ...r, title: n.title, excerpt: r.excerpt, score: 1 + r.score });
+      try {
+        const rows = await retrieve({
+          workspaceId,
+          userId: input.userId,
+          query: input.query,
+          notebookId: input.notebookId,
+          mode: input.mode === "hybrid" ? "semantic" : input.mode,
+          limit: input.limit,
+          filterNoteId: input.accept,
+        });
+        for (const r of rows) {
+          const [n] = await db.select().from(notes).where(eq(notes.id, r.noteId));
+          if (!n || n.trashedAt) continue;
+          const tags = n.tags as string[];
+          if (input.tag && !tags.includes(input.tag)) continue;
+          await take({ ...r, title: n.title, excerpt: r.excerpt, score: 1 + r.score });
+        }
+      } catch (e) {
+        // hybrid 已经在上面跑过关键词；这里 retrieve 走的是 semantic，失败就丢掉向量支。
+        if (input.mode === "semantic" || !(e instanceof AppError) || e.code !== "AI_PROVIDER_ERROR") throw e;
+        degraded = true;
+        console.warn("MCP 语义检索失败，已用关键词结果：", e.message);
       }
     }
   }
@@ -120,7 +129,10 @@ export async function searchNotesInScope(input: {
   const sorted = [...hits.values()].sort((a, b) => b.score - a.score).slice(0, input.limit);
   const pathRows = sorted.map(h => ({ id: h.noteId, title: h.title, notebookId: h.notebookId, folderId: h.folderId }));
   const paths = await buildNotePaths(input.workspaceIds, pathRows);
-  return sorted.map(h => toMcpSource(h, paths.get(h.noteId) ?? [h.title]));
+  return {
+    hits: sorted.map(h => toMcpSource(h, paths.get(h.noteId) ?? [h.title])),
+    degraded,
+  };
 }
 
 export async function listRecentNotes(input: {

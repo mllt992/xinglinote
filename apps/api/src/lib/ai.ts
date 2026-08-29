@@ -1,11 +1,11 @@
 import { and, desc, eq } from "drizzle-orm";
-import { fail } from "@kb/shared";
+import { AppError, fail } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { aiProviders, workspaceAiSettings } from "../db/schema.ts";
 import { aiProviderCoversWorkspace } from "./ai-provider-workspaces.ts";
 import { extractChatContent, providerErrorHint } from "./ai-chat.ts";
 import { cacheGet, cacheSet, embedCacheKey, embedMediaCacheKey, EMBED_CACHE_TTL_SEC } from "./cache.ts";
-import { safeFetch } from "./net-guard.ts";
+import { classifyOutboundFailure, OutboundFetchError, safeFetch } from "./net-guard.ts";
 import { open } from "./secrets.ts";
 import { fullChatEvent, parseOpenAiChatStream, type ChatStreamEvent } from "./ai-stream.ts";
 
@@ -119,9 +119,7 @@ export async function discoverAiModels(baseUrl: string, apiKey: string, timeoutM
       signal: AbortSignal.timeout(timeoutMs),
     }, "AI 提供商地址");
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/timeout|aborted|AbortError/i.test(message)) throw fail("AI_PROVIDER_ERROR", "连接超时，请检查地址或网络");
-    throw error;
+    throw asAiProviderError(error, "连接超时，请检查地址或网络");
   }
   const raw = await response.text();
   if (!response.ok) throw fail("AI_PROVIDER_ERROR", providerErrorHint(response.status, raw));
@@ -169,17 +167,32 @@ function fallbackText(input: EmbedInput) {
  * baseUrl 是用户填的，所以每次真正发请求前都要再过一遍出站护栏（DNS 可能被改指向），
  * 并且必须带超时——一个吊住不返回的 provider 会把请求和 worker 任务一起占死。
  */
+function asAiProviderError(error: unknown, timeoutMessage: string) {
+  if (error instanceof AppError) return error;
+  if (error instanceof OutboundFetchError) {
+    return fail("AI_PROVIDER_ERROR", error.kind === "timeout" ? timeoutMessage : `连不上模型（${error.message}）`);
+  }
+  const { kind, message } = classifyOutboundFailure(error);
+  if (kind === "timeout") return fail("AI_PROVIDER_ERROR", timeoutMessage);
+  return fail("AI_PROVIDER_ERROR", `连不上模型（${message}）`);
+}
+
 async function embedRemote(p: Provider, input: EmbedInput[], timeoutMs = 30_000) {
   if (!input.length) return [] as number[][];
   const { baseUrl, model } = embedEndpoint(p);
   const independent = !!p.embeddingBaseUrl?.trim();
   const apiKey = providerKey(independent ? p.embeddingApiKey : p.apiKey);
-  const r = await safeFetch(`${baseUrl}/embeddings`, {
-    method: "POST",
-    headers: authHeaders(apiKey),
-    body: JSON.stringify({ model, input: embedBodyInput(input) }),
-    signal: AbortSignal.timeout(timeoutMs),
-  }, "AI 提供商地址");
+  let r: Response;
+  try {
+    r = await safeFetch(`${baseUrl}/embeddings`, {
+      method: "POST",
+      headers: authHeaders(apiKey),
+      body: JSON.stringify({ model, input: embedBodyInput(input) }),
+      signal: AbortSignal.timeout(timeoutMs),
+    }, "AI 提供商地址");
+  } catch (e) {
+    throw asAiProviderError(e, "Embedding 超时，请检查地址或网络");
+  }
   if (!r.ok) throw fail("AI_PROVIDER_ERROR", `Embedding 请求失败 (${r.status})`);
   const d = (await r.json()) as { data?: Array<{ index: number; embedding: number[] }> };
   return (d.data ?? []).sort((a, b) => a.index - b.index).map(x => x.embedding);
@@ -256,9 +269,7 @@ export async function chatAi(p: ChatProvider, messages: Array<{ role: string; co
       signal: AbortSignal.timeout(opts?.timeoutMs ?? 30_000),
     }, "AI 提供商地址");
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (/timeout|aborted|AbortError/i.test(msg)) throw fail("AI_PROVIDER_ERROR", "模型响应超时");
-    throw e;
+    throw asAiProviderError(e, "模型响应超时");
   }
   const raw = await r.text();
   if (!r.ok) throw fail("AI_PROVIDER_ERROR", providerErrorHint(r.status, raw));
@@ -289,9 +300,7 @@ export async function* streamChatAi(
       signal: AbortSignal.timeout(opts?.timeoutMs ?? 90_000),
     }, "AI 提供商地址");
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (/timeout|aborted|AbortError/i.test(msg)) throw fail("AI_PROVIDER_ERROR", "模型响应超时");
-    throw e;
+    throw asAiProviderError(e, "模型响应超时");
   }
   if (!r.ok) throw fail("AI_PROVIDER_ERROR", providerErrorHint(r.status, await r.text()));
   if (!r.body) throw fail("AI_PROVIDER_ERROR", "模型没有返回响应流");

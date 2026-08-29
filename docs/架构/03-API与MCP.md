@@ -348,6 +348,8 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 - 协议方法：`initialize`、`ping`（回 `{}`）、`tools/list`、`tools/call`。未知 `notifications/*` 回 204。其它未知方法记失败审计，`action` 用 `mcp.{method}`，`details` 写 `VALIDATION` +「不支持的方法：{method}」，不要一律写成 `mcp.request`。`ping` / `initialize` / `tools/list` 成功不写审计，否则客户端保活会把日志刷满。
 - 创建类工具公开 UUID 参数 `client_request_id`，所有写工具也认 HTTP 头 `Idempotency-Key`。`mcp_idempotency` 以钥匙、工具名和键为主键，保存参数哈希及首次成功结果 10 分钟；同键不同参数返回 `IDEMPOTENCY_KEY_REUSED`，并发同参请求等待首个结果。
 - 错误：JSON-RPC `error.data` 为 `{ code, message, ...fields }`，`code` 同 HTTP。`CONFLICT_VERSION` 带当前 `version`。
+  未捕获异常一律 `{ code: "INTERNAL", message: "服务器错误" }`，**不要**把 `fetch failed`、堆栈、出站 cause 写进 JSON-RPC——那是 Node/undici 的网络层原文，客户端会误以为 MCP 网关自己挂了。真正原因写进程日志。
+  出站打 AI / Embedding 失败必须先收成 `AI_PROVIDER_ERROR`（超时 / DNS / TLS / 连接被拒），人话写 `message`。`search_notes` 默认 hybrid：向量支挂了就只回关键词，并在 `retrieval_metadata.degraded=true`；纯 `semantic` 才把 `AI_PROVIDER_ERROR` 抛给调用方。
 
 鉴权链严格按 [设计 11 §5.1](../设计/11-MCP.md)。
 
@@ -411,8 +413,9 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 → {
     hits: [{ note_id, title, notebook_id, path, version, updated_at,
              excerpt, relevance_score? }],
-    retrieval_metadata: { mode, hit_count, truncated }
+    retrieval_metadata: { mode, hit_count, truncated, degraded? }
   }   // 默认 8，≤20，excerpt≤360；note_id 可直接传给 get_note
+     // hybrid 的 Embedding 失败时 degraded=true，hits 仍是关键词结果
 ```
 
 ### get_note

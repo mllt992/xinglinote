@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { fail } from "@kb/shared";
+import { AppError, fail } from "@kb/shared";
 import { scoreNote, tokenize, type QueryPart } from "@kb/core";
 import { db } from "../db/client.ts";
 import { aiUsage, attachments, notes } from "../db/schema.ts";
@@ -262,26 +262,32 @@ export async function retrieve(input: RetrieveInput): Promise<KnowledgeSourceHit
   }
 
   if (mode !== "keyword" && p?.embeddingModel) {
-    const [v] = await embed(p, [input.query]);
-    const rows = await db.execute(sql`
-      SELECT c.id, c.note_id, c.content
-      FROM ai_chunks c
-      INNER JOIN notes n ON n.id = c.note_id
-      WHERE c.workspace_id = ${input.workspaceId}::uuid
-        AND n.ai_index = true
-        AND n.trashed_at IS NULL
-        ${input.notebookId ? sql`AND c.notebook_id = ${input.notebookId}::uuid` : sql``}
-      ORDER BY kb_cosine_distance(c.embedding, ${vector(v)}::double precision[])
-      LIMIT ${VECTOR_LIMIT}
-    `);
-    let rank = 0;
-    for (const r of rows as unknown as Array<{ id: unknown; note_id: unknown; content: unknown }>) {
-      const noteId = String(r.note_id);
-      cands.push({
-        key: String(r.id),
-        hit: { noteId, title: "", excerpt: String(r.content), score: 0 },
-        rank: rank++,
-      });
+    try {
+      const [v] = await embed(p, [input.query]);
+      const rows = await db.execute(sql`
+        SELECT c.id, c.note_id, c.content
+        FROM ai_chunks c
+        INNER JOIN notes n ON n.id = c.note_id
+        WHERE c.workspace_id = ${input.workspaceId}::uuid
+          AND n.ai_index = true
+          AND n.trashed_at IS NULL
+          ${input.notebookId ? sql`AND c.notebook_id = ${input.notebookId}::uuid` : sql``}
+        ORDER BY kb_cosine_distance(c.embedding, ${vector(v)}::double precision[])
+        LIMIT ${VECTOR_LIMIT}
+      `);
+      let rank = 0;
+      for (const r of rows as unknown as Array<{ id: unknown; note_id: unknown; content: unknown }>) {
+        const noteId = String(r.note_id);
+        cands.push({
+          key: String(r.id),
+          hit: { noteId, title: "", excerpt: String(r.content), score: 0 },
+          rank: rank++,
+        });
+      }
+    } catch (e) {
+      // hybrid 本来就有关键词；embedding 挂了不该把整次搜索打成「fetch failed」。
+      if (mode === "semantic" || !(e instanceof AppError) || e.code !== "AI_PROVIDER_ERROR") throw e;
+      console.warn("语义检索失败，改用关键词：", e.message);
     }
   }
 

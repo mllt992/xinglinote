@@ -48,7 +48,7 @@ const write = (title: string, extra: Partial<ToolAnnotations> = {}): ToolAnnotat
 export const MCP_INSTRUCTIONS = [
   "这是星璃笔记的知识库 MCP。一把钥匙可以勾选多个工作区，权限不会超过持有人本人。",
   "先调 get_me，看 workspaces、rw、notebooks 和到期时间，再动手。",
-  "找内容用 search_notes（默认 hybrid，默认 8 条摘要），不要用 list_folder 扫整库，也不要猜测 UUID。",
+  "找内容用 search_notes（默认 hybrid，默认 8 条摘要），不要用 list_folder 扫整库，也不要猜测 UUID。hybrid 连不上 Embedding 时会降级成关键词，不必当成整库挂了。",
   "读一篇用 get_note；默认最多回 6000 字，超长时 truncated=true，用 offset 翻页。改正文必须先拿到 version，再传 expected_version。",
   "create_note / update_note 用 body_md 传 Markdown 正文；append_to_note 仍用 content 追加。",
   "只改一段请用 replace_in_note，日记补一行用 append_to_note，不要整篇重写，也不要为了改一段把长文读完。",
@@ -90,7 +90,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
   },
   search_notes: {
     tier: "read",
-    description: "检索笔记。mode=keyword 只做关键词；semantic 语义；hybrid（默认）两者融合。每条返回 note_id、路径、版本和 ≤360 字摘录，可用 note_id 调 get_note 核验。默认 8 条。",
+    description: "检索笔记。mode=keyword 只做关键词；semantic 语义；hybrid（默认）两者融合。每条返回 note_id、路径、版本和 ≤360 字摘录，可用 note_id 调 get_note 核验。默认 8 条。hybrid 在 Embedding 连不上时会降级成关键词，retrieval_metadata.degraded=true。",
     properties: {
       query: { type: "string", minLength: 1, maxLength: 200 },
       notebook_id: UUID,

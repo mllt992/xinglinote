@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isPrivateAddress } from "./client-ip.ts";
-import { assertSafeOutboundUrl, privateOutboundAllowed } from "./net-guard.ts";
+import { assertSafeOutboundUrl, classifyOutboundFailure, privateOutboundAllowed } from "./net-guard.ts";
 
 test("私网、环回、链路本地都算内网", () => {
   for (const ip of ["127.0.0.1", "::1", "10.0.0.5", "172.16.3.1", "172.31.255.254", "192.168.1.1",
@@ -33,4 +33,30 @@ test("公网 IP 字面量放行（不做 DNS）", async (t) => {
   if (privateOutboundAllowed()) return t.skip("本机开了 ALLOW_PRIVATE_OUTBOUND_ENDPOINTS");
   const u = await assertSafeOutboundUrl("https://8.8.8.8/v1");
   assert.equal(u.hostname, "8.8.8.8");
+});
+
+function fetchFailed(cause: Error & { code?: string }) {
+  return new TypeError("fetch failed", { cause });
+}
+
+test("undici 的 fetch failed 从 cause 链分出 DNS / 超时 / 拒连，而不是三个字", () => {
+  const dns = Object.assign(new Error("getaddrinfo ENOTFOUND example.invalid"), { code: "ENOTFOUND" });
+  assert.equal(classifyOutboundFailure(fetchFailed(dns)).kind, "dns");
+  assert.match(classifyOutboundFailure(fetchFailed(dns)).message, /域名解析/);
+
+  const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1"), { code: "ECONNREFUSED" });
+  assert.equal(classifyOutboundFailure(fetchFailed(refused)).kind, "refused");
+
+  const reset = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+  assert.equal(classifyOutboundFailure(fetchFailed(reset)).kind, "reset");
+
+  const timeout = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+  assert.equal(classifyOutboundFailure(timeout).kind, "timeout");
+
+  assert.equal(classifyOutboundFailure(new TypeError("fetch failed")).kind, "network");
+  assert.equal(classifyOutboundFailure(new TypeError("fetch failed")).message, "网络请求失败");
+
+  const nested = Object.assign(new Error("getaddrinfo ENOTFOUND x"), { code: "ENOTFOUND" });
+  const aggregate = Object.assign(new Error("fetch failed"), { errors: [nested] });
+  assert.equal(classifyOutboundFailure(aggregate).kind, "dns");
 });

@@ -61,8 +61,74 @@ export async function assertSafeOutboundUrl(raw: string, what = "地址"): Promi
 /** 出站请求的统一超时。吊住不返回的第三方能把请求和 worker 任务一起占死。 */
 export const OUTBOUND_TIMEOUT_MS = 30_000;
 
+export type OutboundFailureKind = "timeout" | "dns" | "tls" | "refused" | "reset" | "network";
+
+const KIND_HINT: Record<OutboundFailureKind, string> = {
+  timeout: "连接超时",
+  dns: "域名解析失败",
+  tls: "TLS 握手失败",
+  refused: "连接被拒绝",
+  reset: "连接被中断",
+  network: "网络请求失败",
+};
+
+/** Node/undici 的 TypeError("fetch failed") 把真正原因藏在 cause 链里，客户端只能看见这三个字。 */
+function errorChain(err: unknown): Array<{ name: string; message: string; code: string }> {
+  const out: Array<{ name: string; message: string; code: string }> = [];
+  const seen = new Set<unknown>();
+  let cur: unknown = err;
+  while (cur && !seen.has(cur) && out.length < 8) {
+    seen.add(cur);
+    if (cur instanceof Error) {
+      const code = typeof (cur as { code?: unknown }).code === "string" ? (cur as { code: string }).code : "";
+      out.push({ name: cur.name, message: cur.message, code });
+      const nested = (cur as { errors?: unknown }).errors;
+      if (Array.isArray(nested) && nested[0] && !cur.cause) {
+        cur = nested[0];
+        continue;
+      }
+      cur = cur.cause;
+    } else if (typeof cur === "object" && cur && "message" in cur) {
+      out.push({ name: "", message: String((cur as { message: unknown }).message), code: "" });
+      break;
+    } else {
+      out.push({ name: "", message: String(cur), code: "" });
+      break;
+    }
+  }
+  return out;
+}
+
+export function classifyOutboundFailure(err: unknown): { kind: OutboundFailureKind; message: string } {
+  const chain = errorChain(err);
+  const codes = chain.map(x => x.code).join(" ");
+  const names = chain.map(x => x.name).join(" ");
+  const blob = chain.map(x => `${x.name} ${x.message} ${x.code}`).join("\n");
+  let kind: OutboundFailureKind = "network";
+  if (/ENOTFOUND|EAI_AGAIN|ERR_NAME_NOT_RESOLVED/i.test(codes) || /getaddrinfo/i.test(blob)) kind = "dns";
+  else if (/ECONNREFUSED/i.test(codes)) kind = "refused";
+  else if (/ECONNRESET|EPIPE|UND_ERR_SOCKET|ECONNABORTED/i.test(codes) || /socket hang up/i.test(blob)) kind = "reset";
+  else if (/CERT_|UNABLE_TO_VERIFY|ERR_TLS|ERR_SSL/i.test(codes) || /certificate|self[- ]signed/i.test(blob)) kind = "tls";
+  else if (/ETIMEDOUT|UND_ERR_(CONNECT_|HEADERS_|BODY_)?TIMEOUT/i.test(codes) || /TimeoutError|AbortError/i.test(names) || /timeout|aborted/i.test(blob)) kind = "timeout";
+  return { kind, message: KIND_HINT[kind] };
+}
+
+export class OutboundFetchError extends Error {
+  readonly kind: OutboundFailureKind;
+  constructor(kind: OutboundFailureKind, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "OutboundFetchError";
+    this.kind = kind;
+  }
+}
+
 /** 校验 + 超时一把抓的 fetch。所有打第三方的地方都走它。 */
 export async function safeFetch(url: string, init: RequestInit = {}, what = "地址") {
   await assertSafeOutboundUrl(url, what);
-  return fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(OUTBOUND_TIMEOUT_MS) });
+  try {
+    return await fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(OUTBOUND_TIMEOUT_MS) });
+  } catch (e) {
+    const { kind, message } = classifyOutboundFailure(e);
+    throw new OutboundFetchError(kind, `${what}：${message}`, { cause: e });
+  }
 }

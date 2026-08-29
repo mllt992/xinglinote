@@ -175,7 +175,7 @@ target notes:
 须 write。在笔记本根目录或指定父目录下新建文件夹；父目录必须属于同一本，沿用网页端最多 8 层的深度限制。出：id、notebook_id、parent_id、title。创建操作进入 MCP 幂等链。
 
 **`search_notes(query, notebook_id?, workspace_id?, tag?, mode=keyword|semantic|hybrid, limit?)`**  
-limit≤20，**默认 8**（不要一上来塞 20 条摘要）。出：`{ hits: [source], retrieval_metadata }`。`source` 统一为 `{ note_id, title, notebook_id, path, version, updated_at, excerpt, relevance_score? }`，excerpt≤360；`note_id` 可直接传给 `get_note` 核验，`relevance_score` 仅用于当前结果集内部排序。`retrieval_metadata` 含 mode / hit_count / truncated，不暴露向量。默认搜全部勾选区；传了 `workspace_id` 只搜那一区。keyword 走转义后的 ILIKE；semantic / hybrid 复用 10 的 `retrieve()`，但仍要过钥匙范围，不得绕开 `require_ai_index`。查询里的 `%` `_` 当字面量，不当通配符。标题、路径和摘录只在整条笔记通过钥匙权限检查后返回。
+limit≤20，**默认 8**（不要一上来塞 20 条摘要）。出：`{ hits: [source], retrieval_metadata }`。`source` 统一为 `{ note_id, title, notebook_id, path, version, updated_at, excerpt, relevance_score? }`，excerpt≤360；`note_id` 可直接传给 `get_note` 核验，`relevance_score` 仅用于当前结果集内部排序。`retrieval_metadata` 含 mode / hit_count / truncated，不暴露向量；hybrid 的 Embedding 连不上时额外给 `degraded: true`，hits 仍是关键词结果，不要把整次调用打成 `fetch failed`。默认搜全部勾选区；传了 `workspace_id` 只搜那一区。keyword 走转义后的 ILIKE；semantic / hybrid 复用 10 的 `retrieve()`，但仍要过钥匙范围，不得绕开 `require_ai_index`。查询里的 `%` `_` 当字面量，不当通配符。标题、路径和摘录只在整条笔记通过钥匙权限检查后返回。纯 `semantic` 才把上游网络失败以 `AI_PROVIDER_ERROR` 抛给调用方。
 
 **`get_note(id, offset?, max_chars?)`**  
 出：id、title、path（笔记本 → 目录 → 标题）、body_md、version、tags、ai_index、published、links[{raw,target_id,state}]、`offset`、`total_chars`、`truncated`。  

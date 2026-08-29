@@ -41,6 +41,7 @@ test("get_note 带翻页参数，search_notes 默认 8 条", () => {
   assert.ok(get?.inputSchema.properties && "max_chars" in get.inputSchema.properties);
   const limit = (search?.inputSchema.properties as { limit?: { default?: number } } | undefined)?.limit;
   assert.equal(limit?.default, 8);
+  assert.match(search?.description ?? "", /degraded/);
 });
 
 test("每个列出的工具都带注解", () => {
