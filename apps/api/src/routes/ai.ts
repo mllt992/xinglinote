@@ -1,7 +1,8 @@
 import { Hono } from "hono";
+import { stream } from "hono/streaming";
 import { and, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
-import { fail } from "@kb/shared";
+import { AppError, fail } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { aiChunks, aiProviders, aiUsage, backgroundJobs, instanceSettings, notes, workspaceAiSettings, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
@@ -11,7 +12,7 @@ import { memberRole } from "../lib/workspace.ts";
 import { open, seal, suffix } from "../lib/secrets.ts";
 import { aiEmbeddingProvider as embeddingProvider, aiProvider as provider, chatAi as chat, discoverAiModels } from "../lib/ai.ts";
 import { assertSafeOutboundUrl } from "../lib/net-guard.ts";
-import { askKnowledge,retrieve } from "../lib/knowledge-ai.ts";
+import { askKnowledge,retrieve,streamAskKnowledge } from "../lib/knowledge-ai.ts";
 import { noteAccess } from "../lib/note-access.ts";
 import { classifyIndexState, enqueueIndexNote, type IndexState } from "../lib/ai-index.ts";
 export const aiRoutes=new Hono();
@@ -211,3 +212,20 @@ aiRoutes.post("/ai/diagram",async c=>{const body=z.object({noteId:z.string().uui
   return ok(c,{source,lang:"mermaid"});});
 aiRoutes.post("/ai/search",async c=>{const body=z.object({workspaceId:z.string().uuid(),query:z.string().min(1).max(2000),notebookId:z.string().uuid().optional(),mode:z.enum(["keyword","semantic","hybrid"]).default("hybrid"),limit:z.number().int().min(1).max(20).default(20)}).parse(await c.req.json());const{u}=await ctx(c,body.workspaceId);return ok(c,{hits:await retrieve({...body,userId:u.id})});});
 aiRoutes.post("/ai/ask",async c=>{const body=z.object({workspaceId:z.string().uuid(),question:z.string().min(1).max(2000),notebookId:z.string().uuid().optional(),history:z.array(z.object({question:z.string().min(1).max(2000),answer:z.string().min(1).max(4000)})).max(6).optional()}).parse(await c.req.json());const{u}=await ctx(c,body.workspaceId);return ok(c,await askKnowledge({...body,userId:u.id}));});
+aiRoutes.post("/ai/ask/stream",async c=>{
+  const body=z.object({workspaceId:z.string().uuid(),question:z.string().min(1).max(2000),notebookId:z.string().uuid().optional(),history:z.array(z.object({question:z.string().min(1).max(2000),answer:z.string().min(1).max(4000)})).max(6).optional()}).parse(await c.req.json());
+  const{u}=await ctx(c,body.workspaceId);
+  c.header("Content-Type","application/x-ndjson; charset=utf-8");
+  c.header("Cache-Control","no-cache, no-transform");
+  c.header("X-Accel-Buffering","no");
+  return stream(c,async output=>{
+    const send=(event:unknown)=>output.write(`${JSON.stringify(event)}\n`);
+    try{
+      const result=await streamAskKnowledge({...body,userId:u.id},async delta=>{await send({type:"delta",delta});});
+      await send({type:"done",data:result});
+    }catch(error){
+      const detail=error instanceof AppError?{code:error.code,message:error.message,fields:error.fields}:{code:"INTERNAL",message:"生成回答失败"};
+      await send({type:"error",error:detail});
+    }
+  });
+});

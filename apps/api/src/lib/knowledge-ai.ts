@@ -4,7 +4,7 @@ import { scoreNote, tokenize, type QueryPart } from "@kb/core";
 import { db } from "../db/client.ts";
 import { aiUsage, attachments, notes } from "../db/schema.ts";
 import { noteAccess } from "./note-access.ts";
-import { aiEmbeddingProvider, aiProvider, chatAi, embed, mediaCaption, vector } from "./ai.ts";
+import { aiEmbeddingProvider, aiProvider, chatAi, embed, mediaCaption, streamChatAi, vector } from "./ai.ts";
 import { likeContains } from "./like.ts";
 
 type RetrieveInput = {
@@ -338,6 +338,16 @@ export async function askKnowledge(input: AskInput) {
   return answerFromHits(input.workspaceId, input.userId, input.question, rows, input.history);
 }
 
+/** 与 askKnowledge 共用检索、提示和引用校验，只把模型输出逐块交给 HTTP 层。 */
+export async function streamAskKnowledge(input: AskInput, onDelta: (delta: string) => void | Promise<void>) {
+  const p = await aiProvider(input.workspaceId, input.userId);
+  if (!p) throw fail("AI_NOT_CONFIGURED", "请先配置 AI 提供商");
+  const rows = askNeedsNotes(input.question)
+    ? hitsSupportQuestion(input.question, await retrieve({ ...input, query: input.question, mode: "hybrid", limit: 8 }))
+    : [];
+  return streamAnswerFromHits(input.workspaceId, input.userId, input.question, rows, input.history, onDelta);
+}
+
 /** 多工作区问答：各区检索后合并再答，模型用第一个配好 AI 的区。 */
 export async function askKnowledgeAcross(input: {
   workspaceIds: string[];
@@ -384,13 +394,56 @@ async function answerFromHits(workspaceId: string, userId: string, question: str
   const p = await aiProvider(workspaceId, userId);
   if (!p) throw fail("AI_NOT_CONFIGURED", "请先配置 AI 提供商");
   const grounded = packed.length > 0;
-  const out = await chatAi(p, [
+  const messages = [
     { role: "system", content: grounded ? GROUNDED_SYSTEM : GENERAL_SYSTEM },
     ...historyMessages(history),
     { role: "user", content: grounded ? formatAskUserMessage(packed, question) : question },
-  ]);
+  ];
+  const out = await chatAi(p, messages);
+  return finishAnswer(workspaceId, userId, p.chatModel, rows, packed, grounded, out.content, out.usage);
+}
+
+async function streamAnswerFromHits(
+  workspaceId: string,
+  userId: string,
+  question: string,
+  rows: KnowledgeSourceHit[],
+  history: AskHistoryTurn[] | undefined,
+  onDelta: (delta: string) => void | Promise<void>,
+) {
+  const packed = packAskContext(rows);
+  const p = await aiProvider(workspaceId, userId);
+  if (!p) throw fail("AI_NOT_CONFIGURED", "请先配置 AI 提供商");
+  const grounded = packed.length > 0;
+  const messages = [
+    { role: "system", content: grounded ? GROUNDED_SYSTEM : GENERAL_SYSTEM },
+    ...historyMessages(history),
+    { role: "user", content: grounded ? formatAskUserMessage(packed, question) : question },
+  ];
+  let content = "";
+  let usage: Record<string, number> = {};
+  for await (const event of streamChatAi(p, messages)) {
+    if (event.delta) {
+      content += event.delta;
+      await onDelta(event.delta);
+    }
+    if (event.usage) usage = event.usage;
+  }
+  return finishAnswer(workspaceId, userId, p.chatModel, rows, packed, grounded, content, usage);
+}
+
+async function finishAnswer(
+  workspaceId: string,
+  userId: string,
+  model: string,
+  rows: KnowledgeSourceHit[],
+  packed: KnowledgeSourceHit[],
+  grounded: boolean,
+  content: string,
+  usage: Record<string, number>,
+) {
   const cited = grounded
-    ? new Set([...out.content.matchAll(/\[#(\d+)\]/g)].map(m => Number(m[1]) - 1).filter(i => i >= 0 && i < packed.length))
+    ? new Set([...content.matchAll(/\[#(\d+)\]/g)].map(m => Number(m[1]) - 1).filter(i => i >= 0 && i < packed.length))
     : new Set<number>();
   const citedIndexes = [...cited];
   const currentRows = citedIndexes.length
@@ -399,9 +452,9 @@ async function answerFromHits(workspaceId: string, userId: string, question: str
     : [];
   const citations = markCitationVersions(packed, citedIndexes, new Map(currentRows.map(n => [n.id, n.version])));
   const sourceVersionChanged = citations.some(c => !c.versionMatchesCurrent);
-  await db.insert(aiUsage).values({ userId, workspaceId, action: "ask", model: p.chatModel, inputTokens: out.usage.prompt_tokens ?? 0, outputTokens: out.usage.completion_tokens ?? 0 });
+  await db.insert(aiUsage).values({ userId, workspaceId, action: "ask", model, inputTokens: usage.prompt_tokens ?? 0, outputTokens: usage.completion_tokens ?? 0 });
   return {
-    answer: out.content,
+    answer: content,
     citations,
     grounded,
     sourceVersionChanged,
