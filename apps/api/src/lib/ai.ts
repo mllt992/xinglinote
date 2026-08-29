@@ -7,6 +7,7 @@ import { extractChatContent, providerErrorHint } from "./ai-chat.ts";
 import { cacheGet, cacheSet, embedCacheKey, embedMediaCacheKey, EMBED_CACHE_TTL_SEC } from "./cache.ts";
 import { safeFetch } from "./net-guard.ts";
 import { open } from "./secrets.ts";
+import { fullChatEvent, parseOpenAiChatStream, type ChatStreamEvent } from "./ai-stream.ts";
 
 export { extractChatContent } from "./ai-chat.ts";
 
@@ -264,6 +265,44 @@ export async function chatAi(p: ChatProvider, messages: Array<{ role: string; co
   let d: { usage?: Record<string, number> } = {};
   try { d = raw ? JSON.parse(raw) as { usage?: Record<string, number> } : {}; } catch { throw fail("AI_PROVIDER_ERROR", "模型返回的不是 JSON"); }
   return { content: extractChatContent(d), usage: d.usage ?? {} };
+}
+
+/** 问答用流式调用；写作和画图仍需要完整结果，继续走 chatAi。 */
+export async function* streamChatAi(
+  p: ChatProvider,
+  messages: Array<{ role: string; content: string }>,
+  opts?: { temperature?: number; timeoutMs?: number; maxTokens?: number },
+): AsyncGenerator<ChatStreamEvent> {
+  let r: Response;
+  try {
+    r = await safeFetch(`${p.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: authHeaders(providerKey(p.apiKey)),
+      body: JSON.stringify({
+        model: p.chatModel,
+        messages,
+        temperature: opts?.temperature ?? 0.2,
+        stream: true,
+        stream_options: { include_usage: true },
+        ...(opts?.maxTokens ? { max_tokens: opts.maxTokens } : {}),
+      }),
+      signal: AbortSignal.timeout(opts?.timeoutMs ?? 90_000),
+    }, "AI 提供商地址");
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/timeout|aborted|AbortError/i.test(msg)) throw fail("AI_PROVIDER_ERROR", "模型响应超时");
+    throw e;
+  }
+  if (!r.ok) throw fail("AI_PROVIDER_ERROR", providerErrorHint(r.status, await r.text()));
+  if (!r.body) throw fail("AI_PROVIDER_ERROR", "模型没有返回响应流");
+  if (!String(r.headers.get("content-type") ?? "").includes("text/event-stream")) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(await r.text()); }
+    catch { throw fail("AI_PROVIDER_ERROR", "模型返回的不是 JSON 或 SSE"); }
+    yield fullChatEvent(parsed);
+    return;
+  }
+  yield* parseOpenAiChatStream(r.body);
 }
 
 export function plain(md: string) {

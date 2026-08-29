@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Bot, FilePlus2, Notebook, Search, Sparkles, Trash2, X } from "lucide-react";
 import { MarkdownView } from "../MarkdownView";
-import { api } from "../api";
+import { api, apiJsonLines } from "../api";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { FormError } from "./ui/form-error";
@@ -71,6 +71,7 @@ export function AskSidebar({
   const [turns, setTurns] = useState<Turn[]>(() => workspaceId ? loadTurns(workspaceId) : []);
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [streamingId, setStreamingId] = useState<string | null>(null);
   const host = useRef<HTMLElement | null>(null);
   const bottom = useRef<HTMLDivElement | null>(null);
   const box = useRef<HTMLTextAreaElement | null>(null);
@@ -123,8 +124,17 @@ export function AskSidebar({
     setBusy(true);
     setError("");
     setQ("");
+    const id = crypto.randomUUID();
+    setStreamingId(id);
+    setTurns(current => [...current, { id, question, answer: "", citations: [], at: Date.now(), scope }]);
     try {
-      const data = await api<{ answer: string; citations: Citation[]; grounded?: boolean }>("/api/v1/ai/ask", {
+      let answer = "";
+      let done: { answer: string; citations: Citation[]; grounded?: boolean } | undefined;
+      await apiJsonLines<
+        | { type: "delta"; delta: string }
+        | { type: "done"; data: { answer: string; citations: Citation[]; grounded?: boolean } }
+        | { type: "error"; error: { code: string; message: string } }
+      >("/api/v1/ai/ask/stream", {
         method: "POST",
         body: JSON.stringify({
           workspaceId,
@@ -132,16 +142,24 @@ export function AskSidebar({
           notebookId: scope === "notebook" ? notebookId : undefined,
           history: turns.slice(-3).map(t => ({ question: t.question, answer: t.answer.slice(0, 240) })),
         }),
+      }, event => {
+        if (event.type === "error") throw Object.assign(new Error(event.error.message), { code: event.error.code });
+        if (event.type === "done") { done = event.data; return; }
+        answer += event.delta;
+        setTurns(current => current.map(turn => turn.id === id ? { ...turn, answer } : turn));
       });
-      const next: Turn[] = [...turns, {
-        id: crypto.randomUUID(),
+      if (!done) throw new Error("回答流提前结束");
+      const data = done as { answer: string; citations: Citation[]; grounded?: boolean };
+      const completed: Turn = {
+        id,
         question,
         answer: data.answer,
         citations: data.citations ?? [],
         grounded: data.grounded,
         at: Date.now(),
         scope,
-      }];
+      };
+      const next: Turn[] = [...turns, completed];
       setTurns(next);
       saveTurns(workspaceId, next);
     } catch (e) {
@@ -149,7 +167,9 @@ export function AskSidebar({
       setError(err.message);
       if (err.code === "AI_NOT_CONFIGURED") setConfigured(false);
       setQ(question);
+      setTurns(current => current.filter(turn => turn.id !== id));
     } finally {
+      setStreamingId(null);
       setBusy(false);
     }
   }
@@ -264,7 +284,9 @@ export function AskSidebar({
             <article key={turn.id} className="space-y-2">
               <div className="ml-6 rounded-xl bg-primary px-3 py-2 text-sm text-primary-foreground">{turn.question}</div>
               <div className="rounded-xl bg-muted/50 px-3 py-2.5">
-                <MarkdownView source={turn.answer} className="feed-md" />
+                {turn.id === streamingId && !turn.answer
+                  ? <p className="text-sm text-muted-foreground">正在检索并生成回答…</p>
+                  : <MarkdownView source={turn.answer} className="feed-md" />}
               </div>
               {turn.grounded === false && turn.citations.length === 0 && (
                 <p className="text-[11px] text-muted-foreground">未引用笔记，这是模型自己的回答。</p>
@@ -298,9 +320,6 @@ export function AskSidebar({
             </article>
           ))}
 
-          {busy && (
-            <div className="rounded-xl bg-muted/50 px-3 py-2.5 text-sm text-muted-foreground">正在生成回答…</div>
-          )}
           <div ref={bottom} />
         </div>
       </ScrollArea>
