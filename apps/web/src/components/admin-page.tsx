@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode, type SelectHTMLAttributes } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
-  BellRing, Bot, Check, ChevronRight, CloudUpload, Compass, Copy, Download, Database, Image, Inbox, KeyRound, LayoutGrid,
+  BellRing, BookOpen, Bot, Check, ChevronRight, CloudUpload, Compass, Copy, Download, Database, ExternalLink, Image, Inbox, KeyRound, LayoutGrid,
   Plus, Search, Shield, ShieldCheck, Sparkles, Ticket, Trash2, Users, X,
 } from "lucide-react";
 import { api } from "../api";
@@ -23,7 +23,7 @@ import { AdminAiIndex } from "./admin-ai-index";
 import { RequestRow, StorageBar, UserActions, UserDetailDialog, UserRow, type AdminRequest, type AdminUser } from "./admin-users";
 import { STORAGE_PRESETS } from "../lib/bytes";
 
-type Tab = "overview" | "registration" | "moderation" | "agents" | "index" | "notifications" | "codes" | "users" | "requests" | "nav" | "backup";
+type Tab = "overview" | "registration" | "moderation" | "agents" | "index" | "notifications" | "codes" | "users" | "requests" | "nav" | "help" | "backup";
 type AdminCode = { id: string; prefix: string; code?: string | null; usedCount: number; maxUses: number; status: string; note?: string | null; expiresAt?: string | null; createdAt?: string; skipEmailVerification?: boolean; bindRole?: string | null };
 type Overview = {
   userCount: number; workspaceCount: number; adminCount: number; codeCount: number; activeCodeCount: number;
@@ -40,6 +40,7 @@ const TABS: { id: Tab; label: string; hint: string; icon: typeof LayoutGrid }[] 
   { id: "index", label: "量化管理", hint: "全站笔记向量索引与批量重建", icon: Database },
   { id: "notifications", label: "通知与推送", hint: "SMTP、VAPID 密钥与推送总开关", icon: BellRing },
   { id: "nav", label: "导航", hint: "分组、站点与自动取图标", icon: Compass },
+  { id: "help", label: "帮助文档", hint: "选择内置指南或连接自己的帮助站", icon: BookOpen },
   { id: "backup", label: "实例备份", hint: "打包用户与配置，上传到 WebDAV 或 S3", icon: CloudUpload },
   { id: "codes", label: "注册码", hint: "批量发放一次性准入", icon: Ticket },
   { id: "users", label: "用户", hint: "配额、角色与封禁", icon: Users },
@@ -473,6 +474,8 @@ export function AdminPage() {
 
         {!error && !loading && tab === "nav" && <NavAdmin settings={overview?.settings ?? {}} onSaved={loadOverview} />}
 
+        {!error && !loading && tab === "help" && <HelpConfig settings={overview?.settings ?? {}} onSaved={loadOverview} />}
+
         {!error && !loading && tab === "backup" && <BackupPanel />}
 
         {!error && !loading && tab === "registration" && <div className="space-y-5">
@@ -663,6 +666,67 @@ export function AdminPage() {
       </main>
     </div>
   </div>;
+}
+
+function HelpConfig({ settings, onSaved }: { settings: Record<string, boolean | number | string | null>; onSaved: () => Promise<void> }) {
+  const toast = useToast();
+  const [source, setSource] = useState<"builtin" | "external">(settings.helpSource === "external" ? "external" : "builtin");
+  const [url, setUrl] = useState(typeof settings.helpUrl === "string" ? settings.helpUrl : "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function save() {
+    const helpUrl = url.trim();
+    if (source === "external") {
+      try {
+        const parsed = new URL(helpUrl);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error();
+      } catch {
+        setError("请输入以 http:// 或 https:// 开头的完整地址");
+        return;
+      }
+    }
+    setError("");
+    setSaving(true);
+    try {
+      await api("/api/v1/admin/settings", {
+        method: "PATCH",
+        body: JSON.stringify({ helpSource: source, helpUrl: helpUrl || null }),
+      });
+      await onSaved();
+      toast.success("帮助文档配置已保存", source === "external" ? "用户将从新标签页打开外部帮助站。" : "用户将打开站内内置帮助。");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <section className="overflow-hidden rounded-xl border bg-background">
+    <div className="border-b bg-muted/40 px-5 py-3">
+      <h2 className="text-sm font-semibold">帮助入口</h2>
+      <p className="mt-1 text-xs leading-5 text-muted-foreground">用户从头像菜单点“帮助文档”时，按这里的选择打开。</p>
+    </div>
+    <div className="space-y-5 p-5">
+      <Field title="文档来源">
+        <Select value={source} onChange={e => { setSource(e.target.value as "builtin" | "external"); setError(""); }}>
+          <option value="builtin">内置帮助</option>
+          <option value="external">外部帮助站</option>
+        </Select>
+      </Field>
+      {source === "builtin"
+        ? <div className="rounded-lg border bg-muted/30 px-4 py-3">
+            <p className="text-sm font-medium">使用站内帮助</p>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">无需额外部署，升级应用时内容会一起更新。地址为 <code>/help</code>。</p>
+          </div>
+        : <Field title="外部帮助文档地址">
+            <Input value={url} onChange={e => { setUrl(e.target.value); setError(""); }} placeholder="https://docs.example.com" inputMode="url" />
+          </Field>}
+      {source === "external" && url.trim() && <a className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:underline" href={url.trim()} target="_blank" rel="noopener noreferrer"><ExternalLink className="size-3.5" />预览外部帮助站</a>}
+      <FormError>{error}</FormError>
+      <Button disabled={saving} onClick={() => void save()}>{saving ? "保存中…" : "保存配置"}</Button>
+    </div>
+  </section>;
 }
 
 function FilterBar({ placeholder, value, onChange, filters, filtering, onClear }: {

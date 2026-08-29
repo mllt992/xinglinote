@@ -13,14 +13,14 @@ const LAST_WS_KEY = "kb.last-workspace";
 export function saveLastWorkspace(id: string) { try { localStorage.setItem(LAST_WS_KEY, id); } catch { /* 隐私模式忽略 */ } }
 export function loadLastWorkspace(): string | undefined { try { return localStorage.getItem(LAST_WS_KEY) ?? undefined; } catch { return undefined; } }
 
-type Meta = { squareEnabled: boolean; navEnabled?: boolean };
-let metaOnce: Promise<Meta> | null = null;
+export type InstanceMeta = { squareEnabled: boolean; navEnabled?: boolean; helpSource?: "builtin" | "external"; helpUrl?: string | null };
+let metaOnce: Promise<InstanceMeta> | null = null;
 
-function useInstanceMeta() {
-  const [meta, setMeta] = useState<Meta>({ squareEnabled: true, navEnabled: true });
+export function useInstanceMeta() {
+  const [meta, setMeta] = useState<InstanceMeta>({ squareEnabled: true, navEnabled: true, helpSource: "builtin", helpUrl: null });
   useEffect(() => {
-    metaOnce ??= api<Meta>("/api/v1/meta");
-    void metaOnce.then(m => setMeta({ squareEnabled: m.squareEnabled, navEnabled: m.navEnabled !== false })).catch(() => {});
+    metaOnce ??= api<InstanceMeta>("/api/v1/meta");
+    void metaOnce.then(m => setMeta({ ...m, squareEnabled: m.squareEnabled, navEnabled: m.navEnabled !== false })).catch(() => {});
   }, []);
   return meta;
 }

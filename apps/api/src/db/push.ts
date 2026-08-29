@@ -617,6 +617,8 @@ END $$`,
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS nav_public boolean NOT NULL DEFAULT true`,
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS nav_title text`,
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS nav_subtitle text`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS help_source text NOT NULL DEFAULT 'builtin'`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS help_url text`,
   `CREATE TABLE IF NOT EXISTS nav_groups (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     title text NOT NULL,

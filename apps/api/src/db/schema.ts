@@ -49,6 +49,9 @@ export const instanceSettings = pgTable("instance_settings", {
   navPublic: boolean("nav_public").notNull().default(true),
   navTitle: text("nav_title"),
   navSubtitle: text("nav_subtitle"),
+  /** 帮助入口。builtin 走站内 /help；external 在新标签页打开管理员配置的地址。 */
+  helpSource: text("help_source").notNull().default("builtin"),
+  helpUrl: text("help_url"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 

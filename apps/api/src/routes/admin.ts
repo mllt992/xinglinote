@@ -24,6 +24,11 @@ function likeContains(raw: string | undefined) {
   return q ? `%${q}%` : null;
 }
 
+const externalHelpUrl = z.string().trim().max(2048).url().refine(raw => {
+  const protocol = new URL(raw).protocol;
+  return protocol === "http:" || protocol === "https:";
+}, "帮助文档地址只支持 http 或 https");
+
 /** 密文也别回前端，UI 只需要知道「配没配」。 */
 function maskSettings(s: typeof instanceSettings.$inferSelect | undefined) {
   if (!s) return s;
@@ -77,6 +82,7 @@ adminRoutes.patch("/admin/settings", async c => {
     pushEnabled: z.boolean().optional(), vapidSubject: z.string().max(200).nullable().optional(),
     navEnabled: z.boolean().optional(), navPublic: z.boolean().optional(),
     navTitle: z.string().max(20).nullable().optional(), navSubtitle: z.string().max(80).nullable().optional(),
+    helpSource: z.enum(["builtin", "external"]).optional(), helpUrl: externalHelpUrl.nullable().optional(),
   }).parse(await c.req.json());
   // 前端回填的是掩码，别把 •••••••• 当成新密钥存进去。
   // 两个密钥字段都要这么处理——以前只有 moderationApiKey 有这层保护。
@@ -86,12 +92,17 @@ adminRoutes.patch("/admin/settings", async c => {
   const smtpPassword = secret(body.smtpPassword);
   // 审核模型也是服务端去 fetch 的用户填地址，同样要过出站护栏
   if (body.moderationBaseUrl) await assertSafeOutboundUrl(body.moderationBaseUrl, "审核模型地址");
+  if (body.helpSource === "external") {
+    const [current] = await db.select({ helpUrl: instanceSettings.helpUrl }).from(instanceSettings).where(eq(instanceSettings.id, 1));
+    if (!(body.helpUrl ?? current?.helpUrl)) throw fail("VALIDATION", "选择外部帮助时必须填写帮助文档地址");
+  }
   const values: Record<string, unknown> = { ...body, updatedAt: new Date() };
   if (key === undefined) delete values.moderationApiKey; else values.moderationApiKey = key;
   if (smtpPassword === undefined) delete values.smtpPassword; else values.smtpPassword = smtpPassword;
   if (body.moderationCategories) values.moderationCategories = normalizeCategories(body.moderationCategories);
   if (body.navTitle !== undefined) values.navTitle = body.navTitle?.trim() || null;
   if (body.navSubtitle !== undefined) values.navSubtitle = body.navSubtitle?.trim() || null;
+  if (body.helpUrl !== undefined) values.helpUrl = body.helpUrl?.trim() || null;
   const [saved] = await db.update(instanceSettings).set(values).where(eq(instanceSettings.id, 1)).returning();
   return ok(c, maskSettings(saved));
 });

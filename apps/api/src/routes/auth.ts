@@ -35,6 +35,8 @@ auth.get("/meta", async (c) => {
     allowCodeRegistration: settings?.allowCodeRegistration ?? true,
     squareEnabled: settings?.squareEnabled ?? true,
     navEnabled: settings?.navEnabled ?? true,
+    helpSource: settings?.helpSource === "external" ? "external" : "builtin",
+    helpUrl: settings?.helpSource === "external" ? settings.helpUrl : null,
     defaultThemeId: settings?.defaultThemeId ?? "mono-modern",
     defaultAccent: settings?.defaultAccent ?? null,
   });
