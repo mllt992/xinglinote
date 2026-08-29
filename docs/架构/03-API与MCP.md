@@ -461,6 +461,16 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 
 执行层继续兼容旧客户端的 `content` 别名；新客户端只从工具 schema 看到 `body_md`。
 
+### create_folder
+
+```
+{ notebook_id: string, parent_id?: string | null, title: string,
+  client_request_id?: string }
+→ { id, notebook_id, parent_id, title }
+```
+
+按钥匙范围与笔记本编辑权限校验；父目录必须在同一笔记本内，目录深度最多 8 层。支持 `client_request_id` 和 HTTP `Idempotency-Key`。
+
 ### update_note
 
 ```

@@ -40,7 +40,7 @@ try {
 
   const listed = (await rpc(manage.secret, 'tools/list')).result.tools;
   const names = listed.map(t => t.name);
-  result.hasCoreTools = ['list_folder', 'move_note', 'add_tags', 'replace_in_note', 'list_recent', 'today', 'list_attachments', 'upload_image', 'create_attachment_upload', 'complete_attachment_upload'].every(n => names.includes(n));
+  result.hasCoreTools = ['list_folder', 'create_folder', 'move_note', 'add_tags', 'replace_in_note', 'list_recent', 'today', 'list_attachments', 'upload_image', 'create_attachment_upload', 'complete_attachment_upload'].every(n => names.includes(n));
   result.annotationsPresent = listed.every(t => t.annotations && typeof t.annotations.readOnlyHint === 'boolean');
   result.trashHintedDestructive = listed.find(t => t.name === 'trash_note')?.annotations?.destructiveHint === true;
 
@@ -54,12 +54,14 @@ try {
   result.getMeHasNotebooks = Array.isArray(meInfo.notebooks) && meInfo.notebooks.some(n => n.id === nb.id);
   result.getMeHasImageCap = typeof meInfo.image_max_bytes === 'number' && meInfo.image_max_bytes >= 262144;
 
-  const created = await call(manage.secret, 'create_note', { notebook_id: nb.id, title: 'MCP 新工具验收', content: 'alpha 第一段\nalpha 第二段', tags: ['初始'] });
+  const createdFolder = await call(manage.secret, 'create_folder', { notebook_id: nb.id, title: 'MCP 新建目录验收', client_request_id: crypto.randomUUID() });
+  const created = await call(manage.secret, 'create_note', { notebook_id: nb.id, folder_id: createdFolder.id, title: 'MCP 新工具验收', content: 'alpha 第一段\nalpha 第二段', tags: ['初始'] });
   const createdForPaging = await call(manage.secret, 'create_note', { notebook_id: nb.id, title: 'MCP 分页验收', content: 'pagination' });
   const tagged = await call(manage.secret, 'add_tags', { id: created.id, tags: ['知识', '测试'] });
-  const listedFolder = await call(manage.secret, 'list_folder', { notebook_id: nb.id });
+  const listedFolder = await call(manage.secret, 'list_folder', { notebook_id: nb.id, folder_id: createdFolder.id });
   const note = await call(manage.secret, 'get_note', { id: created.id });
   result.created = !!created.id;
+  result.folderCreatedAndContainsNote = createdFolder.parent_id === null && listedFolder.notes.some(x => x.id === created.id);
   result.tagsPersisted = tagged.tags.includes('知识') && note.tags.includes('知识');
   result.folderListsNote = listedFolder.notes.some(x => x.id === created.id);
   result.getNoteHasPath = Array.isArray(note.path) && note.path.includes(note.title);
