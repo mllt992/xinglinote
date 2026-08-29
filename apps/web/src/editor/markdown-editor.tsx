@@ -26,6 +26,7 @@ import { cachedVim, loadVim, vimExtension, vimModeOf, type VimMode } from "./vim
 import { wikiCompletion, type WikiCompleteOptions } from "./wiki-complete";
 import { wikiHover, type WikiPreviewLoader } from "./wiki-hover";
 import type { RenderToggles } from "../lib/layout-prefs";
+import { editorWysiwyg } from "../lib/editor-mode";
 
 const ALL_ON: RenderToggles = { image: true, math: true, table: true, diagram: true };
 
@@ -260,6 +261,8 @@ export function MarkdownEditor({
   const collabSession = useRef<CollabSession | null>(null);
   const peers = useRef<CollabPeer[]>([]);
   const status = useRef<CollabStatus>("offline");
+  // onScrollLine 只在分栏左侧传入；右侧已有完整预览，此处必须保持纯源码。
+  const effectiveWysiwyg = editorWysiwyg(onScrollLine ? "split" : "write", wysiwyg);
 
   useImperativeHandle(ref, () => ({
     scrollToLine: line => {
@@ -367,7 +370,7 @@ export function MarkdownEditor({
           EditorView.lineWrapping,
           EditorState.allowMultipleSelections.of(true),
           markdown({ base: markdownLanguage, codeLanguages: languages, extensions: markdownSyntaxExtensions }),
-          livePreviewCompartment.of(previewExtensions(() => latest.current.onWiki, wysiwyg, resetKey ?? "", render)),
+          livePreviewCompartment.of(previewExtensions(() => latest.current.onWiki, effectiveWysiwyg, resetKey ?? "", render)),
           hangingIndent(),
           markdownFolding(resetKey ?? ""),
           typewriterScroll(() => latest.current.typewriter === true),
@@ -460,9 +463,9 @@ export function MarkdownEditor({
 
   useEffect(() => {
     view.current?.dispatch({
-      effects: livePreviewCompartment.reconfigure(previewExtensions(() => latest.current.onWiki, wysiwyg, resetKey ?? "", render)),
+      effects: livePreviewCompartment.reconfigure(previewExtensions(() => latest.current.onWiki, effectiveWysiwyg, resetKey ?? "", render)),
     });
-  }, [wysiwyg, resetKey, render]);
+  }, [effectiveWysiwyg, resetKey, render]);
 
   useEffect(() => {
     view.current?.dispatch({ effects: spellcheckCompartment.reconfigure(contentAttrs(spellcheck)) });
@@ -522,5 +525,5 @@ export function MarkdownEditor({
     return () => { alive = false; };
   }, [vim, onVimMode, resetKey]);
 
-  return <div ref={host} className={className} data-editor="markdown" data-wysiwyg={wysiwyg ? "1" : undefined} data-vim={vim ? "1" : undefined} />;
+  return <div ref={host} className={className} data-editor="markdown" data-wysiwyg={effectiveWysiwyg ? "1" : undefined} data-vim={vim ? "1" : undefined} />;
 }

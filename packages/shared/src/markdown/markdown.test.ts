@@ -190,6 +190,14 @@ test("Callout 导出仍是合法引用块：源码不动", () => {
   assert.match(renderMarkdown(src), /<blockquote/);
 });
 
+test("引用块里的有序列表保留 ol 语义与序号起点", () => {
+  const html = renderMarkdown("> 3. 第三项\n> 4. 第四项\n");
+  assert.match(html, /<blockquote>/);
+  assert.match(html, /<ol start="3">/);
+  assert.match(html, /<li>第三项<\/li>/);
+  assert.match(html, /<li>第四项<\/li>/);
+});
+
 test("脚注：按首次引用编号，未定义的保持字面量", () => {
   const html = renderMarkdown("正文[^b] 再来[^a] 又是[^b]\n\n[^a]: 甲的注\n[^b]: 乙的 **注**\n");
   // b 先出现，所以 b 是 1
