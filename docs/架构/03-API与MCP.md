@@ -56,6 +56,10 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | PATCH | `/api/v1/admin/users/:id` | 同上 | 封禁、解封、升/降管理员、分配 `storageQuotaBytes`（`null` 恢复默认） |
 | GET | `/api/v1/admin/service-requests` | 同上 | 服务申请队列 |
 | PATCH | `/api/v1/admin/service-requests/:id` | 同上 | `{ status: approved\|rejected, grantedQuotaBytes?, adminNote? }` |
+| GET | `/api/v1/admin/ai/index/options` | 同上 | 工作区、成员、笔记本、共享 Embedding 渠道，供量化管理筛选 |
+| GET | `/api/v1/admin/ai/index` | 同上 | 全站笔记量化列表。`page`/`pageSize`（10–100，默认 20）；筛选：`q`、`status`、`workspaceId`、`userId`、`notebookId`、`workspaceKind`、`aiIndex`、`workspaceAi`、`providerState`、`updatedFrom`/`updatedTo`、`sort`。统计在库内聚合，不把全库拉进内存 |
+| POST | `/api/v1/admin/ai/index/config` | 同上 | `{ providerId, embeddingModel, autoEmbed }`：把共享 Embedding 应用到全部工作区，清掉改了模型的区的旧向量，并给全部未删除笔记排队（含关闭 AI 可读的篇） |
+| POST | `/api/v1/admin/ai/index/rebuild` | 同上 | `{ filters, scope: all\|incomplete\|failed\|stale\|missing, noteIds? }`：按当前筛选或指定笔记强制重建；未配置模型的篇计入 `skippedUnconfigured` |
 
 ### 2.2 工作区
 

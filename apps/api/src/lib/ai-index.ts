@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import { backgroundJobs } from "../db/schema.ts";
 
@@ -41,20 +41,43 @@ function pendingIndexNote(noteId: string) {
  * 同一篇只留一条 pending。
  * 应用层入队（换模型、搬家、PDF 抽完）一律立刻跑；保存路径的 5 分钟防抖在触发器里。
  */
-export async function enqueueIndexNote(tx: DbLike, noteId: string, opts: { force?: boolean } = {}) {
+export async function enqueueIndexNote(tx: DbLike, noteId: string, opts: { force?: boolean; includeExcluded?: boolean } = {}) {
   const [pending] = await tx.select({ id: backgroundJobs.id }).from(backgroundJobs).where(pendingIndexNote(noteId)).limit(1);
   if (pending) {
     await tx.update(backgroundJobs).set({
       runAfter: new Date(),
-      ...(opts.force ? { payload: { noteId, force: true } } : {}),
+      ...(opts.force || opts.includeExcluded ? { payload: { noteId, ...(opts.force ? { force: true } : {}), ...(opts.includeExcluded ? { includeExcluded: true } : {}) } } : {}),
     }).where(eq(backgroundJobs.id, pending.id));
     return;
   }
   await tx.insert(backgroundJobs).values({
     type: "index_note",
-    payload: opts.force ? { noteId, force: true } : { noteId },
+    payload: { noteId, ...(opts.force ? { force: true } : {}), ...(opts.includeExcluded ? { includeExcluded: true } : {}) },
     runAfter: new Date(),
   });
+}
+
+/** 管理后台可能一次排数万篇；按篇先查再插会产生两倍往返，批量合并 pending 后再补缺口。 */
+export async function enqueueIndexNotes(tx: DbLike, noteIds: string[], opts: { force?: boolean; includeExcluded?: boolean } = {}) {
+  const ids = [...new Set(noteIds)];
+  for (let start = 0; start < ids.length; start += 500) {
+    const batch = ids.slice(start, start + 500);
+    const noteIdExpr = sql<string>`${backgroundJobs.payload}->>'noteId'`;
+    const pendingWhere = and(eq(backgroundJobs.type, "index_note"), eq(backgroundJobs.status, "pending"), inArray(noteIdExpr, batch));
+    if (opts.force || opts.includeExcluded) await tx.update(backgroundJobs).set({
+      runAfter: new Date(),
+      payload: sql`jsonb_build_object('noteId', ${noteIdExpr}${opts.force ? sql`, 'force', true` : sql``}${opts.includeExcluded ? sql`, 'includeExcluded', true` : sql``})`,
+    }).where(pendingWhere);
+    else await tx.update(backgroundJobs).set({ runAfter: new Date() }).where(pendingWhere);
+    const existing = await tx.select({ noteId: noteIdExpr }).from(backgroundJobs).where(pendingWhere);
+    const queued = new Set(existing.map(row => row.noteId));
+    const missing = batch.filter(id => !queued.has(id));
+    if (missing.length) await tx.insert(backgroundJobs).values(missing.map(noteId => ({
+      type: "index_note",
+      payload: { noteId, ...(opts.force ? { force: true } : {}), ...(opts.includeExcluded ? { includeExcluded: true } : {}) },
+      runAfter: new Date(),
+    })));
+  }
 }
 
 export async function cancelIndexNote(tx: DbLike, noteId: string) {

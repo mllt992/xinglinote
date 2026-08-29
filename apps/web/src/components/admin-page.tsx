@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode, type SelectHTMLAttributes } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
-  BellRing, Bot, Check, ChevronRight, CloudUpload, Compass, Copy, Download, Image, Inbox, KeyRound, LayoutGrid,
+  BellRing, Bot, Check, ChevronRight, CloudUpload, Compass, Copy, Download, Database, Image, Inbox, KeyRound, LayoutGrid,
   Plus, Search, Shield, ShieldCheck, Sparkles, Ticket, Trash2, Users, X,
 } from "lucide-react";
 import { api } from "../api";
@@ -19,10 +19,11 @@ import { PushConfig } from "./push-admin-panel";
 import { SmtpConfig } from "./smtp-panel";
 import { NavAdmin } from "./nav-admin";
 import { BackupPanel } from "./backup-panel";
+import { AdminAiIndex } from "./admin-ai-index";
 import { RequestRow, StorageBar, UserActions, UserDetailDialog, UserRow, type AdminRequest, type AdminUser } from "./admin-users";
 import { STORAGE_PRESETS } from "../lib/bytes";
 
-type Tab = "overview" | "registration" | "moderation" | "agents" | "notifications" | "codes" | "users" | "requests" | "nav" | "backup";
+type Tab = "overview" | "registration" | "moderation" | "agents" | "index" | "notifications" | "codes" | "users" | "requests" | "nav" | "backup";
 type AdminCode = { id: string; prefix: string; code?: string | null; usedCount: number; maxUses: number; status: string; note?: string | null; expiresAt?: string | null; createdAt?: string; skipEmailVerification?: boolean; bindRole?: string | null };
 type Overview = {
   userCount: number; workspaceCount: number; adminCount: number; codeCount: number; activeCodeCount: number;
@@ -36,6 +37,7 @@ const TABS: { id: Tab; label: string; hint: string; icon: typeof LayoutGrid }[] 
   { id: "registration", label: "注册策略", hint: "谁能进来、能做什么", icon: Shield },
   { id: "moderation", label: "内容审核", hint: "AI 先审，拿不准再转人工", icon: ShieldCheck },
   { id: "agents", label: "智能体", hint: "创建可被动态 @ 的 AI 助手", icon: Bot },
+  { id: "index", label: "量化管理", hint: "全站笔记向量索引与批量重建", icon: Database },
   { id: "notifications", label: "通知与推送", hint: "SMTP、VAPID 密钥与推送总开关", icon: BellRing },
   { id: "nav", label: "导航", hint: "分组、站点与自动取图标", icon: Compass },
   { id: "backup", label: "实例备份", hint: "打包用户与配置，上传到 WebDAV 或 S3", icon: CloudUpload },
@@ -379,7 +381,7 @@ export function AdminPage() {
       </div>
     </header>
 
-    <div className="mx-auto flex max-w-6xl flex-col gap-6 px-5 py-8 lg:flex-row lg:gap-10">
+    <div className={cn("mx-auto flex flex-col gap-6 px-5 py-8 lg:flex-row lg:gap-10", tab === "index" ? "max-w-[88rem]" : "max-w-6xl")}>
       <aside className="shrink-0 lg:w-52">
         <div className="mb-4 hidden lg:block">
           <p className="text-lg font-semibold tracking-[-0.03em]">实例后台</p>
@@ -466,6 +468,8 @@ export function AdminPage() {
         </div>}
 
         {!error && !loading && tab === "agents" && <AgentsPanel />}
+
+        {!error && !loading && tab === "index" && <AdminAiIndex />}
 
         {!error && !loading && tab === "nav" && <NavAdmin settings={overview?.settings ?? {}} onSaved={loadOverview} />}
 
