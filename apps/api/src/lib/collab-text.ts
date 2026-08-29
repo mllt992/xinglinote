@@ -5,6 +5,7 @@
  * 单独拆出来是为了能直接单测——判断「该不该回灌、回灌哪一段」是这套东西里
  * 最容易出错也最难在跑起来之后复现的一步。
  */
+import { mergeableNoteVersion } from "./note-version-merge.ts";
 
 export type TextPatch = { at: number; remove: number; insert: string };
 
@@ -43,15 +44,13 @@ export function externalChange(text: string, stored: string, lastPersisted: stri
 }
 
 /**
- * 版本合并（设计 17 §3.4）：同一篇、5 分钟内的连续协同落库复用同一条 note_versions。
- * 否则十分钟的协作能产生上百条版本，把版本抽屉淹掉。返回可复用的那条 id，没有就 null。
+ * 版本合并（设计 17 §3.4 / 03 §2.4）：同一篇、5 分钟内的连续协同落库复用同一条 note_versions。
+ * 房间是一处落库，不限最后动手的人。
  */
 export function mergeableCollabVersion(
   rows: Array<{ id: string; version: number; source: string; createdAt: Date }>,
   currentVersion: number,
   now = Date.now(),
 ) {
-  const last = rows.find(r => r.version === currentVersion);
-  if (!last || last.source !== "collab") return null;
-  return now - last.createdAt.getTime() < 5 * 60_000 ? last.id : null;
+  return mergeableNoteVersion(rows, { currentVersion, source: "collab", now });
 }

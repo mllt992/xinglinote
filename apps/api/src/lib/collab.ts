@@ -5,7 +5,7 @@
  * 落库仍然回 `notes.body_md` + `note_versions`。所以搜索、导出、MCP、行级 diff、
  * `expected_version` 全都不用改——这是选这个分层的全部理由。
  */
-import { and, desc, eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import * as awarenessProtocol from "y-protocols/awareness";
 import * as syncProtocol from "y-protocols/sync";
 import * as decoding from "lib0/decoding";
@@ -13,10 +13,11 @@ import * as encoding from "lib0/encoding";
 import * as Y from "yjs";
 import type { WebSocket } from "ws";
 import { db } from "../db/client.ts";
-import { noteCollab, notes, noteVersions } from "../db/schema.ts";
+import { noteCollab, notes } from "../db/schema.ts";
 import { writeNoteFile } from "./files.ts";
 import { rebuildLinks } from "./links.ts";
-import { externalChange, mergeableCollabVersion } from "./collab-text.ts";
+import { externalChange } from "./collab-text.ts";
+import { recordNoteVersion } from "./versions.ts";
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
@@ -177,11 +178,16 @@ export async function persist(room: Room) {
       .set({ bodyMd: text, version: note.version + 1, updatedBy: editor, updatedAt: new Date() })
       .where(and(eq(notes.id, note.id), eq(notes.version, note.version))).returning();
     if (!saved) { room.dirty = true; scheduleSave(room); return; }
-    const recent = await db.select({ id: noteVersions.id, version: noteVersions.version, source: noteVersions.source, createdAt: noteVersions.createdAt })
-      .from(noteVersions).where(eq(noteVersions.noteId, note.id)).orderBy(desc(noteVersions.version)).limit(5);
-    const merge = mergeableCollabVersion(recent, note.version);
-    if (merge) await db.update(noteVersions).set({ version: saved.version, bodyMd: saved.bodyMd, title: saved.title, editorId: editor, createdAt: new Date() }).where(eq(noteVersions.id, merge));
-    else await db.insert(noteVersions).values({ noteId: note.id, version: saved.version, title: saved.title, bodyMd: saved.bodyMd, editorId: editor, source: "collab" });
+    await recordNoteVersion(db, {
+      noteId: note.id,
+      version: saved.version,
+      previousVersion: note.version,
+      title: saved.title,
+      bodyMd: saved.bodyMd,
+      editorId: editor,
+      source: "collab",
+      matchEditor: false,
+    });
     await writeNoteFile({ ...saved, noteId: saved.id });
     await rebuildLinks(saved.id, saved.workspaceId, saved.bodyMd);
     room.lastPersisted = text;

@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client.ts";
-import { backgroundJobs, calendarItems, calendarOverrides, calendarReminders, notebooks, notes, noteVersions, users, workspaceMembers } from "../db/schema.ts";
+import { backgroundJobs, calendarItems, calendarOverrides, calendarReminders, notebooks, notes, users, workspaceMembers } from "../db/schema.ts";
 import { writeNoteFile } from "./files.ts";
+import { mergeableNoteVersion } from "./note-version-merge.ts";
+import { recordNoteVersion } from "./versions.ts";
 
 /** 没有工作区级时区设置之前的兜底。改这里等于改新条目的默认时区。 */
 export const DEFAULT_TZ = process.env.KB_DEFAULT_TZ ?? "Asia/Shanghai";
@@ -437,11 +439,9 @@ export async function rescheduleReminders(itemId: string) {
   }
 }
 
-/** 勾选历史合并：同篇同人 5 分钟内的连续勾选复用同一条版本记录（设计 16 §4.3）。 */
+/** 勾选历史合并：同篇同人 5 分钟内的连续勾选复用同一条版本记录（设计 16 §4.3 / 03 §2.4）。 */
 export function mergeableTaskVersion(rows: Array<{ id: string; version: number; source: string; editorId: string; createdAt: Date }>, editorId: string, currentVersion: number) {
-  const last = rows.find(r => r.version === currentVersion);
-  if (!last || last.source !== "task_toggle" || last.editorId !== editorId) return null;
-  return Date.now() - last.createdAt.getTime() < 5 * 60_000 ? last.id : null;
+  return mergeableNoteVersion(rows, { currentVersion, source: "task_toggle", editorId });
 }
 
 /**
@@ -484,11 +484,16 @@ export async function completeCalendarItem(item: typeof calendarItems.$inferSele
       const version = note.version + 1;
       const [written] = await db.update(notes).set({ bodyMd: nextBody, version, updatedBy: actorId, updatedAt: new Date() }).where(and(eq(notes.id, note.id), eq(notes.version, note.version))).returning();
       if (written) {
-        const history = await db.select().from(noteVersions).where(eq(noteVersions.noteId, note.id)).orderBy(desc(noteVersions.version)).limit(3);
-        const mergeInto = mergeableTaskVersion(history, actorId, note.version);
         // 5 分钟内的连续勾选合并成一条历史，否则版本列表会被待办淹掉（设计 16 §4.3）
-        if (mergeInto) await db.update(noteVersions).set({ version, bodyMd: written.bodyMd, title: written.title, createdAt: new Date() }).where(eq(noteVersions.id, mergeInto));
-        else await db.insert(noteVersions).values({ noteId: note.id, version, title: written.title, bodyMd: written.bodyMd, editorId: actorId, source: source === "mcp" ? "mcp" : "task_toggle" });
+        await recordNoteVersion(db, {
+          noteId: note.id,
+          version,
+          previousVersion: note.version,
+          title: written.title,
+          bodyMd: written.bodyMd,
+          editorId: actorId,
+          source: source === "mcp" ? "mcp" : "task_toggle",
+        });
         await writeNoteFile({ ...written, noteId: written.id });
         // 回写不触发 note.rewrite_links（防环）。向量由 notes 触发器排队，已有索引的篇会再等 5 分钟。
         noteWritten = true;

@@ -49,7 +49,7 @@ export const MCP_INSTRUCTIONS = [
   "这是星璃笔记的知识库 MCP。一把钥匙可以勾选多个工作区，权限不会超过持有人本人。",
   "先调 get_me，看 workspaces、rw、notebooks 和到期时间，再动手。",
   "找内容用 search_notes（默认 hybrid，默认 8 条摘要），不要用 list_folder 扫整库，也不要猜测 UUID。hybrid 连不上 Embedding 时会降级成关键词，不必当成整库挂了。",
-  "读一篇用 get_note；默认最多回 6000 字，超长时 truncated=true，用 offset 翻页。改正文必须先拿到 version，再传 expected_version。",
+  "读一篇用 get_note；默认最多回 6000 字，超长时 truncated=true，用 offset 翻页。改正文必须先拿到 version，再传 expected_version。撞 CONFLICT_VERSION 必须用返回的 current_version 再 get_note，禁止自己 +1 猜下一版。",
   "create_note / update_note 用 body_md 传 Markdown 正文；append_to_note 仍用 content 追加。",
   "只改一段请用 replace_in_note，日记补一行用 append_to_note，不要整篇重写，也不要为了改一段把长文读完。",
   "问「今天做什么」用 today；看最近改动用 list_recent。",
@@ -231,7 +231,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
   },
   update_note: {
     tier: "write",
-    description: "覆盖笔记正文或标题。expected_version 必填，传 get_note 拿到的 version，版本不符会报 CONFLICT_VERSION。",
+    description: "覆盖笔记正文或标题。expected_version 必填，传 get_note 拿到的 version，版本不符会报 CONFLICT_VERSION。禁止自己 +1 猜下一版，必须用返回的 current_version 再 get_note。",
     properties: { ...EDIT_PROPS, dry_run: { type: "boolean", default: false, description: "仅预览影响，不修改数据" } },
     required: ["id", "expected_version"],
     annotations: write("覆盖笔记"),
@@ -245,7 +245,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
   },
   replace_in_note: {
     tier: "write",
-    description: "只替换正文中的一段。old 必须能在正文里精确匹配；出现多次时要么补更长上下文，要么传 replace_all=true。",
+    description: "只替换正文中的一段。old 必须能在正文里精确匹配；出现多次时要么补更长上下文，要么传 replace_all=true。expected_version 可选；不传则冲突时若 old 仍能唯一匹配会自动重试两次。",
     properties: {
       id: UUID,
       expected_version: { type: "integer", minimum: 1 },
@@ -253,7 +253,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
       new: { type: "string" },
       replace_all: { type: "boolean", default: false },
     },
-    required: ["id", "expected_version", "old", "new"],
+    required: ["id", "old", "new"],
     annotations: write("替换片段"),
   },
   create_task: {
@@ -292,7 +292,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
   },
   add_tags: {
     tier: "manage",
-    description: "给笔记追加标签，与原有标签合并去重。",
+    description: "给笔记追加标签，与原有标签合并去重。不升正文 version，避免正在编辑的页面 409。",
     properties: { id: UUID, tags: TAGS },
     required: ["id", "tags"],
     annotations: write("打标签", { idempotentHint: true }),

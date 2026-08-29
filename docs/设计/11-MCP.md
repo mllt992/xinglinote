@@ -117,7 +117,7 @@ Owner/Admin 看本区：时间、token 名、user、tool、target note、结果�
 3. `allow_private_notebooks=false` 时，`visibility=private` 的本对这把钥匙隐形（即使 inherit 且人能看）。
 4. `require_ai_index=true` 时 `can_ai_read` 必须成立才能 get/search/ask。`update` 已有篇：若钥匙要求 ai_index 而篇是 false，**仍允许写吗？** —— **不允许 get，允许 update/append 仅当 `can_edit` 且目标在范围内**，避免日记完全锁死无法被「按 id 补一行」；但 search/ask/get 仍不可见。若产品更硬：写也禁止。  
    **拍板：search/get/ask 遵守 require_ai_index；create 跟随本默认；update/append/move 只看 ACL+范围，不看 ai_index。** 这样「关掉 AI 读取」不会挡住人用 Agent 改一篇已知 id 的日记——若担心，用户不要把日记放进 allowlist。
-5. `update_note` 必须 `expected_version`，禁止 force。
+5. `update_note` 必须 `expected_version`，禁止 force。撞 `CONFLICT_VERSION` 时用返回的 `current_version` 再 `get_note`，禁止对 version 自己 `+1` 猜测。
 6. `delete` 默认无工具暴露；仅 `allow_delete` 时注册 `trash_note`（进回收站）。
 7. 日写入字节按 UTC 日加总 body。未设上限则只记账不设卡；设了上限，超限 QUOTA。
 8. 每把钥匙 60 次/分钟。超限 429。
@@ -126,6 +126,7 @@ Owner/Admin 看本区：时间、token 名、user、tool、target note、结果�
 11. 对外文档站、分享页不跑 MCP。
 12. 创建类工具公开可选 UUID 参数 `client_request_id`，所有写工具也认 HTTP 头 `Idempotency-Key`。幂等作用域为「钥匙 + 工具名 + 键」，数据库保留首次成功结果 10 分钟：相同参数重试原样返回，参数不同返回 `IDEMPOTENCY_KEY_REUSED`；并发相同请求等待首次结果，不重复落库。
 13. `last_used_at` 最多 30 秒写一次，避免每次工具调用都抢钥匙行。
+14. MCP 连续改正文走与 UI / 协同同源的 5 分钟快照合并（`source=mcp`）。`add_tags` 只改标签，**不升** `notes.version`（标签不是正文冲突）。
 
 ---
 
@@ -158,7 +159,7 @@ target notes:
 读工具（`get_note` / `get_backlinks` / `search_notes` / `ask_knowledge` / `list_recent`）对「存在但 ai_index 关、不在范围、或无权」一律 `NOT_FOUND`（search / list_recent 则省略），避免 Agent 用 id 扫私密。  
 例外：`update_note` / `append_to_note` / `replace_in_note` 对无权 NOT_FOUND/FORBIDDEN 同 02；对仅 ai_index 关但 can_edit 且在范围内：允许（规则 4）。
 
-握手：`initialize` 必须带 `instructions`（先 `get_me`、搜不要扫库、改正文先拿 version）。每个工具带 MCP 注解：`readOnlyHint` / `destructiveHint` / `idempotentHint`。
+握手：`initialize` 必须带 `instructions`（先 `get_me`、搜不要扫库、改正文先拿 version；`CONFLICT_VERSION` 用 `current_version` 重读，禁止 `+1` 猜）。每个工具带 MCP 注解：`readOnlyHint` / `destructiveHint` / `idempotentHint`。
 
 ### 5.2 工具
 
@@ -198,8 +199,9 @@ limit≤20，**默认 8**（不要一上来塞 20 条摘要）。出：`{ hits: 
 **`append_to_note(id, content)`**  
 内部读 version 再 update 追加，乐观重试 2 次。传了 `expected_version` 则不重试，冲突直接 `CONFLICT_VERSION`。
 
-**`replace_in_note(id, expected_version, old, new, replace_all?)`**  
-须 write。只替换一段正文，避免 Agent 整篇重写把后半截吃掉。`old` 找不到 → VALIDATION；出现多次且未 `replace_all` → VALIDATION，让调用方补更长上下文。
+**`replace_in_note(id, old, new, expected_version?, replace_all?)`**  
+须 write。只替换一段正文，避免 Agent 整篇重写把后半截吃掉。`old` 找不到 → VALIDATION；出现多次且未 `replace_all` → VALIDATION，让调用方补更长上下文。  
+`expected_version` 可选：不传则与 `append_to_note` 一样，冲突时若最新正文里 `old` 仍能唯一匹配（或已 `replace_all`）则乐观重试 2 次；传了版本则不重试。
 
 **`list_recent(since?, limit?, cursor?)`**
 读档位。按 `updated_at` 倒序，默认 20、上限 50。只回 id / title / path / version / updated_at，不回正文。
@@ -221,7 +223,7 @@ limit≤20，**默认 8**（不要一上来塞 20 条摘要）。出：`{ hits: 
 须 manage。两端都要在范围内且 can_edit；版本不符返回 `CONFLICT_VERSION`。`dry_run=true` 只返回来源、目标与执行所需版本。
 
 **`add_tags(id, tags[])`**  
-须 manage。
+须 manage。与原有标签合并去重。不升 `notes.version`、不写 `note_versions`——改标签不应让正在打字的编辑器 409。出：id、version（仍为当前正文版本）、tags。
 
 **`trash_note(id, expected_version, dry_run?)`**
 仅 allow_delete。走 12。版本不符不产生副作用；`dry_run=true` 只返回将进入回收站的笔记及当前位置。

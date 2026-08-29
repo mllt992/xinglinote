@@ -8,6 +8,33 @@ export type NoteDraft = {
   tags?: string[];
 };
 
+/** 停键多久才自动保存。失焦 / 切篇 / Ctrl+S 仍立刻。设计 03 §3.3。 */
+export const NOTE_AUTOSAVE_MS = 1500;
+
+export type NoteSaveConflict = {
+  version: number;
+  expectedVersion: number;
+  updatedBy: string;
+  title: string;
+  bodyMd: string;
+};
+
+export function parseNoteSaveConflict(error: unknown): NoteSaveConflict | null {
+  if (!error || typeof error !== "object") return null;
+  const err = error as { code?: string; fields?: Record<string, string> };
+  if (err.code !== "CONFLICT_VERSION" || !err.fields) return null;
+  const version = Number(err.fields.version ?? err.fields.current_version);
+  const expectedVersion = Number(err.fields.expected_version);
+  if (!Number.isInteger(version) || version < 1 || err.fields.bodyMd === undefined) return null;
+  return {
+    version,
+    expectedVersion: Number.isInteger(expectedVersion) ? expectedVersion : version,
+    updatedBy: err.fields.updatedBy?.trim() || "其他人",
+    title: err.fields.title ?? "",
+    bodyMd: err.fields.bodyMd,
+  };
+}
+
 export const NOTE_METADATA_KEYS = ["title", "aiIndex", "published", "tags"] as const;
 export type NoteMetadataKey = (typeof NOTE_METADATA_KEYS)[number];
 
@@ -55,11 +82,11 @@ export function reconcileSavedNote<T extends NoteDraft>(live: T, sent: T, saved:
   if (!noteDraftChanged(live, sent)) return saved;
   return {
     ...saved,
-    title: live.title,
-    bodyMd: live.bodyMd,
-    aiIndex: live.aiIndex,
-    published: live.published,
-    tags: live.tags,
+    title: live.title !== sent.title ? live.title : saved.title,
+    bodyMd: live.bodyMd !== sent.bodyMd ? live.bodyMd : saved.bodyMd,
+    aiIndex: live.aiIndex !== sent.aiIndex ? live.aiIndex : saved.aiIndex,
+    published: live.published !== sent.published ? live.published : saved.published,
+    tags: sameTags(live.tags, sent.tags) ? saved.tags : live.tags,
     version: saved.version,
   };
 }

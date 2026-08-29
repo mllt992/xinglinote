@@ -17,6 +17,8 @@ import { attachNoteModeration, instanceConfig, lastReviewedAt, moderationOn, que
 import { notebookVisibleTo } from "../lib/notebook-access.ts";
 import { moveNotebook } from "../lib/notebook-move.ts";
 import { relocateNote } from "../lib/note-move.ts";
+import { recordNoteVersion } from "../lib/versions.ts";
+import { versionConflict } from "../lib/mcp-errors.ts";
 import { purgeFolder,purgeNotebook,purgeNotes,restoreFolder,restoreFolderId,restoreNotebook,restoreTitle,trashFolder,trashNotebook } from "../lib/trash.ts";
 
 export const knowledge = new Hono();
@@ -317,7 +319,12 @@ knowledge.patch("/notes/:id", async (c) => {
     return ok(c, { ...dto, canEdit: true, moderation: { ...dto.moderation, submitted: false } });
   }
   if (note.version !== body.expectedVersion && !body.force) {
-    throw fail("CONFLICT_VERSION", "笔记已有较新版本，请刷新后重试");
+    const [editor] = await db.select({ displayName: users.displayName }).from(users).where(eq(users.id, note.updatedBy));
+    throw versionConflict(body.expectedVersion, note.version, {
+      updatedBy: editor?.displayName ?? "其他人",
+      title: note.title,
+      bodyMd: note.bodyMd,
+    });
   }
   if (note.version !== body.expectedVersion && body.force) {
     const [already] = await db.select().from(noteVersions).where(and(eq(noteVersions.noteId, note.id), eq(noteVersions.version, note.version)));
@@ -355,14 +362,21 @@ knowledge.patch("/notes/:id", async (c) => {
     updatedBy: user.id,
     updatedAt: new Date(),
   };
-  const [saved] = await db.update(notes).set(next).where(eq(notes.id, note.id)).returning();
-  await db.insert(noteVersions).values({
+  const [saved] = await db.update(notes).set(next).where(and(eq(notes.id, note.id), eq(notes.version, note.version))).returning();
+  if (!saved) {
+    const [current] = await db.select().from(notes).where(eq(notes.id, note.id));
+    const [editor] = current ? await db.select({ displayName: users.displayName }).from(users).where(eq(users.id, current.updatedBy)) : [];
+    throw versionConflict(body.expectedVersion, current?.version ?? note.version, current ? { updatedBy: editor?.displayName ?? "其他人", title: current.title, bodyMd: current.bodyMd } : undefined);
+  }
+  await recordNoteVersion(db, {
     noteId: note.id,
     version: saved.version,
+    previousVersion: note.version,
     title: saved.title,
     bodyMd: saved.bodyMd,
     editorId: user.id,
-    source: body.source??"ui",
+    source: body.source ?? "ui",
+    merge: !(body.force && note.version !== body.expectedVersion),
   });
   await writeNoteFile({ ...saved, noteId: saved.id });
   await rebuildLinks(saved.id, saved.workspaceId, saved.bodyMd);

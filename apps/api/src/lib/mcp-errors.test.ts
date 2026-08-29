@@ -13,6 +13,13 @@ test("版本冲突同时暴露期望版本和数据库当前版本", () => {
   });
 });
 
+test("HTTP 409 还可带对方是谁和当前正文，给编辑器横幅用", () => {
+  const error = versionConflict(11, 12, { updatedBy: "星璃", title: "手册", bodyMd: "服务端正文" });
+  assert.equal(error.fields?.updatedBy, "星璃");
+  assert.equal(error.fields?.title, "手册");
+  assert.equal(error.fields?.bodyMd, "服务端正文");
+});
+
 test("工具业务错误用 isError 结果把结构化信息交给 Agent", () => {
   const data = {
     code: "CONFLICT_VERSION",

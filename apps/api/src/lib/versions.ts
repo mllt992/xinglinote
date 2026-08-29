@@ -1,6 +1,9 @@
 import { desc,eq,inArray,sql } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import { noteVersions } from "../db/schema.ts";
+import { mergeableNoteVersion } from "./note-version-merge.ts";
+
+type VersionDb = Pick<typeof db, "select" | "insert" | "update">;
 
 const KEEP_RECENT=100,DAY=86400000,KEEP_DAILY_DAYS=90;
 
@@ -27,4 +30,52 @@ export async function pruneNoteVersions(now=Date.now()){
     removed+=doomed.length;
   }
   return removed;
+}
+
+/**
+ * 写入一条历史，或按 03 §2.4 合并进 5 分钟内同一 source 的上一版。
+ * `matchEditor: false` 给协同房间：一处落库、不限最后动手的人。
+ */
+export async function recordNoteVersion(tx: VersionDb, opts: {
+  noteId: string;
+  version: number;
+  previousVersion: number;
+  title: string;
+  bodyMd: string;
+  editorId: string;
+  source: string;
+  matchEditor?: boolean;
+  /** 强制覆盖别人那一版时不要合并，否则刚推进历史的对方快照会被改成覆盖后的正文。 */
+  merge?: boolean;
+}) {
+  const recent = opts.merge === false ? [] : await tx.select({
+    id: noteVersions.id,
+    version: noteVersions.version,
+    source: noteVersions.source,
+    editorId: noteVersions.editorId,
+    createdAt: noteVersions.createdAt,
+  }).from(noteVersions).where(eq(noteVersions.noteId, opts.noteId)).orderBy(desc(noteVersions.version)).limit(5);
+  const merge = mergeableNoteVersion(recent, {
+    currentVersion: opts.previousVersion,
+    source: opts.source,
+    editorId: opts.matchEditor === false ? undefined : opts.editorId,
+  });
+  if (merge) {
+    await tx.update(noteVersions).set({
+      version: opts.version,
+      title: opts.title,
+      bodyMd: opts.bodyMd,
+      editorId: opts.editorId,
+      createdAt: new Date(),
+    }).where(eq(noteVersions.id, merge));
+    return;
+  }
+  await tx.insert(noteVersions).values({
+    noteId: opts.noteId,
+    version: opts.version,
+    title: opts.title,
+    bodyMd: opts.bodyMd,
+    editorId: opts.editorId,
+    source: opts.source,
+  });
 }

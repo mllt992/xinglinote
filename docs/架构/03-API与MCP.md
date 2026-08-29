@@ -330,7 +330,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 ```
 
 `SaveNoteBody`：`{ expectedVersion, bodyMd?, title?, published?, aiIndex?, force?: false }`  
-冲突：`409 CONFLICT_VERSION` + `data: { version, updatedBy, bodyMd }`。
+冲突：`409 CONFLICT_VERSION`，`error.fields` 带 `version` / `expected_version` / `current_version` / `updatedBy`（显示名）/ `title` / `bodyMd`。前端停自动保存、出横幅，禁止拿旧 version 连打。成功保存时，同一篇同一 source 5 分钟内的历史行合并（设计 03 §2.4）。
 
 **保存的响应也是一份完整的 `NoteDTO`，`canEdit` 一个都不能少。** 前端拿它整个换掉手上的笔记对象，
 缺字段等于告诉界面「这篇变只读了」——编辑器锁上、协同房间被拆、自动保存自己停掉，
@@ -350,7 +350,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
   否则发现授权服务器那条路（RFC 9728）会被一起堵死。
 - 备选：同镜像提供 `knowledge-mcp-stdio`，从 stdin 读，把请求转到该端点，给只支持 stdio 的客户端。
 - 初始化后 `tools/list` 按钥匙 rw/feed/delete **动态减工具**，不要列出再 403（减少 Agent 胡调）。每个工具带 `annotations`（`readOnlyHint` / `destructiveHint` / `idempotentHint`）。
-- `initialize.result.instructions` 写清用法：先 `get_me`，搜用 `search_notes`，改正文先 `get_note` 拿 version。
+- `initialize.result.instructions` 写清用法：先 `get_me`，搜用 `search_notes`，改正文先 `get_note` 拿 version；撞 `CONFLICT_VERSION` 用返回的 `current_version` 再读，禁止自己 `+1` 猜。
 - 协议方法：`initialize`、`ping`（回 `{}`）、`tools/list`、`tools/call`。未知 `notifications/*` 回 204。其它未知方法记失败审计，`action` 用 `mcp.{method}`，`details` 写 `VALIDATION` +「不支持的方法：{method}」，不要一律写成 `mcp.request`。`ping` / `initialize` / `tools/list` 成功不写审计，否则客户端保活会把日志刷满。
 - 创建类工具公开 UUID 参数 `client_request_id`，所有写工具也认 HTTP 头 `Idempotency-Key`。`mcp_idempotency` 以钥匙、工具名和键为主键，保存参数哈希及首次成功结果 10 分钟；同键不同参数返回 `IDEMPOTENCY_KEY_REUSED`，并发同参请求等待首个结果。
 - 错误分两层：未知工具、未知方法、畸形 JSON-RPC 与未捕获异常走 JSON-RPC `error`；已识别工具的参数、权限和业务错误走工具结果 `isError: true`，`content` 与 `structuredContent` 都带 `{ code, message, ...fields }`，让 Agent 能看见原因并修正参数。`CONFLICT_VERSION` 同时带兼容字段 `version`、调用方的 `expected_version` 与数据库真实的 `current_version`，三者也写进人类可读 message，兼容只展示 message 的客户端。
@@ -501,11 +501,11 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 ### replace_in_note
 
 ```
-{ id: string, expected_version: number, old: string, new: string, replace_all?: boolean }
+{ id: string, old: string, new: string, expected_version?: number, replace_all?: boolean }
 → { id, version, replacements }
 ```
 
-只替换正文片段。`old` 找不到或出现多次（未 `replace_all`）→ `VALIDATION`。
+只替换正文片段。`old` 找不到或出现多次（未 `replace_all`）→ `VALIDATION`。`expected_version` 可选：不传则冲突时若最新正文里 `old` 仍能唯一匹配则重试 2 次；传了则不重试。
 
 ### list_recent
 
@@ -537,7 +537,7 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 
 ### move_note / add_tags / trash_note
 
-仅对应档位注册。`trash_note` 仅 `allow_delete`。`move_note` 与 `trash_note` 必须带 `expected_version`，更新时也以版本作为 SQL 条件；二者均支持 `dry_run` 预览。公开 `post_to_feed` 必须带 `confirm_public=true`，缺少时返回 `CONFIRMATION_REQUIRED`。
+仅对应档位注册。`trash_note` 仅 `allow_delete`。`move_note` 与 `trash_note` 必须带 `expected_version`，更新时也以版本作为 SQL 条件；二者均支持 `dry_run` 预览。`add_tags` 合并去重，**不升** `notes.version`。公开 `post_to_feed` 必须带 `confirm_public=true`，缺少时返回 `CONFIRMATION_REQUIRED`。
 
 ---
 

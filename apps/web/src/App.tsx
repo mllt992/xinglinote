@@ -21,8 +21,8 @@ import { CommandPalette, type Command as PaletteCommand } from "./components/com
 import { FONT_SCALES, RENDER_KEYS, RENDER_LABELS, NOTEBOOKS_MAX, NOTEBOOKS_MIN, TREE_MAX, TREE_MIN, clamp, loadLayout, saveLayout, type LayoutPrefs } from "./lib/layout-prefs";
 import { useDebounced } from "./lib/use-debounced";
 import {
-  isSaveHotkey, noteDraftChanged, noteMetadataKeys, pickNoteMetadata,
-  reconcileSavedNote, sameNoteMetadataValue, type NoteMetadataKey,
+  isSaveHotkey, NOTE_AUTOSAVE_MS, noteDraftChanged, noteMetadataKeys, parseNoteSaveConflict, pickNoteMetadata,
+  reconcileSavedNote, sameNoteMetadataValue, type NoteMetadataKey, type NoteSaveConflict,
 } from "./lib/note-save";
 import { cn } from "./lib/utils";
 import { Button } from "./components/ui/button";
@@ -52,6 +52,7 @@ import { MoveToFolderDialog, MoveToNotebookDialog, NoteTree } from "./components
 import { NotebookList } from "./components/notebook-list";
 import { ImageLightbox } from "./components/image-lightbox";
 import { NoteRail, loadRailTab, saveRailTab, type Attachment, type RailTab } from "./components/note-rail";
+import { NoteConflictBanner } from "./components/note-conflict-banner";
 import { CalendarPage, TodayPage } from "./components/calendar";
 import { ProjectPage, ProjectsPage } from "./components/projects";
 import { ReceivedShares, SavedShareChip } from "./components/received-shares";
@@ -389,7 +390,7 @@ function Workspace() {
   /** 侧栏里笔记本怎么排。按工作区记，默认「自定义」——侧栏是人自己摆的秩序。 */
   const [nbSort, setNbSort] = useState<NoteSortMode>("custom");
   const [reloading, setReloading] = useState(false);
-  const [note, setNote] = useState<NoteDto | null>(null); const noteRef = useRef<NoteDto | null>(null); const saveTimer = useRef<number | null>(null); const savingRef = useRef(false); const saveQueuedRef = useRef(false); const saveActionRef = useRef<() => void>(() => {}); const dirtyMetadataRef = useRef(new Set<NoteMetadataKey>()); const titleComposingRef = useRef(false); const [status, setStatus] = useState("就绪"); const [statusErr, setStatusErr] = useState(false); const [saving, setSaving] = useState(false); const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [note, setNote] = useState<NoteDto | null>(null); const noteRef = useRef<NoteDto | null>(null); const saveTimer = useRef<number | null>(null); const savingRef = useRef(false); const saveQueuedRef = useRef(false); const saveActionRef = useRef<() => void>(() => {}); const dirtyMetadataRef = useRef(new Set<NoteMetadataKey>()); const titleComposingRef = useRef(false); const conflictRef = useRef<NoteSaveConflict | null>(null); const [conflict, setConflict] = useState<NoteSaveConflict | null>(null); const [status, setStatus] = useState("就绪"); const [statusErr, setStatusErr] = useState(false); const [saving, setSaving] = useState(false); const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   /** 编辑器状态条：dirty / saving / saved / conflict（规范 §11.4）。冲突与保存失败必须和「已保存」看得出区别。 */
   const say = (text: string, error = false) => { setStatus(text); setStatusErr(error); };
   const [search, setSearch] = useState(""); const [hits, setHits] = useState<Hit[]>([]); const [allSpaces, setAllSpaces] = useState(false); const [titleOnly, setTitleOnly] = useState(false); const [backlinks, setBacklinks] = useState<Array<{ id: string; title: string; snippet: string }>>([]); const [atts, setAtts] = useState<Att[]>([]); const [rail, setRailState] = useState<RailTab | null>(loadRailTab); const [create, setCreate] = useState<CreateKind>(null);  const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null); const [showCollab, setShowCollab] = useState(false); const [showImport, setShowImport] = useState(false); const [favorited, setFavorited] = useState(false); const [viewers, setViewers] = useState<string[]>([]); const [quickOpen, setQuickOpen] = useState(false);  const[showAsk,setShowAsk]=useState(false); const [showNotebookAccess,setShowNotebookAccess]=useState(false); const [moveNb,setMoveNb]=useState<Nb|null>(null); const [site, setSite] = useState<{ published: boolean; slug: string; pending?: boolean; canPublish?: boolean; canRequest?: boolean } | null>(null);
@@ -469,7 +470,7 @@ function Workspace() {
       void refreshTree();
     }
   }
-  useEffect(() => { dirtyMetadataRef.current.clear(); if (!noteId) { setNote(null); setAtts([]); setLastSavedAt(null); return; } api<NoteDto>(`/api/v1/notes/${noteId}`).then(loaded => { setNote(loaded); noteRef.current = loaded; const savedAt = loaded.updatedAt ? new Date(loaded.updatedAt).getTime() : NaN; setLastSavedAt(Number.isFinite(savedAt) ? savedAt : null); say(`已保存 · v${loaded.version}`); }); api<{ items: typeof backlinks }>(`/api/v1/notes/${noteId}/backlinks`).then(d => setBacklinks(d.items)); api<{ attachments: Att[] }>(`/api/v1/notes/${noteId}/attachments`).then(d => setAtts(d.attachments)).catch(() => setAtts([])); }, [noteId]);
+  useEffect(() => { dirtyMetadataRef.current.clear(); conflictRef.current = null; setConflict(null); if (!noteId) { setNote(null); setAtts([]); setLastSavedAt(null); return; } api<NoteDto>(`/api/v1/notes/${noteId}`).then(loaded => { setNote(loaded); noteRef.current = loaded; const savedAt = loaded.updatedAt ? new Date(loaded.updatedAt).getTime() : NaN; setLastSavedAt(Number.isFinite(savedAt) ? savedAt : null); say(`已保存 · v${loaded.version}`); }); api<{ items: typeof backlinks }>(`/api/v1/notes/${noteId}/backlinks`).then(d => setBacklinks(d.items)); api<{ attachments: Att[] }>(`/api/v1/notes/${noteId}/attachments`).then(d => setAtts(d.attachments)).catch(() => setAtts([])); }, [noteId]);
   useEffect(() => { noteRef.current = note; }, [note]);
   /** 从搜索、快速打开或深链进来的笔记可能不在当前笔记本：侧栏跟着笔记走，面包屑才不会张冠李戴。 */
   useEffect(() => { if (note?.notebookId) setNbId(note.notebookId); }, [note?.notebookId]);
@@ -505,9 +506,10 @@ function Workspace() {
   }
 
   /** 协同接管期间正文归房间落库（设计 17 §3.4），这里就别再 PATCH 一遍 body 了，否则两个写者互相盖版本。 */
-  async function save() {
+  async function save(opts: { force?: boolean } = {}) {
     const current = noteRef.current;
     if (!current?.canEdit) return;
+    if (conflictRef.current && !opts.force) return;
     const collabConnected = collab.status === "connected";
     const metadataKeys = [...dirtyMetadataRef.current];
     // 正文已经交给 CRDT 房间落库。这里再拿页面上的旧 version 发一遍空 PATCH，
@@ -525,12 +527,10 @@ function Workspace() {
     say("保存中…");
     const body = collabConnected ? {} : { bodyMd: current.bodyMd };
     try {
-      const metadata = collabConnected
-        ? pickNoteMetadata(current, metadataKeys)
-        : { title: current.title, aiIndex: current.aiIndex, published: current.published, tags: current.tags ?? [] };
+      const metadata = pickNoteMetadata(current, metadataKeys);
       const patch = (expectedVersion: number) => api<NoteDto>(`/api/v1/notes/${current.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ expectedVersion, ...metadata, ...body }),
+        body: JSON.stringify({ expectedVersion, ...metadata, ...body, ...(opts.force ? { force: true } : {}) }),
       });
       let saved: NoteDto;
       if (collabConnected) {
@@ -563,6 +563,8 @@ function Workspace() {
         setTree(tree => tree.map(row => row.id === next.id ? { ...row, title: next.title } : row));
         const savedAt = saved.updatedAt ? new Date(saved.updatedAt).getTime() : Date.now();
         setLastSavedAt(Number.isFinite(savedAt) ? savedAt : Date.now());
+        conflictRef.current = null;
+        setConflict(null);
         say(collabConnected
           ? (dirtyMetadataRef.current.size ? "未保存" : "协同中")
           : (stillDirty ? "未保存" : `已保存 · v${saved.version}`));
@@ -572,11 +574,25 @@ function Workspace() {
       if (saved.moderation?.submitted && saved.moderation.queued) toast.success("已提交", saved.moderation.message ?? "正在审核，通过后会出现在文档站。");
       else if (saved.moderation?.submitted && saved.moderation.held) toast.success("已提交，等待人工审核", saved.moderation.message ?? undefined);
     } catch (error) {
-      say((error as Error).message, true);
+      const clash = parseNoteSaveConflict(error);
+      if (clash || (error as { code?: string }).code === "CONFLICT_VERSION") {
+        if (saveTimer.current !== null) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+        saveQueuedRef.current = false;
+        if (clash) {
+          conflictRef.current = clash;
+          setConflict(clash);
+          say(`${clash.updatedBy} 刚保存了更新`, true);
+        } else {
+          // 没有对方正文也要停自动保存，避免拿旧号连打。「加载对方版本」会再 GET 一次。
+          conflictRef.current = { version: 0, expectedVersion: current.version, updatedBy: "其他人", title: "", bodyMd: "" };
+          setConflict(conflictRef.current);
+          say((error as Error).message, true);
+        }
+      } else say((error as Error).message, true);
     } finally {
       savingRef.current = false;
       setSaving(false);
-      if (saveQueuedRef.current) {
+      if (saveQueuedRef.current && !conflictRef.current) {
         saveQueuedRef.current = false;
         void save();
       }
@@ -591,9 +607,37 @@ function Workspace() {
     // 只改了正文、而且协同连着：房间会自己落库，这里连计时器都不必起
     if (collab.status === "connected" && Object.keys(patch).length === 1 && patch.bodyMd !== undefined) { say("协同中"); return; }
     say("未保存");
+    if (conflictRef.current) return;
     if (saveTimer.current !== null) { clearTimeout(saveTimer.current); saveTimer.current = null; }
     if (patch.title !== undefined && titleComposingRef.current) return;
-    saveTimer.current = window.setTimeout(() => { saveTimer.current = null; void save(); }, instant ? 0 : 850);
+    saveTimer.current = window.setTimeout(() => { saveTimer.current = null; void save(); }, instant ? 0 : NOTE_AUTOSAVE_MS);
+  }
+  async function loadConflictTheirs() {
+    const clash = conflictRef.current;
+    const current = noteRef.current;
+    if (!clash || !current) return;
+    if (saveTimer.current !== null) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    dirtyMetadataRef.current.clear();
+    let next = collab.status === "connected"
+      ? { ...current, title: clash.title || current.title, version: clash.version }
+      : { ...current, title: clash.title || current.title, bodyMd: clash.bodyMd, version: clash.version };
+    if (!clash.bodyMd || clash.version < 1) {
+      try {
+        const fresh = await api<NoteDto>(`/api/v1/notes/${current.id}`);
+        next = collab.status === "connected" ? { ...fresh, bodyMd: current.bodyMd } : fresh;
+      } catch (error) {
+        say((error as Error).message, true);
+        return;
+      }
+    }
+    setNote(next); noteRef.current = next;
+    setTree(tree => tree.map(row => row.id === next.id ? { ...row, title: next.title } : row));
+    conflictRef.current = null;
+    setConflict(null);
+    say(`已加载 · v${next.version}`);
+  }
+  function overwriteConflict() {
+    void save({ force: true });
   }
   saveActionRef.current = () => { void save(); };
   useEffect(() => {
@@ -602,9 +646,32 @@ function Workspace() {
       event.preventDefault();
       if (!event.repeat && noteRef.current.canEdit) saveActionRef.current();
     };
+    const flush = () => {
+      if (saveTimer.current === null || conflictRef.current) return;
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      saveActionRef.current();
+    };
+    const onHide = () => { if (document.visibilityState === "hidden") flush(); };
     window.addEventListener("keydown", saveHotkey);
-    return () => window.removeEventListener("keydown", saveHotkey);
+    window.addEventListener("beforeunload", flush);
+    window.addEventListener("blur", flush);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      window.removeEventListener("keydown", saveHotkey);
+      window.removeEventListener("beforeunload", flush);
+      window.removeEventListener("blur", flush);
+      document.removeEventListener("visibilitychange", onHide);
+    };
   }, []);
+  useEffect(() => () => {
+    // 切篇时 noteRef 还是上一篇：把没到点的自动保存立刻冲掉。
+    // 新篇的 GET 是异步的，不会把这篇的 PATCH 盖成下一篇。
+    if (saveTimer.current === null || conflictRef.current) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    saveActionRef.current();
+  }, [noteId]);
   async function createNote(folderId: string | null = activeFolder ?? tree.find(n => n.id === noteId)?.folderId ?? null) { if (!nbId || !wsId) return; const n = await api<{ id: string }>("/api/v1/notes", { method: "POST", body: JSON.stringify({ notebookId: nbId, folderId }) }); await refreshTree(); nav(`/w/${wsId}/n/${n.id}`); }
   /**
    * 页内刷新这一篇：正文、反向链接、附件、目录树一起从服务端重新拉。
@@ -630,6 +697,9 @@ function Workspace() {
       // 协同接管期间正文归房间管（设计 17 §3.4）：这里只换元数据，
       // 拿服务端快照去盖房里正在编辑的文本会把别人刚敲的字冲掉。
       const next = collab.status === "connected" && noteRef.current ? { ...fresh, bodyMd: noteRef.current.bodyMd } : fresh;
+      conflictRef.current = null;
+      setConflict(null);
+      dirtyMetadataRef.current.clear();
       setNote(next); noteRef.current = next;
       setTree(t => t.map(n => n.id === next.id ? { ...n, title: next.title } : n));
       const savedAt = fresh.updatedAt ? new Date(fresh.updatedAt).getTime() : NaN;
@@ -1075,6 +1145,7 @@ function Workspace() {
         <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-4"><div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"><span className="shrink-0">{activeNb?.title}</span>{folderAncestorIds(folders, tree.find(n => n.id === note.id)?.folderId ?? null).slice().reverse().map(id => { const f = folders.find(x => x.id === id); return f ? <span key={f.id} className="flex min-w-0 items-center gap-1.5"><ChevronRight className="size-3 shrink-0" /><span className="truncate">{f.title}</span></span> : null; })}<ChevronRight className="size-3 shrink-0" /><span className="truncate text-foreground">{note.title || "未命名"}</span>{note.moderation?.held && <Badge className={note.moderation.status === "rejected" ? "border-transparent bg-destructive/10 text-destructive" : "border-transparent bg-[color-mix(in_srgb,var(--warning)_14%,transparent)] text-[var(--warning)]"}>{note.moderation.queued ? "审核中" : note.moderation.status === "rejected" ? "未通过审核" : "待人工审核"}</Badge>}</div><div className="ml-auto flex items-center gap-1">{viewers.length > 0 && <Tooltip content={`${viewers.join("、")} 也打开着这篇`}><Badge className="mr-1 gap-1"><Users className="size-3" />{viewers.length === 1 ? `${viewers[0]} 在看` : `${viewers.length} 人在看`}</Badge></Tooltip>}
 <Tooltip content={favorited ? "取消收藏" : "收藏这篇"}><Button variant="ghost" size="icon" aria-label={favorited ? "取消收藏" : "收藏"} onClick={async () => { const next = !favorited; setFavorited(next); try { await api(`/api/v1/notes/${note.id}/favorite`, { method: next ? "PUT" : "DELETE" }); } catch (e) { setFavorited(!next); setStatus((e as Error).message); } }}><Star className={favorited ? "fill-current" : ""} /></Button></Tooltip>
 <Tooltip content="协作：谁能一起编这篇、此刻谁在"><Button variant="ghost" size="sm" onClick={() => setShowCollab(true)}><Users /> <span className="hidden sm:inline">协作</span></Button></Tooltip><Button size="sm" onClick={() => setShareTarget({ kind: "note", id: note.id, title: note.title, bodyMd: note.bodyMd })}><Share2 /> <span className="hidden sm:inline">分享</span></Button><Tooltip content={note.aiIndex ? "AI 可读取此笔记" : "AI 无法读取此笔记"}><Button variant={note.aiIndex ? "secondary" : "ghost"} size="sm" onClick={() => changeNote({ aiIndex: !note.aiIndex }, true)}><Bot /> <span className="hidden sm:inline">AI 可读</span></Button></Tooltip><Tooltip content={rail ? "收起右栏" : "展开右栏（大纲 / 反向链接 / 附件 / 版本）"}><Button variant={rail ? "secondary" : "ghost"} size="icon" aria-label="右栏" onClick={() => openRail(rail ? null : "outline")}><PanelRight /></Button></Tooltip><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => openRail("ai")}><Sparkles />AI 写作建议</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("diagram")}><Workflow />AI 画图</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("outline")}><List />大纲</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("versions")}><RotateCcw />版本历史</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("attachments")}><Paperclip />附件 {atts.length > 0 && <Badge className="ml-auto">{atts.length}</Badge>}</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("review")}><MessageSquare />评论与纠错</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("links")}><PanelRight />反向链接 <Badge className="ml-auto">{backlinks.length}</Badge></DropdownMenuItem><DropdownMenuItem onSelect={() => changeNote({ published: !note.published }, true)}><Globe2 />{note.published ? "从文档站隐藏此页" : "在文档站发布此页"}</DropdownMenuItem>{site?.canPublish && !site.published && site.pending && <DropdownMenuItem onSelect={() => void changeSite({ action: "approve" }, "已通过，文档站已上线")}><Globe2 />通过并上线文档站</DropdownMenuItem>}{site?.canPublish && !site.published && site.pending && <DropdownMenuItem onSelect={() => void changeSite({ action: "reject" }, "已驳回发布申请")}><Globe2 />驳回发布申请</DropdownMenuItem>}{site?.canPublish && <DropdownMenuItem onSelect={() => void changeSite({ published: !site.published }, site.published ? "已下线文档站" : "文档站已发布")}><Globe2 />{site.published ? "下线文档站" : "发布笔记本为文档站"}</DropdownMenuItem>}{site?.canRequest && !site.published && <DropdownMenuItem onSelect={() => void changeSite({ published: !site.pending }, site.pending ? "已撤回申请" : "已提交，等管理员审核")}><Globe2 />{site.pending ? "撤回发布申请" : "申请发布为文档站"}</DropdownMenuItem>}{site?.published && <DropdownMenuItem onSelect={() => window.open(site.slug, "_blank")}><ExternalLink />打开文档站</DropdownMenuItem>}<DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onSelect={() => void deleteCurrent()}><Trash2 />移到回收站</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div></div>
+        {conflict && <NoteConflictBanner editor={conflict.updatedBy} onLoadTheirs={loadConflictTheirs} onOverwrite={overwriteConflict} />}
         <div className="relative flex min-h-0 flex-1"><div className="min-h-0 min-w-0 flex-1"><Tabs.Root value={editorTab} onValueChange={v => setEditorTab(v as "write" | "preview" | "split")} className="flex h-full flex-col"><div className="flex items-center justify-between px-4 pt-4 sm:px-6 sm:pt-6"><Tabs.List className="inline-flex rounded-lg bg-muted p-1"><Tabs.Trigger value="write" className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">编辑</Tabs.Trigger><Tabs.Trigger value="preview" className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">预览</Tabs.Trigger><Tabs.Trigger value="split" className="hidden rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm sm:block">分栏</Tabs.Trigger></Tabs.List><div className="flex items-center gap-1"><Tooltip content={layout.wysiwyg ? "即时渲染：开（点击显示 Markdown 标记）" : "即时渲染：关（点击隐藏标记）"}><Button variant={layout.wysiwyg ? "secondary" : "ghost"} size="icon" className="size-8" aria-label="切换即时渲染" onClick={() => setLayout(v => ({ ...v, wysiwyg: !v.wysiwyg }))}><Type /></Button></Tooltip><Tooltip content={layout.wide ? "宽栏：开（点击收回 46rem 易读行宽）" : "宽栏：关（点击让正文铺满编辑区）"}><Button variant={layout.wide ? "secondary" : "ghost"} size="icon" className="size-8" aria-label="切换宽栏" aria-pressed={layout.wide} onClick={() => setLayout(v => ({ ...v, wide: !v.wide }))}>{layout.wide ? <FoldHorizontal /> : <UnfoldHorizontal />}</Button></Tooltip><Tooltip content={reloading ? "正在刷新…" : "刷新这篇（重新从服务端读）"}><Button variant="ghost" size="icon" className="size-8" aria-label="刷新这篇笔记" disabled={reloading} onClick={() => void reloadNote()}><RotateCcw className={reloading ? "animate-spin" : undefined} /></Button></Tooltip><Tooltip content="命令面板（Ctrl+Shift+P）"><Button variant="ghost" size="icon" className="size-8" aria-label="命令面板" onClick={() => setPalette(true)}><Terminal /></Button></Tooltip><Tooltip content={zen ? "退出全屏（Esc）" : "编辑器全屏"}><Button variant="ghost" size="icon" className="size-8" aria-label={zen ? "退出全屏" : "编辑器全屏"} onClick={() => void toggleZen()}>{zen ? <Minimize2 /> : <Maximize2 />}</Button></Tooltip></div></div><div className="editor-measure mx-auto flex min-h-0 flex-1 flex-col px-4 pb-4 pt-3 sm:px-6 sm:pb-6 sm:pt-4" data-wide={layout.wide ? "1" : undefined} style={{ "--editor-font-scale": String(layout.fontScale) } as React.CSSProperties}><input className="mb-3 w-full border-0 bg-transparent font-[var(--font-title)] text-2xl font-semibold tracking-[-.045em] outline-none placeholder:text-muted-foreground/40 sm:mb-4 sm:text-3xl md:text-4xl" value={note.title} onChange={e => changeNote({ title: e.target.value })} placeholder="无标题" />{note.canEdit && editorTab !== "preview" && <EditorFormatBar onAction={action => editorRef.current?.run(action)} activeActions={editorRef.current?.activeActions()} history={editorRef.current?.historyState() ?? { canUndo: false, canRedo: false }} onUpload={() => document.getElementById("note-inline-attachment-input")?.click()} spellcheck={layout.spellcheck} onToggleSpellcheck={() => setLayout(v => ({ ...v, spellcheck: !v.spellcheck }))} />}<Tabs.Content value="write" className="min-h-0 flex-1 overflow-hidden"><MarkdownEditor ref={editorRef} className="h-full" resetKey={note.id} value={note.bodyMd} readOnly={!note.canEdit} onChange={bodyMd => changeNote({ bodyMd })} onSave={() => void save()} onWiki={openWiki} onUpload={uploadAttachment} onCursor={setCursor} typewriter={layout.typewriter} wysiwyg={layout.wysiwyg} vim={layout.vim} onVimMode={reportVimMode} spellcheck={layout.spellcheck} render={layout.render} collab={me && note.canEdit ? { id: me.id, name: me.displayName } : null} onCollab={onCollab} completion={{ workspaceId: wsId, excludeNoteId: note.id, notebookNames: Object.fromEntries(nbs.map(n => [n.id, n.title])) }} wikiPreview={loadWikiPreview} autoFocus placeholder="开始写作，或输入 [[笔记标题]] 建立双链…" /></Tabs.Content><Tabs.Content value="preview" className="min-h-0 flex-1 overflow-auto"><div data-note-preview className="w-full py-2"><MarkdownView source={note.bodyMd} onWiki={openWiki} onToggleTask={note.canEdit ? bodyMd => changeNote({ bodyMd }, true) : undefined} /></div></Tabs.Content><Tabs.Content value="split" className="min-h-0 flex-1"><div className="grid h-full min-h-0 grid-cols-1 divide-x divide-border overflow-hidden rounded-xl border border-border md:grid-cols-2"><MarkdownEditor ref={editorRef} className="h-full min-h-0 overflow-hidden bg-muted/25 p-5" resetKey={note.id} value={note.bodyMd} readOnly={!note.canEdit} onChange={bodyMd => changeNote({ bodyMd })} onSave={() => void save()} onWiki={openWiki} onUpload={uploadAttachment} onScrollLine={syncPreview} onCursor={setCursor} typewriter={layout.typewriter} wysiwyg={layout.wysiwyg} vim={layout.vim} onVimMode={reportVimMode} spellcheck={layout.spellcheck} render={layout.render} collab={me && note.canEdit ? { id: me.id, name: me.displayName } : null} onCollab={onCollab} completion={{ workspaceId: wsId, excludeNoteId: note.id, notebookNames: Object.fromEntries(nbs.map(n => [n.id, n.title])) }} wikiPreview={loadWikiPreview} placeholder="开始写作，或输入 [[笔记标题]] 建立双链…" /><ScrollArea className="h-full" viewportRef={bindPreview}><div data-note-preview className="p-6"><MarkdownView source={previewBody} sourceLines onWiki={openWiki} onToggleTask={note.canEdit ? bodyMd => changeNote({ bodyMd }, true) : undefined} /></div></ScrollArea></div></Tabs.Content></div></Tabs.Root></div>
           {rail && <NoteRail
             note={note}
