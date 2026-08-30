@@ -34,7 +34,7 @@ const providerBody=providerFields;
 const providerPatch=providerFields.partial().extend({clearApiKey:z.boolean().optional()});
 
 type IndexRow={id:string;title:string;notebookTitle:string;workspaceId:string;workspaceName:string;updatedAt:string;indexedAt:string|null;chunks:number;jobStatus:string|null;runAfter:string|null;lastError:string|null;aiIndex:boolean;status:IndexState};
-async function workspaceIndexRows(workspaceId?:string):Promise<IndexRow[]> {
+async function workspaceIndexRows(workspaceId?:string, readableByUserId?:string):Promise<IndexRow[]> {
   const rows=await db.execute(sql`
     WITH latest_jobs AS (
       SELECT DISTINCT ON (payload->>'noteId') payload->>'noteId' note_id,status,run_after,last_error,created_at
@@ -50,9 +50,11 @@ async function workspaceIndexRows(workspaceId?:string):Promise<IndexRow[]> {
     FROM notes n
     INNER JOIN notebooks nb ON nb.id=n.notebook_id
     INNER JOIN workspaces w ON w.id=n.workspace_id
+    ${readableByUserId?sql`LEFT JOIN notebook_members viewer_nb ON viewer_nb.notebook_id=nb.id AND viewer_nb.user_id=${readableByUserId}::uuid`:sql``}
     LEFT JOIN chunk_state cs ON cs.note_id=n.id
     LEFT JOIN latest_jobs lj ON lj.note_id=n.id::text
     WHERE n.trashed_at IS NULL ${workspaceId?sql`AND n.workspace_id=${workspaceId}::uuid`:sql``}
+      ${readableByUserId?sql`AND (nb.visibility='open' OR nb.created_by=${readableByUserId}::uuid OR (nb.visibility='restricted' AND viewer_nb.user_id IS NOT NULL))`:sql``}
     ORDER BY n.updated_at DESC
   `);
   return (rows as unknown as Array<Record<string,unknown>>).map(r=>{
@@ -87,6 +89,8 @@ aiRoutes.get("/workspaces/:id/ai/provider",async c=>{
   const workspaceId=c.req.param("id");const {u,role}=await member(c,workspaceId);
   const rows=await db.select().from(aiProviders).where(aiProviderCoversWorkspace(workspaceId)).orderBy(desc(aiProviders.createdAt));
   const visible=rows.filter(p=>!p.ownerUserId||p.ownerUserId===u.id);
+  const embeddingRefs=await db.select({providerId:workspaceAiSettings.embeddingProviderId}).from(workspaceAiSettings);
+  const instanceManagedProviderIds=new Set(embeddingRefs.map(r=>r.providerId).filter((id):id is string=>!!id));
   const [stored]=await db.select().from(workspaceAiSettings).where(eq(workspaceAiSettings.workspaceId,workspaceId));
   const legacyChat=stored?null:await provider(workspaceId,u.id),legacyEmbedding=stored?null:await embeddingProvider(workspaceId,u.id);
   return ok(c,{providers:await Promise.all(visible.map(async p=>({
@@ -95,7 +99,7 @@ aiRoutes.get("/workspaces/:id/ai/provider",async c=>{
     keySuffix:keySuffix(p.apiKey),ownerUserId:p.ownerUserId,
     workspaceIds:providerWorkspaceIds(p),enabled:p.enabled,
     canEditScope:p.ownerUserId===u.id||(!p.ownerUserId&&(role==="owner"||role==="admin")),
-    canManage:await canManageProvider(u.id,p),
+    canManage:(u.roleInstance==="admin"||!instanceManagedProviderIds.has(p.id))&&await canManageProvider(u.id,p),
   }))),settings:{
     chatProviderId:stored?.chatProviderId??legacyChat?.id??null,
     chatModel:stored?.chatModel??legacyChat?.chatModel??null,
@@ -147,6 +151,9 @@ aiRoutes.patch("/ai/providers/:id",async c=>{
   if(body.enabled===false&&refs.length)throw fail("VALIDATION","渠道正在被工作区使用，请先更换工作区模型配置");
   const removed=before.filter(id=>!workspaceIds.includes(id));
   if(refs.some(r=>removed.includes(r.workspaceId)))throw fail("VALIDATION","渠道仍被已取消范围的工作区使用，请先更换该工作区模型配置");
+  if(u.roleInstance!=="admin"&&refs.some(r=>r.embeddingProviderId===p.id)&&(body.baseUrl!==undefined||body.apiKey!==undefined||body.clearApiKey===true||changed.length>0||body.enabled===false)){
+    throw fail("FORBIDDEN","该渠道正用于实例统一量化，连接、凭据和适用范围只能由实例管理员调整");
+  }
   const baseUrl=(body.baseUrl??p.baseUrl).replace(/\/$/,"");await assertSafeOutboundUrl(baseUrl,"AI 提供商地址");
   const models=body.models??(Array.isArray(p.chatModels)?p.chatModels as string[]:[]);
   const connectionChanged=baseUrl!==p.baseUrl||body.apiKey!==undefined||body.clearApiKey===true;
@@ -164,25 +171,20 @@ aiRoutes.patch("/ai/providers/:id",async c=>{
 
 aiRoutes.patch("/workspaces/:id/ai/settings",async c=>{
   const workspaceId=c.req.param("id");const {role}=await ctx(c,workspaceId);
-  if(role!=="owner"&&role!=="admin")throw fail("FORBIDDEN","只有 Owner 或 Admin 能配置工作区模型");
+  if(role!=="owner"&&role!=="admin")throw fail("FORBIDDEN","只有 Owner 或 Admin 能配置工作区对话模型");
+  const raw=await c.req.json();
+  if(raw&&typeof raw==="object"&&("embeddingProviderId" in raw||"embeddingModel" in raw||"autoEmbed" in raw)){
+    throw fail("FORBIDDEN","Embedding 与量化由实例管理员在后台统一配置");
+  }
   const body=z.object({
     chatProviderId:z.string().uuid().nullable(),chatModel:z.string().trim().min(1).max(200).nullable(),
-    embeddingProviderId:z.string().uuid().nullable(),embeddingModel:z.string().trim().min(1).max(200).nullable(),
-    autoEmbed:z.boolean().default(true),
   }).refine(v=>(v.chatProviderId===null)===(v.chatModel===null),{message:"对话渠道与模型必须同时选择",path:["chatModel"]})
-    .refine(v=>(v.embeddingProviderId===null)===(v.embeddingModel===null),{message:"Embedding 渠道与模型必须同时选择",path:["embeddingModel"]})
-    .parse(await c.req.json());
-  const selectedIds=[...new Set([body.chatProviderId,body.embeddingProviderId].filter((id):id is string=>!!id))];
+    .parse(raw);
+  const selectedIds=body.chatProviderId?[body.chatProviderId]:[];
   const selected=selectedIds.length?await db.select().from(aiProviders).where(inArray(aiProviders.id,selectedIds)):[];
   for(const id of selectedIds){const p=selected.find(x=>x.id===id);if(!p||!p.enabled||p.ownerUserId||!providerWorkspaceIds(p).includes(workspaceId))throw fail("VALIDATION","所选渠道不可用于当前工作区");}
-  const [old]=await db.select().from(workspaceAiSettings).where(eq(workspaceAiSettings.workspaceId,workspaceId));
-  const embeddingChanged=!old||old.embeddingProviderId!==body.embeddingProviderId||old.embeddingModel!==body.embeddingModel;
-  const turnOn=body.autoEmbed&&!old?.autoEmbed;
-  await db.transaction(async tx=>{
-    await tx.insert(workspaceAiSettings).values({...body,workspaceId,updatedAt:new Date()}).onConflictDoUpdate({target:workspaceAiSettings.workspaceId,set:{...body,updatedAt:new Date()}});
-    if(embeddingChanged)await tx.delete(aiChunks).where(eq(aiChunks.workspaceId,workspaceId));
-    if(body.embeddingProviderId&&body.embeddingModel&&body.autoEmbed&&(embeddingChanged||turnOn))await enqueueAiIndexForWorkspaces(tx,[workspaceId]);
-  });
+  await db.insert(workspaceAiSettings).values({...body,workspaceId,updatedAt:new Date()})
+    .onConflictDoUpdate({target:workspaceAiSettings.workspaceId,set:{...body,updatedAt:new Date()}});
   return ok(c,{});
 });
 
@@ -190,7 +192,7 @@ aiRoutes.get("/workspaces/:id/ai/index-status",async c=>{
   const workspaceId=c.req.param("id");const {u}=await member(c,workspaceId);
   const instanceWide=c.req.query("scope")==="instance";
   if(instanceWide&&u.roleInstance!=="admin")throw fail("FORBIDDEN","仅实例管理员可查看全站量化状态");
-  const all=await workspaceIndexRows(instanceWide?undefined:workspaceId);
+  const all=await workspaceIndexRows(instanceWide?undefined:workspaceId,instanceWide?undefined:u.id);
   const status=z.enum(["indexed","pending","running","processing","stale","missing","failed","excluded"]).optional().parse(c.req.query("status")||undefined);
   const q=(c.req.query("q")??"").trim().toLocaleLowerCase();
   const limit=z.coerce.number().int().min(1).max(100).default(50).parse(c.req.query("limit")||undefined);
@@ -203,10 +205,9 @@ aiRoutes.get("/workspaces/:id/ai/index-status",async c=>{
 });
 
 aiRoutes.post("/workspaces/:id/ai/index/rebuild",async c=>{
-  const workspaceId=c.req.param("id");const {u,role}=await ctx(c,workspaceId);
+  const workspaceId=c.req.param("id");const {u}=await ctx(c,workspaceId);
   const body=z.object({scope:z.enum(["all","incomplete","failed","stale","missing"]).default("incomplete"),noteIds:z.array(z.string().uuid()).max(500).optional(),instanceWide:z.boolean().default(false)}).parse(await c.req.json().catch(()=>({})));
-  if(body.instanceWide){if(u.roleInstance!=="admin")throw fail("FORBIDDEN","仅实例管理员可重建全站向量索引");}
-  else if(role!=="owner"&&role!=="admin")throw fail("FORBIDDEN","只有 Owner 或 Admin 能重建向量索引");
+  if(u.roleInstance!=="admin")throw fail("FORBIDDEN","量化由实例管理员统一管理；你可以查看量化状态");
   const p=await embeddingProvider(workspaceId,u.id);if(!p?.embeddingModel)throw fail("AI_NOT_CONFIGURED","请先给当前工作区选择 Embedding 渠道和模型");
   const appliedWorkspaces=body.instanceWide?await applyEmbeddingToInstance(p):1;
   const rows=await workspaceIndexRows(body.instanceWide?undefined:workspaceId);

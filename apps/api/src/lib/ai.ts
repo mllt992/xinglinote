@@ -45,6 +45,16 @@ async function legacyProvider(wsId: string, userId?: string) {
   return rows.find(p => p.ownerUserId === userId) ?? rows.find(p => !p.ownerUserId);
 }
 
+/** 旧库没有显式分配时，Embedding 也只能回退到共享渠道，不能采用成员私有配置。 */
+async function legacyEmbeddingProvider(wsId: string) {
+  const rows = await db
+    .select()
+    .from(aiProviders)
+    .where(and(aiProviderCoversWorkspace(wsId), eq(aiProviders.enabled, true)))
+    .orderBy(desc(aiProviders.createdAt));
+  return rows.find(p => !p.ownerUserId);
+}
+
 async function assignedChannel(wsId: string, providerId: string) {
   const [row] = await db.select().from(aiProviders).where(and(
     eq(aiProviders.id, providerId),
@@ -66,7 +76,7 @@ export async function aiProvider(wsId: string, userId?: string) {
 }
 
 /** Worker 与语义检索使用工作区明确选择的 Embedding 渠道。 */
-export async function aiEmbeddingProvider(wsId: string, userId?: string) {
+export async function aiEmbeddingProvider(wsId: string, _userId?: string) {
   const [settings] = await db.select().from(workspaceAiSettings).where(eq(workspaceAiSettings.workspaceId, wsId));
   if (settings) {
     if (!settings.embeddingProviderId || !settings.embeddingModel) return undefined;
@@ -79,7 +89,7 @@ export async function aiEmbeddingProvider(wsId: string, userId?: string) {
       autoEmbed: settings.autoEmbed,
     } : undefined;
   }
-  return legacyProvider(wsId, userId);
+  return legacyEmbeddingProvider(wsId);
 }
 
 /** 新配置总是直接使用所选渠道；旧行仍可通过 embeddingBaseUrl 兼容。 */

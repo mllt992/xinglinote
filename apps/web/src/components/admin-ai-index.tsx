@@ -198,7 +198,7 @@ export function AdminAiIndex() {
     if (!providerId || !model.trim()) return toast.error("还不能应用", "请选择共享渠道和 Embedding 模型。");
     if (!await askConfirm({
       title: "把这套 Embedding 配置应用到全站？",
-      description: "所有工作区都会使用这套量化模型，全部未删除笔记都会重新排队，包括关闭了“AI 可读”或工作区 AI 的内容。旧模型向量会被清除；笔记正文、对话模型和实际检索权限不会改变。",
+      description: "所有工作区都会使用这套量化模型，全部未删除笔记都会重新排队，包括关闭了“AI 可读”或工作区 AI 的内容。只有渠道或模型发生变化的工作区会让旧向量失效，避免新旧模型混用；笔记正文、对话模型和实际检索权限不会改变。",
       confirmText: "应用并量化全部",
     })) return;
     setBusy(true);
@@ -274,6 +274,10 @@ export function AdminAiIndex() {
           <div className="mt-2 flex justify-between text-xs text-muted-foreground">
             <span>{summary?.indexed ?? 0} / {summary?.total ?? 0} 篇已完成</span>
             <span>{percent}%</span>
+          </div>
+          <div className="mt-4 rounded-lg border border-[color-mix(in_srgb,var(--warning)_25%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] px-3.5 py-3 text-xs leading-5 text-muted-foreground">
+            <p className="font-medium text-foreground">为什么换模型时要让旧向量失效？</p>
+            <p className="mt-1">不同 Embedding 模型的维度和语义空间可能不同，混在一起会导致距离不可比较，甚至直接计算失败。只有换渠道或模型时才会清理受影响空间的旧向量；同一模型的普通重建会在新向量生成成功后再替换。重建期间混合搜索仍可使用关键词结果。</p>
           </div>
         </div>
         <div className="grid gap-3 rounded-xl border bg-muted/25 p-4 sm:grid-cols-2">
