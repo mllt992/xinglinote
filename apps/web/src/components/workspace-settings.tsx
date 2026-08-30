@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import * as Avatar from "@radix-ui/react-avatar";
 import {
   Archive, ArrowUpRight, Bot, CalendarDays, Check, CircleCheck, CloudUpload, Copy, Crown,
   Download, FileClock, FileText, Link2, LoaderCircle, LogOut, MoreHorizontal, Notebook, Paperclip, Pencil,
@@ -18,10 +17,11 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { FormError } from "./ui/form-error";
 import { Input } from "./ui/input";
 import { useToast } from "./ui/toast";
+import { UserAvatar } from "./user-avatar";
 
 /* ---------------------------------- 类型 ---------------------------------- */
 
-type Member = { userId: string; handle: string; displayName: string; email: string; status: string; role: string; joinedAt: string; noteCount: number };
+type Member = { userId: string; handle: string; displayName: string; avatarUrl?: string | null; email: string; status: string; role: string; joinedAt: string; noteCount: number };
 type MembersData = { kind: string; ownerId: string; frozen: boolean; myRole: string; canManage: boolean; myUserId: string; members: Member[] };
 type Invite = { id: string; tokenPrefix: string; role: string; expiresAt: string; maxUses: number | null; usedCount: number; status: string; createdAt: string; createdByName: string };
 type Overview = {
@@ -397,9 +397,7 @@ function MembersSection({ wsId, data, invites, personal, onReload }: { wsId: str
           const isMe = m.userId === data?.myUserId;
           const isOwner = m.role === "owner";
           return <li key={m.userId} className="flex flex-wrap items-center gap-3 px-4 py-3.5 transition-colors hover:bg-muted/30">
-            <Avatar.Root className="grid size-10 shrink-0 place-items-center rounded-xl bg-foreground text-sm font-semibold text-background">
-              <Avatar.Fallback>{m.displayName.slice(0, 1)}</Avatar.Fallback>
-            </Avatar.Root>
+            <UserAvatar name={m.displayName} url={m.avatarUrl} className="size-10 rounded-xl text-sm" />
             <div className="min-w-0 flex-[2] basis-48">
               <p className="flex items-center gap-1.5 truncate text-sm font-medium">
                 {m.displayName}

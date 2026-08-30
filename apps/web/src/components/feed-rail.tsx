@@ -5,8 +5,9 @@ import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import type { FeedPost } from "./feed";
 import { usePublicCatalog } from "./square-catalog";
+import { UserAvatar } from "./user-avatar";
 
-type Member = { userId: string; handle: string; displayName: string; role: string };
+type Member = { userId: string; handle: string; displayName: string; avatarUrl?: string | null; role: string };
 
 /** 右栏一律用这一张卡：标题小、边框细、不加投影，和 14 §4「卡片弱、分割线强」对齐。 */
 function RailCard({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
@@ -16,9 +17,9 @@ function RailCard({ title, action, children }: { title: string; action?: ReactNo
   </section>;
 }
 
-function PersonRow({ name, handle, right }: { name: string; handle: string; right?: ReactNode }) {
+function PersonRow({ name, handle, avatarUrl, right }: { name: string; handle: string; avatarUrl?: string | null; right?: ReactNode }) {
   return <a href={`/u/${handle}`} className="-mx-1.5 flex items-center gap-2.5 rounded-lg px-1.5 py-1.5 hover:bg-muted">
-    <span className="grid size-8 shrink-0 place-items-center rounded-full bg-foreground text-xs font-semibold text-background">{name.slice(0, 1)}</span>
+    <UserAvatar name={name} url={avatarUrl} className="size-8 text-xs" />
     <span className="min-w-0 flex-1"><b className="block truncate text-sm font-medium">{name}</b><small className="block truncate text-xs text-muted-foreground">@{handle}</small></span>
     {right && <span className="shrink-0 text-xs text-muted-foreground">{right}</span>}
   </a>;
@@ -43,7 +44,7 @@ function TagCloud({ tags, active, onPick }: { tags: string[]; active?: string; o
 
 function useFeedDigest(posts: FeedPost[]) {
   const authors = useMemo(() => {
-    const seen = new Map<string, { handle: string; displayName: string; count: number }>();
+    const seen = new Map<string, { handle: string; displayName: string; avatarUrl?: string | null; count: number }>();
     for (const p of posts) { if (!p.author) continue; const hit = seen.get(p.author.handle); if (hit) hit.count += 1; else seen.set(p.author.handle, { ...p.author, count: 1 }); }
     return [...seen.values()].sort((a, b) => b.count - a.count).slice(0, 6);
   }, [posts]);
@@ -89,7 +90,7 @@ export function SquareRail({ posts, me, homeWsId, activeTag, tab, onOpenNote, on
       </li>)}</ul>
     </RailCard>}
     {authors.length > 0 && <RailCard title="最近活跃">
-      <ul className="space-y-1">{authors.map(a => <li key={a.handle}><PersonRow name={a.displayName} handle={a.handle} right={`${a.count} 条`} /></li>)}</ul>
+      <ul className="space-y-1">{authors.map(a => <li key={a.handle}><PersonRow name={a.displayName} handle={a.handle} avatarUrl={a.avatarUrl} right={`${a.count} 条`} /></li>)}</ul>
     </RailCard>}
     {cited.length > 0 && <RailCard title="动态里提到的笔记">
       <ul className="space-y-1">{cited.map(n => <li key={n.id}><NoteRow title={n.title} onOpen={() => onOpenNote(n.workspaceId, n.id)} /></li>)}</ul>
@@ -121,7 +122,7 @@ export function CircleRail({ wsId, wsName, wsKind, canInvite, posts, squareEnabl
       {wsKind === "personal"
         ? <p className="text-xs leading-5 text-muted-foreground">这是个人工作区，圈子里只有你自己——当私密碎片本用正好。想有人一起发，新建一个协作工作区再把人拉进来。</p>
         : members === null ? <p className="text-xs text-muted-foreground">加载中…</p>
-        : <><ul className="space-y-1">{shown.map(m => <li key={m.userId}><PersonRow name={m.displayName} handle={m.handle} right={counted.get(m.handle) ? `${counted.get(m.handle)} 条` : <Badge>{m.role}</Badge>} /></li>)}</ul>
+        : <><ul className="space-y-1">{shown.map(m => <li key={m.userId}><PersonRow name={m.displayName} handle={m.handle} avatarUrl={m.avatarUrl} right={counted.get(m.handle) ? `${counted.get(m.handle)} 条` : <Badge>{m.role}</Badge>} /></li>)}</ul>
           {members.length > shown.length && <button className="mt-2 text-xs text-muted-foreground hover:underline" onClick={() => onNav(`/w/${wsId}/settings?tab=members`)}>还有 {members.length - shown.length} 位，去设置里看全部</button>}</>}
     </RailCard>
     {cited.length > 0 && <RailCard title="动态里提到的笔记">

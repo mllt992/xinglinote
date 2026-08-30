@@ -63,6 +63,8 @@ export const users = pgTable("users", {
   handle: text("handle").notNull().unique(),
   displayName: text("display_name").notNull(),
   bio: text("bio"),
+  avatarSha256: text("avatar_sha256"),
+  avatarMime: text("avatar_mime"),
   roleInstance: text("role_instance").notNull().default("user"),
   status: text("status").notNull().default("active"),
   deletionRequestedAt: timestamp("deletion_requested_at", {withTimezone:true}),

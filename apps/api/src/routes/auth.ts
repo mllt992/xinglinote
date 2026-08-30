@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { Hono } from "hono";
 import { and, count, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
@@ -6,7 +8,7 @@ import { HANDLE_RE, fail } from "@kb/shared";
 import { handleOccupied } from "../lib/agents.ts";
 import { env } from "../env.ts";
 import { db } from "../db/client.ts";
-import { authTokens, backgroundJobs, instanceSettings, mcpTokens, registrationCodes, registrationCodeUsages, sessions, users, workspaceMembers, workspaces } from "../db/schema.ts";
+import { authTokens, backgroundJobs, blobStore, instanceSettings, mcpTokens, registrationCodes, registrationCodeUsages, sessions, users, workspaceMembers, workspaces } from "../db/schema.ts";
 import { hashCode, hashSecret, secretHashes, secureToken } from "../lib/tokens.ts";
 import { sendMail } from "../lib/mail.ts";
 import { userStorage } from "../lib/quota.ts";
@@ -15,6 +17,9 @@ import { clientIp } from "../lib/client-ip.ts";
 import { ok } from "../http.ts";
 import { clearSession, createSession, currentUser } from "../lib/session.ts";
 import { createPersonalWorkspace } from "../lib/workspace.ts";
+import { putBlob, releaseBlob } from "../lib/blobs.ts";
+import { assertAttachmentType } from "../lib/file-type.ts";
+import { userAvatarUrl } from "../lib/user-avatar.ts";
 
 export const auth = new Hono();
 
@@ -187,6 +192,107 @@ auth.post("/auth/logout", async (c) => {
   return ok(c, {});
 });
 
+const profileBody = z.object({
+  displayName: z.string().trim().min(1, "显示名不能为空").max(32, "显示名最多 32 个字符").optional(),
+  handle: z.string().trim().toLowerCase().optional(),
+  bio: z.string().trim().max(200, "个人简介最多 200 个字符").nullable().optional(),
+}).refine(body => body.displayName !== undefined || body.handle !== undefined || body.bio !== undefined, {
+  message: "没有需要更新的个人信息",
+});
+
+auth.patch("/me", async (c) => {
+  const user = await currentUser(c);
+  if (!user) throw fail("UNAUTHENTICATED", "未登录");
+  const body = profileBody.parse(await c.req.json());
+  if (body.handle !== undefined && !HANDLE_RE.test(body.handle)) {
+    throw fail("VALIDATION", "用户名格式不正确", { handle: "小写字母开头，3–32 位，只能包含字母、数字和下划线" });
+  }
+  if (body.handle !== undefined && body.handle !== user.handle && await handleOccupied(body.handle, undefined, user.id)) {
+    throw fail("VALIDATION", "该用户名已被使用", { handle: "已被使用" });
+  }
+
+  try {
+    const [updated] = await db.update(users).set({
+      ...(body.displayName !== undefined ? { displayName: body.displayName } : {}),
+      ...(body.handle !== undefined ? { handle: body.handle } : {}),
+      ...(body.bio !== undefined ? { bio: body.bio || null } : {}),
+      updatedAt: new Date(),
+    }).where(eq(users.id, user.id)).returning({
+      displayName: users.displayName,
+      handle: users.handle,
+      bio: users.bio,
+      updatedAt: users.updatedAt,
+    });
+    return ok(c, updated);
+  } catch (error) {
+    // 预检查让正常冲突有字段提示；唯一索引仍是并发写入时的最终防线。
+    if ((error as { code?: string }).code === "23505") {
+      throw fail("VALIDATION", "该用户名已被使用", { handle: "已被使用" });
+    }
+    throw error;
+  }
+});
+
+const AVATAR_MAX = 1024 * 1024;
+const AVATAR_MIME = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+
+auth.get("/users/:id/avatar", async c => {
+  const [person] = await db.select({
+    status: users.status,
+    avatarSha256: users.avatarSha256,
+    avatarMime: users.avatarMime,
+  }).from(users).where(eq(users.id, c.req.param("id")));
+  if (!person?.avatarSha256 || person.status === "banned" || person.status === "deleted") throw fail("NOT_FOUND", "还没有头像");
+  const [blob] = await db.select().from(blobStore).where(eq(blobStore.sha256, person.avatarSha256));
+  if (!blob) throw fail("NOT_FOUND", "还没有头像");
+  const bytes = await readFile(join(env.dataDir, blob.path));
+  c.header("Content-Type", person.avatarMime || "image/png");
+  c.header("Cache-Control", "public, max-age=31536000, immutable");
+  c.header("X-Content-Type-Options", "nosniff");
+  return c.body(bytes);
+});
+
+auth.post("/me/avatar", async c => {
+  const user = await currentUser(c);
+  if (!user) throw fail("UNAUTHENTICATED", "未登录");
+  limit(`profile-avatar:${user.id}`, 20, 600_000);
+  const form = await c.req.formData();
+  const file = form.get("file");
+  if (!(file instanceof File)) throw fail("VALIDATION", "请选择图片");
+  if (file.size > AVATAR_MAX) throw fail("QUOTA", "头像不能超过 1MB");
+  const bytes = Buffer.from(await file.arrayBuffer());
+  const declared = AVATAR_MIME.has(file.type) ? file.type : "image/png";
+  const mime = assertAttachmentType(declared, bytes);
+  if (!AVATAR_MIME.has(mime)) throw fail("VALIDATION", "请上传 png / jpeg / webp / gif");
+  const blob = await putBlob(bytes);
+  let previous: string | null | undefined;
+  try {
+    previous = await db.transaction(async tx => {
+      const [current] = await tx.select({ avatarSha256: users.avatarSha256 }).from(users).where(eq(users.id, user.id)).for("update");
+      await tx.update(users).set({ avatarSha256: blob.sha256, avatarMime: mime, updatedAt: new Date() }).where(eq(users.id, user.id));
+      return current?.avatarSha256;
+    });
+  } catch (error) {
+    await releaseBlob(blob.sha256).catch(() => {});
+    throw error;
+  }
+  // 相同图片会被 putBlob 多记一次引用；替换图片则释放旧引用。
+  if (previous) await releaseBlob(previous).catch(() => {});
+  return ok(c, { avatarUrl: userAvatarUrl({ id: user.id, avatarSha256: blob.sha256 }) }, 201);
+});
+
+auth.delete("/me/avatar", async c => {
+  const user = await currentUser(c);
+  if (!user) throw fail("UNAUTHENTICATED", "未登录");
+  const previous = await db.transaction(async tx => {
+    const [current] = await tx.select({ avatarSha256: users.avatarSha256 }).from(users).where(eq(users.id, user.id)).for("update");
+    await tx.update(users).set({ avatarSha256: null, avatarMime: null, updatedAt: new Date() }).where(eq(users.id, user.id));
+    return current?.avatarSha256;
+  });
+  if (previous) await releaseBlob(previous).catch(() => {});
+  return ok(c, { avatarUrl: null });
+});
+
 auth.get("/me", async (c) => {
   const user = await currentUser(c);
   if (!user) throw fail("UNAUTHENTICATED", "未登录");
@@ -197,6 +303,8 @@ auth.get("/me", async (c) => {
     email: user.email,
     handle: user.handle,
     displayName: user.displayName,
+    bio: user.bio,
+    avatarUrl: userAvatarUrl(user),
     instanceRole: user.roleInstance,
     appearance: user.appearance,
     themeId: user.themeId,

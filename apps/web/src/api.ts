@@ -55,6 +55,8 @@ export type Me = {
   email: string;
   handle: string;
   displayName: string;
+  bio: string | null;
+  avatarUrl: string | null;
   instanceRole: string;
   appearance: "system" | "light" | "dark";
   themeId: string;

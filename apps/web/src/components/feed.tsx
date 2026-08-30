@@ -4,9 +4,10 @@ import{MentionField}from'./mention-field';
 import{type MentionAgent}from'./mention-text';
 import{MarkdownView}from'../MarkdownView';
 import{FEED_REFRESH_EVENT,formatFeedUpdateLabel,readOpenComments,updatesPath,writeFeedSeen,writeOpenComments,type FeedUpdateCounts}from'./feed-updates';
+import{UserAvatar}from'./user-avatar';
 
 export type PostAsset={id:string;filename:string;mime:string;bytes:number;kind:"image"|"video"|"file";url:string};
-export type FeedPost={id:string;body:string;visibility:string;workspaceId:string|null;createdAt:string;editedAt:string|null;mine:boolean;author:{handle:string;displayName:string}|null;note:{id:string;title:string}|null;likes:number;liked:boolean;comments?:number;favorited?:boolean;status?:string;moderationQueued?:boolean;moderationReason?:string|null;appealable?:boolean;appealing?:boolean;assets?:PostAsset[];tags?:string[]};
+export type FeedPost={id:string;body:string;visibility:string;workspaceId:string|null;createdAt:string;editedAt:string|null;mine:boolean;author:{handle:string;displayName:string;avatarUrl?:string|null}|null;note:{id:string;title:string}|null;likes:number;liked:boolean;comments?:number;favorited?:boolean;status?:string;moderationQueued?:boolean;moderationReason?:string|null;appealable?:boolean;appealing?:boolean;assets?:PostAsset[];tags?:string[]};
 const ACCEPT="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,application/pdf,text/plain,text/markdown,application/zip";
 function formatSize(n:number){if(n<1024)return`${n} B`;if(n<1024*1024)return`${(n/1024).toFixed(1)} KB`;return`${(n/1024/1024).toFixed(1)} MB`;}
 export function PostAssetGrid({assets}:{assets:PostAsset[]}){
@@ -267,6 +268,7 @@ export function FeedView({scope,workspaceId,workspaces,canPost,signedIn,canModer
     {posts.length===0?<div className="rounded-2xl border border-dashed py-14 text-center"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground"><Globe2 className="size-5"/></span><p className="mt-3 text-sm font-medium">{onlyPostId?"这条动态不存在或已删除":activeTag?`还没有 #${activeTag}`:qParam?"没有匹配的动态":"还没有动态"}</p><p className="mt-1 text-xs text-muted-foreground">{onlyPostId?"它可能被作者删了，或者广场已关闭。":activeTag?"换个标签，或发一条带这个标签的动态。":qParam?"换个词试试，也可以搜作者名或 #标签。":scope==="public"?"第一条公开动态还没出现。":"圈子里的碎片想法可以先发这里，之后再转正为笔记。"}</p></div>
     :posts.map(p=><article key={p.id} id={`feed-post-${p.id}`} className={cn("rounded-2xl border bg-background p-4", (fresh?.newIds.has(p.id)||fresh?.repliedIds.has(p.id))&&"border-primary/40")}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        {p.author&&<UserAvatar name={p.author.displayName} url={p.author.avatarUrl} className="size-8 text-xs" />}
         <b className="text-sm text-foreground">{p.author?.displayName??"已注销用户"}</b>
         {p.author&&<a className="hover:underline" href={`/u/${p.author.handle}`}>@{p.author.handle}</a>}
         {onOpenPost&&!onlyPostId

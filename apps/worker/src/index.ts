@@ -17,7 +17,7 @@ import { dropWorkspaceFromMcpTokens } from "../../api/src/lib/mcp-workspaces.ts"
 import { dropWorkspaceFromAiProviders } from "../../api/src/lib/ai-provider-workspaces.ts";
 import { enqueueIndexNote, shouldRunIndexNoteJob } from "../../api/src/lib/ai-index.ts";
 import { extractPdfText } from "../../api/src/lib/pdf-text.ts";
-import { readStoredFile, releaseStoredFile } from "../../api/src/lib/blobs.ts";
+import { readStoredFile, releaseBlob, releaseStoredFile } from "../../api/src/lib/blobs.ts";
 import { applyModeration } from "../../api/src/lib/moderation.ts";
 import { executeAgentReply } from "../../api/src/lib/agents.ts";
 import { cleanupExpiredMcpUploads } from "../../api/src/lib/mcp-upload.ts";
@@ -93,7 +93,7 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
      await tx.delete(workspaces).where(eq(workspaces.id,workspaceId));
    });
    return;}
- if(job.type==="delete_user"){const userId=String((job.payload as {userId?:string}).userId??"");const[u]=await db.select().from(users).where(eq(users.id,userId));if(!u||u.status!=="pending_deletion"||!u.deletionScheduledAt||u.deletionScheduledAt.getTime()>Date.now())return;const[pws]=await db.select().from(workspaces).where(eq(workspaces.personalUserId,userId));await db.transaction(async tx=>{if(pws)await tx.update(notes).set({trashedAt:new Date()}).where(eq(notes.workspaceId,pws.id));await tx.update(posts).set({status:"deleted",updatedAt:new Date()}).where(eq(posts.authorUserId,userId));await tx.update(comments).set({authorUserId:null}).where(eq(comments.authorUserId,userId));await tx.update(mcpTokens).set({status:"revoked"}).where(eq(mcpTokens.userId,userId));await tx.delete(savedShares).where(eq(savedShares.userId,userId));await tx.delete(sessions).where(eq(sessions.userId,userId));await tx.update(users).set({status:"deleted",email:`deleted-${userId}@invalid.local`,displayName:"已注销用户",bio:null,deletionScheduledAt:null,updatedAt:new Date()}).where(eq(users.id,userId));});return;}
+ if(job.type==="delete_user"){const userId=String((job.payload as {userId?:string}).userId??"");const[u]=await db.select().from(users).where(eq(users.id,userId));if(!u||u.status!=="pending_deletion"||!u.deletionScheduledAt||u.deletionScheduledAt.getTime()>Date.now())return;const[pws]=await db.select().from(workspaces).where(eq(workspaces.personalUserId,userId));await db.transaction(async tx=>{if(pws)await tx.update(notes).set({trashedAt:new Date()}).where(eq(notes.workspaceId,pws.id));await tx.update(posts).set({status:"deleted",updatedAt:new Date()}).where(eq(posts.authorUserId,userId));await tx.update(comments).set({authorUserId:null}).where(eq(comments.authorUserId,userId));await tx.update(mcpTokens).set({status:"revoked"}).where(eq(mcpTokens.userId,userId));await tx.delete(savedShares).where(eq(savedShares.userId,userId));await tx.delete(sessions).where(eq(sessions.userId,userId));await tx.update(users).set({status:"deleted",email:`deleted-${userId}@invalid.local`,displayName:"已注销用户",bio:null,avatarSha256:null,avatarMime:null,deletionScheduledAt:null,updatedAt:new Date()}).where(eq(users.id,userId));});if(u.avatarSha256)await releaseBlob(u.avatarSha256).catch(()=>{});return;}
  if(job.type==="sync_note_tasks"){await syncNoteTasks(String((job.payload as {noteId?:string}).noteId??""));return;}
  if(job.type==="calendar_reminder"){
    const{itemId,reminderId,occurrenceStart}=job.payload as {itemId?:string;reminderId?:string;occurrenceStart?:string|null};

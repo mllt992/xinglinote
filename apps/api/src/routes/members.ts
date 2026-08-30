@@ -9,6 +9,7 @@ import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { hashSecret, secretHashes, secureToken } from "../lib/tokens.ts";
 import { memberRole,migratePrivateNotebooks } from "../lib/workspace.ts";
+import { userAvatarUrl } from "../lib/user-avatar.ts";
 
 export const memberRoutes = new Hono();
 async function userRequired(c: Parameters<typeof currentUser>[0]) { const u = await currentUser(c); if (!u) throw fail("UNAUTHENTICATED", "未登录"); return u; }
@@ -16,14 +17,14 @@ async function manage(c: Parameters<typeof currentUser>[0], wsId: string) { cons
 
 memberRoutes.get("/workspaces/:id/members", async c => {
   const u = await userRequired(c); const wsId = c.req.param("id"); if (!(await memberRole(wsId, u.id))) throw fail("FORBIDDEN", "不是工作区成员");
-  const rows = await db.select({ userId: users.id, handle: users.handle, displayName: users.displayName, email: users.email, status: users.status, role: workspaceMembers.role, joinedAt: workspaceMembers.createdAt }).from(workspaceMembers).innerJoin(users, eq(users.id, workspaceMembers.userId)).where(eq(workspaceMembers.workspaceId, wsId));
+  const rows = await db.select({ userId: users.id, handle: users.handle, displayName: users.displayName, avatarSha256: users.avatarSha256, email: users.email, status: users.status, role: workspaceMembers.role, joinedAt: workspaceMembers.createdAt }).from(workspaceMembers).innerJoin(users, eq(users.id, workspaceMembers.userId)).where(eq(workspaceMembers.workspaceId, wsId));
   const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, wsId));
   // 成员页要显示「谁写得最多」，一次 group by 拿全，别让前端按人再查一轮。
   const authored = rows.length ? await db.select({ userId: notes.createdBy, value: count() }).from(notes).where(and(eq(notes.workspaceId, wsId), isNull(notes.trashedAt), inArray(notes.createdBy, rows.map(r => r.userId)))).groupBy(notes.createdBy) : [];
   const role = await memberRole(wsId, u.id);
   return ok(c, {
     kind: ws?.kind, ownerId: ws?.ownerId, frozen: ws?.frozen ?? false, myRole: role, canManage: role === "owner" || role === "admin", myUserId: u.id,
-    members: rows.map(m => ({ ...m, noteCount: authored.find(a => a.userId === m.userId)?.value ?? 0 })),
+    members: rows.map(m => ({ ...m, avatarUrl: userAvatarUrl({ id: m.userId, avatarSha256: m.avatarSha256 }), avatarSha256: undefined, noteCount: authored.find(a => a.userId === m.userId)?.value ?? 0 })),
   });
 });
 memberRoutes.post("/workspaces/:id/members", async c => {

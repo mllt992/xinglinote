@@ -21,6 +21,7 @@ import { parseWikiLinks, rebuildLinks } from "../lib/links.ts";
 import { writeNoteFile } from "../lib/files.ts";
 import { assertUserStorage, textBytes } from "../lib/quota.ts";
 import { limit } from "../lib/rate-limit.ts";
+import { userAvatarUrl } from "../lib/user-avatar.ts";
 export const feedRoutes=new Hono();
 async function user(c:Parameters<typeof currentUser>[0]){const u=await currentUser(c);if(!u)throw fail("UNAUTHENTICATED","未登录");return u;}
 /** 只有作者本人能在时间线里看到自己待审 / 被驳回的帖子，别人看不见。 */
@@ -61,14 +62,14 @@ async function hydrate(rows:typeof posts.$inferSelect[], viewer?:string){
   const authorIds=[...new Set(rows.map(p=>p.authorUserId).filter((x):x is string=>!!x))];
   const noteIds=[...new Set(rows.map(p=>p.noteId).filter((x):x is string=>!!x))];
   const [authors,reactions,ns,commentRows,favs,assets]=await Promise.all([
-    pickIds(authorIds,ids=>db.select({id:users.id,handle:users.handle,displayName:users.displayName}).from(users).where(inArray(users.id,ids))),
+    pickIds(authorIds,ids=>db.select({id:users.id,handle:users.handle,displayName:users.displayName,avatarSha256:users.avatarSha256}).from(users).where(inArray(users.id,ids))),
     pickIds(postIds,ids=>db.select({postId:postReactions.postId,userId:postReactions.userId,kind:postReactions.kind}).from(postReactions).where(inArray(postReactions.postId,ids))),
     pickIds(noteIds,ids=>db.select({id:notes.id,title:notes.title}).from(notes).where(inArray(notes.id,ids))),
     pickIds(postIds,ids=>db.select({targetId:comments.targetId,n:count()}).from(comments).where(and(eq(comments.targetType,"post"),inArray(comments.targetId,ids),eq(comments.status,"visible"))).groupBy(comments.targetId)),
     viewer?pickIds(postIds,ids=>db.select({postId:postFavorites.postId}).from(postFavorites).where(and(eq(postFavorites.userId,viewer),inArray(postFavorites.postId,ids)))):Promise.resolve([] as Array<{postId:string}>),
     pickIds(postIds,ids=>listPostAssets(ids)),
   ]);
-  const held=rows.filter(p=>p.status!=="visible").map(p=>p.id);const reviews=held.length?await db.select().from(moderationReviews).where(and(eq(moderationReviews.targetType,"post"),inArray(moderationReviews.targetId,held))).orderBy(desc(moderationReviews.createdAt)):[];return rows.map(p=>({id:p.id,status:p.status,moderationQueued:(()=>{const r=reviews.find(r=>r.targetId===p.id);return r?r.status==="queued"||r.aiVerdict==="queued"||r.aiVerdict==="running":false;})(),moderationReason:p.status==="visible"?null:(()=>{const r=reviews.find(r=>r.targetId===p.id);if(!r)return null;if(r.status==="queued"||r.aiVerdict==="queued"||r.aiVerdict==="running")return "正在审核，通过后会公开显示。";return r.reviewNote??r.aiReason??null;})(),body:p.body,visibility:p.visibility,workspaceId:p.workspaceId,createdAt:p.createdAt,author:(()=>{const a=authors.find(u=>u.id===p.authorUserId);return a?{handle:a.handle,displayName:a.displayName}:null;})(),note:p.noteId?(()=>{const n=ns.find(n=>n.id===p.noteId);return n?{id:n.id,title:n.title}:null})():null,likes:reactions.filter(r=>r.postId===p.id&&r.kind==="like").length,liked:!!viewer&&reactions.some(r=>r.postId===p.id&&r.userId===viewer&&r.kind==="like"),comments:commentRows.find(r=>r.targetId===p.id)?.n??0,favorited:favs.some(f=>f.postId===p.id),editedAt:p.editedAt,mine:!!viewer&&p.authorUserId===viewer,appealable:(()=>{if(!viewer||p.authorUserId!==viewer||p.status!=="rejected")return false;const r=reviews.find(x=>x.targetId===p.id);return !!r&&r.status==="rejected"&&!r.reviewerId;})(),appealing:(()=>{const r=reviews.find(x=>x.targetId===p.id);return r?.kind==="appeal"&&r.status==="pending";})(),assets:assets.filter(a=>a.postId===p.id).map(assetDto),tags:postTagList(p)}));}
+  const held=rows.filter(p=>p.status!=="visible").map(p=>p.id);const reviews=held.length?await db.select().from(moderationReviews).where(and(eq(moderationReviews.targetType,"post"),inArray(moderationReviews.targetId,held))).orderBy(desc(moderationReviews.createdAt)):[];return rows.map(p=>({id:p.id,status:p.status,moderationQueued:(()=>{const r=reviews.find(r=>r.targetId===p.id);return r?r.status==="queued"||r.aiVerdict==="queued"||r.aiVerdict==="running":false;})(),moderationReason:p.status==="visible"?null:(()=>{const r=reviews.find(r=>r.targetId===p.id);if(!r)return null;if(r.status==="queued"||r.aiVerdict==="queued"||r.aiVerdict==="running")return "正在审核，通过后会公开显示。";return r.reviewNote??r.aiReason??null;})(),body:p.body,visibility:p.visibility,workspaceId:p.workspaceId,createdAt:p.createdAt,author:(()=>{const a=authors.find(u=>u.id===p.authorUserId);return a?{handle:a.handle,displayName:a.displayName,avatarUrl:userAvatarUrl(a)}:null;})(),note:p.noteId?(()=>{const n=ns.find(n=>n.id===p.noteId);return n?{id:n.id,title:n.title}:null})():null,likes:reactions.filter(r=>r.postId===p.id&&r.kind==="like").length,liked:!!viewer&&reactions.some(r=>r.postId===p.id&&r.userId===viewer&&r.kind==="like"),comments:commentRows.find(r=>r.targetId===p.id)?.n??0,favorited:favs.some(f=>f.postId===p.id),editedAt:p.editedAt,mine:!!viewer&&p.authorUserId===viewer,appealable:(()=>{if(!viewer||p.authorUserId!==viewer||p.status!=="rejected")return false;const r=reviews.find(x=>x.targetId===p.id);return !!r&&r.status==="rejected"&&!r.reviewerId;})(),appealing:(()=>{const r=reviews.find(x=>x.targetId===p.id);return r?.kind==="appeal"&&r.status==="pending";})(),assets:assets.filter(a=>a.postId===p.id).map(assetDto),tags:postTagList(p)}));}
 /** 增量计数用客户端上次看到的水位。缺了或写歪了直接 422；太老按 7 天截，避免一次扫全表。 */
 function parseSince(raw:string|undefined){
   if(!raw)throw fail("VALIDATION","缺少 since");
@@ -402,7 +403,7 @@ feedRoutes.get("/public/users/:handle",async c=>{
   const books=await db.select().from(notebooks).where(and(eq(notebooks.createdBy,person.id),eq(notebooks.sitePublished,true),isNull(notebooks.trashedAt)));
   const spaces=await db.select().from(workspaces);
   return ok(c,{
-    handle:person.handle,displayName:person.displayName,bio:person.bio,joinedAt:person.createdAt,
+    handle:person.handle,displayName:person.displayName,bio:person.bio,avatarUrl:userAvatarUrl(person),joinedAt:person.createdAt,
     posts:await hydrate(rows.slice(0,50),viewer?.id),
     sites:books.map(nb=>({title:nb.title,url:`/s/${spaces.find(w=>w.id===nb.workspaceId)?.slug}/${nb.slug}`})),
   });

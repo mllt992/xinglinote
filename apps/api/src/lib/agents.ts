@@ -68,10 +68,10 @@ function keySuffix(value: string) {
   try { return suffix(value); } catch { return ""; }
 }
 
-export async function handleOccupied(handle: string, exceptAgentId?: string) {
+export async function handleOccupied(handle: string, exceptAgentId?: string, exceptUserId?: string) {
   const h = handle.toLowerCase();
   const [user] = await db.select({ id: users.id }).from(users).where(eq(users.handle, h)).limit(1);
-  if (user) return true;
+  if (user && user.id !== exceptUserId) return true;
   const [agent] = await db.select({ id: agents.id }).from(agents).where(eq(agents.handle, h)).limit(1);
   return !!agent && agent.id !== exceptAgentId;
 }

@@ -12,6 +12,7 @@ import { seal } from "../lib/secrets.ts";
 import { normalizeCategories } from "../lib/moderation-verdict.ts";
 import { userStorageMany } from "../lib/quota.ts";
 import { assignStorage, pendingOf, storageDto } from "../lib/service-requests.ts";
+import { userAvatarUrl } from "../lib/user-avatar.ts";
 
 function pageQuery(c: { req: { query: (k: string) => string | undefined } }) {
   const page = Math.max(1, Number(c.req.query("page") ?? 1) || 1);
@@ -38,8 +39,8 @@ function maskSettings(s: typeof instanceSettings.$inferSelect | undefined) {
 }
 
 function publicUser(row: typeof users.$inferSelect) {
-  const { passwordHash: _, ...u } = row;
-  return u;
+  const { passwordHash: _, avatarSha256: __, avatarMime: ___, ...u } = row;
+  return { ...u, avatarUrl: userAvatarUrl(row) };
 }
 
 export const adminRoutes = new Hono();
@@ -157,7 +158,7 @@ adminRoutes.patch("/admin/users/:id", async c => {
   if (storageQuotaBytes !== undefined) await assignStorage(actor, id, storageQuotaBytes);
   if (body.status === "banned") await db.transaction(async tx=>{await tx.delete(sessions).where(eq(sessions.userId,id));await tx.update(mcpTokens).set({status:"revoked"}).where(eq(mcpTokens.userId,id));});
   const [fresh] = await db.select().from(users).where(eq(users.id, id));
-  const { passwordHash: _, ...safe } = fresh ?? saved; return ok(c, safe);
+  return ok(c, publicUser(fresh ?? saved));
 });
 adminRoutes.post("/admin/registration-codes", async c => {
   const actor = await admin(c);

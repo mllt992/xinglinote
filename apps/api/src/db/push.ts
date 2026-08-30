@@ -56,6 +56,8 @@ const statements = [
   `CREATE TABLE IF NOT EXISTS auth_tokens (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL REFERENCES users(id), token_hash text NOT NULL UNIQUE, purpose text NOT NULL, expires_at timestamptz NOT NULL, used_at timestamptz, created_at timestamptz NOT NULL DEFAULT now())`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_requested_at timestamptz`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_scheduled_at timestamptz`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_sha256 text`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_mime text`,
   `CREATE TABLE IF NOT EXISTS sessions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id),

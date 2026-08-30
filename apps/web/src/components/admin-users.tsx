@@ -1,5 +1,4 @@
 import { useEffect, useState, type ReactNode } from "react";
-import * as Avatar from "@radix-ui/react-avatar";
 import { Ban, HardDrive, MoreHorizontal, UserCog } from "lucide-react";
 import { api } from "../api";
 import { formatBytes, presetLabel, STORAGE_PRESETS, usagePercent } from "../lib/bytes";
@@ -13,12 +12,14 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { FormError } from "./ui/form-error";
 import { Textarea } from "./ui/textarea";
 import { useToast } from "./ui/toast";
+import { UserAvatar } from "./user-avatar";
 
 export type AdminUser = {
   id: string;
   displayName: string;
   email: string;
   handle: string;
+  avatarUrl?: string | null;
   roleInstance: string;
   status: string;
   createdAt?: string;
@@ -71,9 +72,7 @@ export function StorageBar({ used, quota, compact }: { used: number; quota: numb
 
 export function UserRow({ user, extra }: { user: AdminUser; extra?: ReactNode }) {
   return <div className="flex min-w-0 flex-1 items-center gap-3">
-    <Avatar.Root className="grid size-9 shrink-0 place-items-center rounded-full bg-foreground text-xs font-semibold text-background">
-      <Avatar.Fallback>{user.displayName.slice(0, 1)}</Avatar.Fallback>
-    </Avatar.Root>
+    <UserAvatar name={user.displayName} url={user.avatarUrl} className="size-9 text-xs" />
     <div className="min-w-0 flex-1">
       <p className="truncate text-sm font-medium">{user.displayName} <span className="font-normal text-muted-foreground">@{user.handle}</span></p>
       <p className="truncate text-xs text-muted-foreground">{user.email}</p>
