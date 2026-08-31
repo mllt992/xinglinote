@@ -1,4 +1,5 @@
 import type { MarkdownIt, StateInline } from "markdown-it";
+import { normalizeTitle } from "../index.js";
 
 /** 一条双链引用。源码里始终写标题，库内再绑 ID（规格 §9.4）。 */
 export type WikiRef = { title: string; section?: string; alias?: string; embed: boolean };
@@ -63,4 +64,51 @@ export function wikilinkPlugin(md: MarkdownIt) {
     if (scope?.mode === "public") return `<span class="${cls} plain" ${data}>${body}</span>`;
     return `<span class="${cls}" role="link" tabindex="0" ${data}>${body}</span>`;
   };
+}
+
+/**
+ * 改名回写：只替换 raw 里的标题段（最后一段路径），保留 `#节` 与 `|显示名`，也处理嵌入。
+ * 已经是新标题则返回 null，调用方不要改正文。
+ */
+export function retitleWikiRaw(raw: string, newTitle: string): string | null {
+  const embed = raw.startsWith("!");
+  if (!raw.endsWith("]]")) return null;
+  const inner = raw.slice(embed ? 3 : 2, -2);
+  const ref = parseWikiRef(inner, embed);
+  if (!ref) return null;
+  const parts = ref.title.split("/");
+  const last = parts[parts.length - 1] ?? "";
+  if (normalizeTitle(last) === normalizeTitle(newTitle)) return null;
+  parts[parts.length - 1] = newTitle;
+  const title = parts.join("/");
+  return `${embed ? "!" : ""}[[${title}${ref.section ? `#${ref.section}` : ""}${ref.alias ? `|${ref.alias}` : ""}]]`;
+}
+
+/** 按 pos 从后往前替换，避免前面改完把后面的偏移带偏。pos 对不上再按原文搜一次。 */
+export function applyWikiRawRewrites(body: string, replacements: Array<{ raw: string; pos: number; next: string }>): string {
+  let out = body;
+  for (const r of [...replacements].sort((a, b) => b.pos - a.pos)) {
+    if (out.slice(r.pos, r.pos + r.raw.length) === r.raw) {
+      out = `${out.slice(0, r.pos)}${r.next}${out.slice(r.pos + r.raw.length)}`;
+      continue;
+    }
+    const i = out.indexOf(r.raw);
+    if (i >= 0) out = `${out.slice(0, i)}${r.next}${out.slice(i + r.raw.length)}`;
+  }
+  return out;
+}
+
+/**
+ * 标题不再唯一命中时，若这条双链的原文没改，沿用上一次绑的 target_note_id。
+ * 用户把 `[[A]]` 改成 `[[B]]` 时 raw 变了，不会误留 A。
+ */
+export function previousWikiTargetId(
+  parsed: { raw: string; pos: number },
+  previous: Array<{ pos: number; raw: string; targetNoteId: string | null }>,
+): string | null {
+  const atPos = previous.find(p => p.pos === parsed.pos);
+  if (atPos && atPos.raw === parsed.raw) return atPos.targetNoteId;
+  const sameRaw = previous.filter(p => p.raw === parsed.raw);
+  if (sameRaw.length === 1) return sameRaw[0]!.targetNoteId;
+  return null;
 }
