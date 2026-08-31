@@ -2,7 +2,7 @@ import DOMPurify, { type Config as PurifyConfig } from "dompurify";
 import { renderMarkdown, type MarkdownEnv } from "@kb/shared/markdown";
 
 /** 双链与任务列表靠 data-* 传参，链接要留 target/rel，无障碍要留 role/tabindex。 */
-const PURIFY: PurifyConfig = { ADD_ATTR: ["target", "rel", "tabindex", "role", "data-hashtag"] };
+const PURIFY: PurifyConfig = { ADD_ATTR: ["target", "rel", "tabindex", "role", "data-hashtag", "data-wiki", "data-wiki-section", "data-wiki-embed"] };
 
 /**
  * 渲染并消毒。解析器只有一个（架构 05 §5），消毒也只有这一处，
