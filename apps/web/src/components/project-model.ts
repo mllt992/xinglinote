@@ -23,13 +23,20 @@ export type Project = {
   health: Health; taskCount: number; doneCount: number; estimateMin: number; actualSeconds: number;
   canEdit: boolean; canArchive: boolean;
 };
+export type ProjectTag = { id: string; projectId: string; name: string; color: Project["color"] };
 export type Task = {
   id: string; title: string; bodyMd: string; status: string;
   priority: number; startAt: string | null; dueAt: string | null; estimateMin: number | null;
   assigneeUserId: string | null; parentId: string | null; sourceNoteId: string | null; sourceNoteTitle: string | null;
   completedAt: string | null; actualSeconds: number; children?: Task[];
+  tags?: ProjectTag[]; milestoneId?: string | null;
 };
 export type Milestone = { id: string; title: string; dueAt: string; done: boolean };
+export type TagBundle = {
+  tags: ProjectTag[];
+  assignments: Array<{ taskId: string; tagId: string }>;
+  taskMilestones: Array<{ taskId: string; milestoneId: string }>;
+};
 export type Pulse = {
   byStatus: Record<string, number>; estimateMin: number; actualSeconds: number;
   days: Array<{ day: string; completed: number; minutes: number }>;
@@ -40,6 +47,7 @@ export type Detail = {
   project: Project; tasks: Task[]; cancelled: Task[]; columns?: BoardCol[]; milestones: Milestone[];
   running: { id: string; taskId: string; startedAt: string } | null;
   todaySeconds: number; pulse: Pulse; me: string; canEdit: boolean;
+  tags?: ProjectTag[];
 };
 export type Member = { userId: string; displayName: string; handle: string };
 export type Workspace = { id: string; name: string; role: "owner" | "admin" | "editor" | "viewer"; frozen: boolean; canEdit?: boolean; projectCount?: number };
@@ -106,4 +114,27 @@ export function pickTask(detail: Detail, id: string) {
 }
 export function healthTone(band: HealthBand) {
   return band === "steady" ? "text-[var(--good)]" : band === "tight" ? "text-amber-600 dark:text-amber-400" : "text-destructive";
+}
+
+export function applyTagBundle(detail: Detail, bundle: TagBundle): Detail {
+  const tagsById = new Map(bundle.tags.map(t => [t.id, t]));
+  const tagsByTask = new Map<string, ProjectTag[]>();
+  for (const a of bundle.assignments) {
+    const tag = tagsById.get(a.tagId);
+    if (!tag) continue;
+    tagsByTask.set(a.taskId, [...(tagsByTask.get(a.taskId) ?? []), tag]);
+  }
+  const mileByTask = new Map(bundle.taskMilestones.map(x => [x.taskId, x.milestoneId]));
+  const paint = (t: Task): Task => ({
+    ...t,
+    tags: tagsByTask.get(t.id) ?? [],
+    milestoneId: mileByTask.get(t.id) ?? null,
+    children: t.children?.map(paint),
+  });
+  return {
+    ...detail,
+    tags: bundle.tags,
+    tasks: detail.tasks.map(paint),
+    cancelled: detail.cancelled.map(paint),
+  };
 }
