@@ -2,7 +2,8 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight, MoreHorizontal, Plus } from "lucide-react";
 import { api } from "../api";
 import { cn } from "../lib/utils";
-import { type BoardCol, type Task, defaultCol, fmtMin, isoDate, isDoneStatus, PRI } from "./project-model";
+import { type BoardCol, type ProjectTag, type Task, defaultCol, fmtMin, isoDate, isDoneStatus, PRI } from "./project-model";
+import { TagChips, TagFilter } from "./project-tags";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { useConfirm, usePrompt } from "./ui/confirm";
@@ -11,8 +12,8 @@ import { Input } from "./ui/input";
 import { ScrollArea } from "./ui/scroll-area";
 import { useToast } from "./ui/toast";
 
-export function BoardView({ projectId, columns, tasks, cancelled = [], canEdit, onOpen, onQuickCreate, onMoved, onChanged }: {
-  projectId: string; columns: BoardCol[]; tasks: Task[]; cancelled?: Task[]; canEdit: boolean;
+export function BoardView({ projectId, columns, tasks, cancelled = [], tags = [], canEdit, onOpen, onQuickCreate, onMoved, onChanged }: {
+  projectId: string; columns: BoardCol[]; tasks: Task[]; cancelled?: Task[]; tags?: ProjectTag[]; canEdit: boolean;
   onOpen: (t: Task) => void; onQuickCreate: (title: string) => Promise<void>;
   onMoved: (id: string, status: string, beforeId?: string) => Promise<void>;
   onChanged: () => Promise<void> | void;
@@ -20,6 +21,7 @@ export function BoardView({ projectId, columns, tasks, cancelled = [], canEdit, 
   const ask = useConfirm();
   const askPrompt = usePrompt();
   const toast = useToast();
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [over, setOver] = useState<{ col: string; beforeId?: string } | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -82,9 +84,12 @@ export function BoardView({ projectId, columns, tasks, cancelled = [], canEdit, 
       {!canEdit && <p className="mt-2 text-xs text-muted-foreground">这个项目现在只读。</p>}
     </div>
   </div>;
-  return <div className="flex h-full min-h-0 gap-3 overflow-x-auto p-4">
+  const visible = tagFilter ? tasks.filter(t => t.tags?.some(tag => tag.id === tagFilter)) : tasks;
+  return <div className="flex h-full min-h-0 flex-col">
+    <TagFilter tags={tags} value={tagFilter} onChange={setTagFilter} />
+    <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-4">
     {columns.map((col, index) => {
-      const cards = tasks.filter(t => t.status === col.key);
+      const cards = visible.filter(t => t.status === col.key);
       return <section key={col.id} className="flex w-72 shrink-0 flex-col rounded-xl bg-muted/40"
         onDragOver={e => { if (!canEdit) return; e.preventDefault(); setOver({ col: col.key }); }}
         onDrop={e => { if (!canEdit) return; e.preventDefault(); const id = e.dataTransfer.getData("text/task-id"); if (id) void onMoved(id, col.key, over?.col === col.key ? over.beforeId : undefined); setOver(null); }}
@@ -113,9 +118,11 @@ export function BoardView({ projectId, columns, tasks, cancelled = [], canEdit, 
               <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
                 {task.priority > 0 && <Badge className="px-1.5">{PRI[task.priority]}</Badge>}
                 {task.dueAt && <span>截止 {isoDate(task.dueAt)}</span>}
+                {task.startAt && <span>起 {isoDate(task.startAt)}</span>}
                 {task.estimateMin ? <span>估 {fmtMin(task.estimateMin)}</span> : null}
                 {task.sourceNoteTitle && <span className="truncate">《{task.sourceNoteTitle}》</span>}
               </div>
+              <TagChips tags={task.tags ?? []} className="mt-2" />
               {!!task.children?.length && <p className="mt-2 text-[11px] text-muted-foreground">{task.children.filter(c => isDoneStatus(c.status, columns)).length}/{task.children.length} 子任务</p>}
             </article>)}
           </div>
@@ -131,5 +138,6 @@ export function BoardView({ projectId, columns, tasks, cancelled = [], canEdit, 
         {cancelled.map(task => <button key={task.id} onClick={() => onOpen(task)} className="block w-full truncate rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground line-through hover:bg-muted">{task.title}</button>)}
       </div>
     </section>}
+    </div>
   </div>;
 }
