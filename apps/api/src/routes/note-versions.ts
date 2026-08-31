@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, count, desc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
