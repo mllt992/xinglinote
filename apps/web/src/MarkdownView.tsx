@@ -6,6 +6,7 @@ import { hydrateDiagrams } from "./lib/mermaid-hydrate";
 import { hydrateCodeBlocks } from "./lib/code-block";
 import { openLightboxGallery } from "./lib/lightbox";
 import { cn } from "./lib/utils";
+import { pointerDragged, wikiElementFromTarget, wikiRefFromElement } from "./lib/wiki-follow";
 
 export function MarkdownView({
   source,
@@ -42,6 +43,8 @@ export function MarkdownView({
   );
 
   const host = useRef<HTMLDivElement | null>(null);
+  const pointer = useRef<{ x: number; y: number; id: number } | null>(null);
+  const lastFollow = useRef(0);
   // 公式与图在这里补：KaTeX 和 mermaid 都按需加载，没用到的笔记根本不会去下它们。
   useEffect(() => {
     void hydrateMath(host.current);
@@ -56,11 +59,16 @@ export function MarkdownView({
     });
   }, [html]);
 
-  function follow(target: HTMLElement) {
-    const el = target.closest<HTMLElement>("[data-wiki]");
-    if (!el || !onWiki) return false;
-    const section = el.dataset.wikiSection;
-    onWiki(decodeURIComponent(el.dataset.wiki ?? ""), section ? decodeURIComponent(section) : undefined);
+  function follow(target: EventTarget | null) {
+    if (!onWiki) return false;
+    const el = wikiElementFromTarget(target);
+    if (!el) return false;
+    const ref = wikiRefFromElement(el);
+    if (!ref) return false;
+    const now = Date.now();
+    if (now - lastFollow.current < 400) return true;
+    lastFollow.current = now;
+    onWiki(ref.title, ref.section);
     return true;
   }
 
@@ -78,6 +86,17 @@ export function MarkdownView({
       ref={host}
       className={cn("markdown", className)}
       dangerouslySetInnerHTML={{ __html: html }}
+      onPointerDown={event => {
+        if (!wikiElementFromTarget(event.target)) { pointer.current = null; return; }
+        pointer.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
+      }}
+      onPointerUp={event => {
+        const start = pointer.current;
+        pointer.current = null;
+        if (!start || start.id !== event.pointerId) return;
+        if (pointerDragged(start, { x: event.clientX, y: event.clientY })) return;
+        if (follow(event.target)) event.preventDefault();
+      }}
       onClick={event => {
         const target = event.target as HTMLElement;
         const box = target.closest<HTMLInputElement>("input.task-checkbox");
@@ -99,12 +118,11 @@ export function MarkdownView({
           onHashtag(tagEl.dataset.hashtag ?? "");
           return;
         }
-        // 双链把单击留给选词和复制；已解析的双链是 <a>，这里必须拦住它的默认导航，
-        // 真正跟随统一放到下面的双击与键盘入口。
-        if (target.closest("[data-wiki]")) event.preventDefault();
+        // 有 onWiki 才拦 <a> 默认跳转；没回调时留给 href（resolveWiki 给了地址的场合）。
+        if (onWiki && wikiElementFromTarget(event.target)) event.preventDefault();
       }}
       onDoubleClick={event => {
-        if (follow(event.target as HTMLElement)) event.preventDefault();
+        if (follow(event.target)) event.preventDefault();
       }}
       onKeyDown={event => {
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -113,7 +131,7 @@ export function MarkdownView({
           openPreviewImage(event.target);
           return;
         }
-        if (follow(event.target as HTMLElement)) event.preventDefault();
+        if (follow(event.target)) event.preventDefault();
       }}
     />
   );
