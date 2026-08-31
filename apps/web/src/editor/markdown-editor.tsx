@@ -347,6 +347,8 @@ export function MarkdownEditor({
         doc: value,
         selection: spot ? { anchor: clamp(spot.anchor), head: clamp(spot.head) } : undefined,
         extensions: [
+          // Vim 的 keymap 是 Prec.highest，会盖住下面那套；把应用级快捷键也提到最高，
+          // 让 Ctrl/⌘+S、Ctrl+B 这些照旧——它们是宿主的约定，换个编辑模式不该改变「保存」怎么按。
           Prec.highest(keymap.of([
             { key: "Mod-s", preventDefault: true, run: () => { latest.current.onSave?.(); return true; } },
             { key: "Mod-b", run: toggleWrap("**") },
@@ -397,6 +399,8 @@ export function MarkdownEditor({
             ...completionKeymap,
             ...foldKeymap,
             ...defaultKeymap,
+            // Tab 不再无条件吞掉：那是键盘无障碍里的经典陷阱（进得来出不去）。
+            // 只有「在列表里 / 在代码块里 / 选中了多行」时才缩进，其余情况放行让 Tab 移焦。
             { key: "Tab", run: structuralTab, shift: structuralShiftTab },
           ]),
           readOnlyCompartment.of(EditorState.readOnly.of(readOnly)),
@@ -414,6 +418,8 @@ export function MarkdownEditor({
                 const line = update.state.doc.lineAt(head);
                 report({ line: line.number, col: head - line.from + 1, selected: to - from });
               }
+              // 模式切换本身不产生事务，但进出插入模式一定伴随选区或文档变化，
+              // 蹭这一趟上报就够了，不必再往 view 上挂一个轮询。
               if (vimOn.current) latest.current.onVimMode?.(vimModeOf(update.view));
             }
           }),
@@ -421,10 +427,15 @@ export function MarkdownEditor({
       }),
     });
     view.current = instance;
+    // 新建的 doc 就是当前 value，记上一笔，免得下面的同步 effect 又原样重写一遍：
+    // 那会白白产生一次 docChanged，把刚打开的笔记标成「未保存」并触发一次空保存。
     mine.current = value;
     if (autoFocus) instance.focus();
+    // 滚动位置要等 CodeMirror 量完行高才有意义，下一轮任务再放回去。
+    // 用 setTimeout 不用 requestAnimationFrame：后者在不可见的标签页里根本不跑。
     if (spot) window.setTimeout(() => { if (instance.dom.isConnected) instance.scrollDOM.scrollTop = spot.top; }, 0);
 
+    // scroll 不冒泡，CM 也不转发，只能自己在滚动容器上听。
     const report = () => {
       const notify = latest.current.onScrollLine;
       if (!notify) return;
@@ -440,10 +451,14 @@ export function MarkdownEditor({
       instance.destroy();
       view.current = null;
     };
+    // 只在换篇时重建。value / readOnly 的变化走下面两个 effect 增量同步，
+    // 不然每敲一个字都会重建编辑器，光标、撤销栈、滚动位置全丢。
   }, [resetKey]);
 
+  // 外部改了正文（冲突后加载对方版本、AI 写作、恢复历史版本、别处插入附件链接）。
   useEffect(() => {
     const instance = view.current;
+    // 协同接管期间正文归 Y.Text 管：这里再盖一次会把别人正在敲的字冲掉
     if (collabSession.current) return;
     if (!instance || value === mine.current) return;
     mine.current = value;
@@ -468,6 +483,10 @@ export function MarkdownEditor({
     view.current?.dispatch({ effects: spellcheckCompartment.reconfigure(contentAttrs(spellcheck)) });
   }, [spellcheck]);
 
+  /**
+   * 协同。连上之前编辑器照常单机可用；连上那一刻 Y.Text 接管正文，
+   * 所以要先把当前正文塞进空文档，否则第一个进房的人会把自己的正文清成空白。
+   */
   useEffect(() => {
     if (!collab || readOnly) { onCollab?.({ status: "offline", peers: [] }); return; }
     let alive = true;
@@ -476,11 +495,16 @@ export function MarkdownEditor({
       peers: list => { if (!alive) return; peers.current = list; onCollab?.({ status: status.current, peers: list }); },
       synced: text => {
         if (!alive || !view.current) return;
+        // 服务端总是拿 notes.body_md 初始化房间；房里居然是空的而本地有正文，说明快照坏了，补种一次
         if (!text.toString() && mine.current) text.insert(0, mine.current);
         collabSession.current = session;
         view.current.dispatch({
           effects: [
             collabCompartment.reconfigure(session!.extension),
+            // **同时把 CodeMirror 的 history 摘掉**：yCollab 推远端改动进来时没标
+            // `addToHistory: false`，留着它，本地撤销栈里就会混进同事敲的字，
+            // 一按 Ctrl+Z 撤的是别人的句子，而且撤销结果还会经 CRDT 广播回去。
+            // 撤销改由 collab.ts 里那份 Y.UndoManager 的 keymap 接管（只撤自己的）。
             historyCompartment.reconfigure([]),
           ],
         });
@@ -495,6 +519,7 @@ export function MarkdownEditor({
     };
   }, [collab?.id, resetKey, readOnly, onCollab]);
 
+  // Vim：开了才去下那两百 KB。加载失败就当没开，并把 null 报上去让外面提示。
   useEffect(() => {
     let alive = true;
     vimOn.current = vim;
