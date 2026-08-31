@@ -10,7 +10,8 @@ import {
 import { api, type Me } from "./api";
 import { formatBytes, usagePercent } from "./lib/bytes";
 import { MarkdownView } from "./MarkdownView";
-import { MarkdownEditor, type MarkdownEditorHandle } from "./editor/markdown-editor";
+import { type MarkdownEditorHandle } from "./editor/markdown-editor";
+import { ResilientMarkdownEditor as MarkdownEditor } from "./editor/resilient-markdown-editor";
 import { editorPreviewMode } from "./lib/editor-mode";
 import { EditorFormatBar } from "./components/editor-format-bar";
 import type { WikiPreview } from "./editor/wiki-hover";

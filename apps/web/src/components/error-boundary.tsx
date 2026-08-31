@@ -11,6 +11,12 @@ import { Button } from "./ui/button";
 type Props = { children: ReactNode };
 type State = { error: Error | null; stack: string };
 
+export function errorDetails(error: Error, componentStack = ""): string {
+  const runtimeStack = error.stack || `${error.name}: ${error.message}`;
+  const reactStack = componentStack.trim();
+  return reactStack ? `${runtimeStack}\n\nReact component stack:\n${reactStack}` : runtimeStack;
+}
+
 export class ErrorBoundary extends Component<Props, State> {
   state: State = { error: null, stack: "" };
 
@@ -28,6 +34,8 @@ export class ErrorBoundary extends Component<Props, State> {
     const { error, stack } = this.state;
     if (!error) return this.props.children;
 
+    const details = errorDetails(error, stack);
+
     return (
       <div className="grid min-h-full place-items-center bg-background p-6">
         <div className="w-full max-w-xl space-y-4">
@@ -44,11 +52,11 @@ export class ErrorBoundary extends Component<Props, State> {
             <p className="mt-1 break-words font-[var(--font-mono)] text-sm text-destructive">
               {error.name}: {error.message}
             </p>
-            {stack && (
+            {details && (
               <details className="mt-2">
-                <summary className="cursor-pointer text-xs text-muted-foreground">组件栈</summary>
+                <summary className="cursor-pointer text-xs text-muted-foreground">调用栈与组件栈</summary>
                 <pre className="mt-1.5 max-h-56 overflow-auto whitespace-pre-wrap break-words font-[var(--font-mono)] text-[11px] leading-relaxed text-muted-foreground">
-                  {stack.trim()}
+                  {details}
                 </pre>
               </details>
             )}
@@ -59,7 +67,7 @@ export class ErrorBoundary extends Component<Props, State> {
             <Button variant="ghost" onClick={() => { window.location.href = "/"; }}>回到首页</Button>
             <Button
               variant="ghost"
-              onClick={() => void navigator.clipboard?.writeText(`${error.name}: ${error.message}\n\n${stack.trim()}`)}
+              onClick={() => void navigator.clipboard?.writeText(details)}
             >
               复制错误详情
             </Button>
