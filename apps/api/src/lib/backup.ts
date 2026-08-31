@@ -106,3 +106,181 @@ export async function workspaceSnapshot(id: string) {
     ),
   };
 }
+
+/**
+ * 实例包：用户、注册策略、广场、导航、智能体元数据。
+ * MCP secret / 工作区 AI key 明文永不进包；分享 token 只在加密包里留。
+ */
+export async function instanceSnapshot() {
+  const [settings] = await db.select().from(instanceSettings);
+  const square = await db.select().from(posts).where(eq(posts.visibility, "public"));
+  const squareIds = square.map(p => p.id);
+  const squareAssets = await byIds(squareIds, ids => db.select().from(postAssets).where(inArray(postAssets.postId, ids)));
+  const postAssetFiles: Array<{ postAssetId: string; bytes: number; sha256: string; dataBase64: string }> = [];
+  for (const asset of squareAssets) {
+    const raw = await readStoredFile({ ...asset, postAssetId: asset.id });
+    if (checksum(raw) !== asset.sha256 || raw.length !== asset.bytes) throw new Error(`广场附件 ${asset.id} 的磁盘文件与元数据不一致`);
+    postAssetFiles.push({ postAssetId: asset.id, bytes: raw.length, sha256: asset.sha256, dataBase64: raw.toString("base64") });
+  }
+  const agentRows = await db.select().from(agents);
+  return {
+    format: "knowledge-instance-backup",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    manifest: { applicationVersion: process.env.APP_VERSION ?? process.env.npm_package_version ?? "unknown", databaseSchemaVersion: 4, dataFileVersion: 1, schemaVersion: 4, capabilities: ["instance_metadata", "strict_refs", "secrets_omitted"] },
+    settings: settings ? {
+      ...settings,
+      smtpPassword: null,
+      moderationApiKey: null,
+      vapidPrivateKey: null,
+    } : null,
+    users: (await db.select().from(users)).map(user => ({ ...user, passwordHash: "!restore-requires-password-reset" })),
+    serviceRequests: await db.select().from(serviceRequests),
+    registrationCodes: (await db.select().from(registrationCodes)).map(row => ({ ...row, codePrefix: row.codePrefix.slice(0, 9) })),
+    registrationCodeUsages: await db.select().from(registrationCodeUsages),
+    savedShares: await db.select().from(savedShares),
+    posts: square,
+    postAssets: squareAssets,
+    postAssetFiles,
+    reactions: await byIds(squareIds, ids => db.select().from(postReactions).where(inArray(postReactions.postId, ids))),
+    comments: await byIds(squareIds, ids => db.select().from(comments).where(inArray(comments.targetId, ids))),
+    moderationReviews: await byIds(squareIds, ids => db.select().from(moderationReviews).where(inArray(moderationReviews.targetId, ids))),
+    contentReports: await byIds(squareIds, ids => db.select().from(contentReports).where(inArray(contentReports.targetId, ids))),
+    themes: await db.select().from(themes),
+    navGroups: await db.select().from(navGroups),
+    navLinks: await db.select().from(navLinks),
+    agents: agentRows.map(({ apiKey: _k, ...rest }) => ({ ...rest, enabled: false })),
+    workspaces: await db.select({
+      id: workspaces.id,
+      slug: workspaces.slug,
+      name: workspaces.name,
+      kind: workspaces.kind,
+      ownerId: workspaces.ownerId,
+    }).from(workspaces),
+  };
+}
+
+/** 距上次成功多久该再跑；失败后 30 分钟内不连打，避免坏目标把队列灌满。 */
+const FAIL_BACKOFF_MS = 30 * 60_000;
+
+export function scheduleIntervalMs(schedule: string) {
+  if (schedule === "daily") return 86_400_000;
+  if (schedule === "weekly") return 7 * 86_400_000;
+  return null;
+}
+
+export function backupDue(input: {
+  schedule: string;
+  lastRunAt: Date | null;
+  latest?: { status: string; finishedAt: Date | null } | null;
+}, now = new Date()) {
+  const interval = scheduleIntervalMs(input.schedule);
+  if (interval == null) return false;
+  const latest = input.latest;
+  if (latest && (latest.status === "pending" || latest.status === "running")) return false;
+  if (latest?.status === "failed" && latest.finishedAt && now.getTime() - latest.finishedAt.getTime() < FAIL_BACKOFF_MS) return false;
+  if (!input.lastRunAt) return true;
+  return now.getTime() - input.lastRunAt.getTime() >= interval;
+}
+
+function stamp() {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+function redactUnencrypted(snapshot: Record<string, unknown>, encrypted: boolean) {
+  if (encrypted) return snapshot;
+  const next = { ...snapshot };
+  if (Array.isArray(next.shares)) {
+    next.shares = next.shares.map((s: { token?: string }) => ({ ...s, token: undefined }));
+  }
+  if (Array.isArray(next.calendarFeedTokens)) {
+    next.calendarFeedTokens = next.calendarFeedTokens.map((s: { token?: string }) => ({ ...s, token: undefined }));
+  }
+  if (Array.isArray(next.calendarSubscriptions)) {
+    next.calendarSubscriptions = next.calendarSubscriptions.map((s: { url?: string }) => ({ ...s, url: undefined, enabled: false }));
+  }
+  return next;
+}
+
+async function notifyFailure(t: TargetRow, message: string) {
+  const href = t.workspaceId ? `/w/${t.workspaceId}/settings?tab=backup` : "/admin?tab=backup";
+  const title = t.workspaceId ? "工作区备份失败" : "实例备份失败";
+  const ids = new Set<string>();
+  if (t.workspaceId) {
+    const members = await db.select({ userId: workspaceMembers.userId, role: workspaceMembers.role })
+      .from(workspaceMembers)
+      .where(eq(workspaceMembers.workspaceId, t.workspaceId));
+    for (const m of members) if (m.role === "owner" || m.role === "admin") ids.add(m.userId);
+  } else {
+    const admins = await db.select({ id: users.id }).from(users).where(and(eq(users.roleInstance, "admin"), eq(users.status, "active")));
+    for (const u of admins) ids.add(u.id);
+  }
+  if (!ids.size) return;
+  await db.insert(notifications).values([...ids].map(userId => ({
+    userId,
+    type: "backup_failed",
+    title,
+    body: `${t.name}：${message}`.slice(0, 400),
+    href,
+  })));
+}
+
+export async function executeBackupRun(target: TargetRow, runId: string) {
+  await db.update(backupRuns).set({ status: "running", startedAt: new Date() }).where(eq(backupRuns.id, runId));
+  const instance = target.scope === "instance" || !target.workspaceId;
+  try {
+    const snapshot = instance ? await instanceSnapshot() : await workspaceSnapshot(target.workspaceId!);
+    const encrypted = !!target.encryptionKey;
+    const packed = redactUnencrypted(snapshot as unknown as Record<string, unknown>, encrypted);
+    const raw = Buffer.from(JSON.stringify(packed));
+    const data = encrypted ? encryptPackage(raw, open(target.encryptionKey!)) : raw;
+    const sum = checksum(data);
+    const path = instance
+      ? `instance-${stamp()}.kbbackup`
+      : `workspace-${target.workspaceId}-${stamp()}.kbbackup`;
+    const cred = JSON.parse(open(target.credentials)) as BackupCred;
+    const ref: BackupTargetRef = { type: target.type, endpoint: target.endpoint, prefix: target.prefix };
+    const manifest = instance
+      ? {
+        format: packed.format,
+        version: packed.version,
+        users: Array.isArray(packed.users) ? packed.users.length : 0,
+        posts: Array.isArray(packed.posts) ? packed.posts.length : 0,
+        encrypted,
+        bytes: data.length,
+        checksumSha256: sum,
+        remotePath: path,
+        exportedAt: packed.exportedAt,
+      }
+      : {
+        format: packed.format,
+        version: packed.version,
+        notebooks: Array.isArray(packed.notebooks) ? packed.notebooks.length : 0,
+        notes: Array.isArray(packed.notes) ? packed.notes.length : 0,
+        attachments: Array.isArray(packed.attachments) ? packed.attachments.length : 0,
+        encrypted,
+        bytes: data.length,
+        checksumSha256: sum,
+        remotePath: path,
+        exportedAt: packed.exportedAt,
+      };
+    await upload(ref, cred, path, data);
+    await upload(ref, cred, `${path}.manifest.json`, Buffer.from(JSON.stringify(manifest)));
+    try { await applyRetention(ref, cred, target.retainDaily, target.retainWeekly); }
+    catch (e) { console.warn("备份保留策略未执行完:", e instanceof Error ? e.message : e); }
+    await db.update(backupRuns).set({
+      status: "success",
+      bytes: data.length,
+      checksumSha256: sum,
+      remotePath: path,
+      manifest,
+      finishedAt: new Date(),
+    }).where(eq(backupRuns.id, runId));
+    await db.update(backupTargets).set({ lastRunAt: new Date() }).where(eq(backupTargets.id, target.id));
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    await db.update(backupRuns).set({ status: "failed", error: message, finishedAt: new Date() }).where(eq(backupRuns.id, runId));
+    await notifyFailure(target, message).catch(() => {});
+    throw e;
+  }
+}
