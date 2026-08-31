@@ -41,6 +41,7 @@ const workspacePackage = base.extend({
   calendarTemplates: rows,
   calendarFeedTokens: rows,
   projects: rows.default([]),
+  projectColumns: rows.default([]),
   projectTasks: rows.default([]),
   projectTimeEntries: rows.default([]),
   projectMilestones: rows.default([]),
@@ -171,6 +172,7 @@ export function validateWorkspaceGraph(snapshot: WorkspaceBackupPackage) {
   const postAssetIds = idsOf(snapshot.postAssets, "postAssets");
   const itemIds = idsOf(snapshot.calendarItems, "calendarItems");
   const projectIds = idsOf(snapshot.projects, "projects");
+  idsOf(snapshot.projectColumns, "projectColumns");
   const taskIds = idsOf(snapshot.projectTasks, "projectTasks");
   const shareIds = idsOf(snapshot.shares, "shares");
   const commentIds = idsOf(snapshot.comments, "comments");
@@ -234,6 +236,7 @@ export function validateWorkspaceGraph(snapshot: WorkspaceBackupPackage) {
   for (const item of snapshot.calendarTemplates) if (item.workspaceId !== wsId) throw new Error("calendarTemplates.workspaceId 与工作区不一致");
   for (const item of snapshot.calendarFeedTokens) if (item.workspaceId !== wsId) throw new Error("calendarFeedTokens.workspaceId 与工作区不一致");
   for (const item of snapshot.projects) if (item.workspaceId !== wsId) throw new Error("projects.workspaceId 与工作区不一致");
+  for (const item of snapshot.projectColumns) assertRef(item.projectId, projectIds, "projectColumns.projectId");
   for (const item of snapshot.projectTasks) {
     if (item.workspaceId !== wsId) throw new Error("projectTasks.workspaceId 与工作区不一致");
     assertRef(item.projectId, projectIds, "projectTasks.projectId");
