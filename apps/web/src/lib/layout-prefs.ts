@@ -6,6 +6,8 @@ export type LayoutPrefs = {
   showTree: boolean;
   /** 打字机滚动：光标行钉在视口中间。 */
   typewriter: boolean;
+  /** 单栏编辑的即时渲染开关；分栏左侧不读取它。 */
+  wysiwyg: boolean;
   /** Vim keymap。默认关：少数人的强需求、多数人的灾难（设计 17 §3.3）。 */
   vim: boolean;
   /** 拼写检查。默认开——这是散文编辑器，CodeMirror 关掉它的默认是给代码用的。 */
@@ -41,6 +43,7 @@ export const DEFAULT_LAYOUT: LayoutPrefs = {
   showNotebooks: true,
   showTree: true,
   typewriter: false,
+  wysiwyg: true,
   vim: false,
   spellcheck: true,
   fontScale: 1,
@@ -63,6 +66,7 @@ export function loadLayout(): LayoutPrefs {
       showNotebooks: raw.showNotebooks !== false,
       showTree: raw.showTree !== false,
       typewriter: raw.typewriter === true,
+      wysiwyg: raw.wysiwyg !== false,
       vim: raw.vim === true,
       spellcheck: raw.spellcheck !== false,
       // 存进去的值可能是老版本或者被人手改过，不在档位里就退回基准
