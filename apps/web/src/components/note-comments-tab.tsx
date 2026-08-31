@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, Circle, Crosshair, MessageCircleReply, Quote, RotateCcw, Send, Trash2 } from "lucide-react";
 import { api } from "../api";
-import { commentAnchorAt, resolveCommentAnchor, type CommentAnchor, type TextSelection } from "../lib/note-comments";
+import { commentAnchorAt, pickQuoteSelection, resolveCommentAnchor, type CommentAnchor, type TextSelection } from "../lib/note-comments";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
@@ -71,7 +71,7 @@ export function NoteCommentsTab({
   }
 
   function captureSelection(report = true) {
-    const selection = getSelection();
+    const selection = pickQuoteSelection(getSelection(), null, note.bodyMd);
     if (!selection) { if (report) toast.error("请先在正文里选中要引用的内容"); return; }
     if (selection.text.length > 2000) { if (report) toast.error("引用内容不能超过 2000 个字符"); return; }
     const next = commentAnchorAt(note.bodyMd, note.version, selection);
@@ -118,7 +118,7 @@ export function NoteCommentsTab({
         </div>}
         <Textarea value={body} onChange={event => setBody(event.target.value)} maxLength={4000} placeholder={anchor ? "评论这段内容…" : "评论这篇笔记…"} className="min-h-20 text-sm" />
         <div className="flex items-center gap-1.5">
-          <Button type="button" variant="outline" size="sm" onClick={() => captureSelection()}><Quote />{anchor ? "重新引用" : "引用选区"}</Button>
+          <Button type="button" variant="outline" size="sm" onMouseDown={event => { event.preventDefault(); captureSelection(); }} onClick={() => captureSelection()}><Quote />{anchor ? "重新引用" : "引用选区"}</Button>
           <Button className="ml-auto" size="sm" disabled={!body.trim() || sending}><Send />发表</Button>
         </div>
       </form>
