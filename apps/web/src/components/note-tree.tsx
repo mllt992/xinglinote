@@ -219,6 +219,7 @@ export function NoteTree({
   onCreateNote,
   onCreateFolder,
   onShareFolder,
+  onOpenNote,
 }: {
   folders: TreeFolder[];
   notes: TreeNote[];
@@ -242,6 +243,7 @@ export function NoteTree({
   onCreateNote: (folderId: string | null) => void;
   onCreateFolder: (parentId: string | null) => void;
   onShareFolder: (folder: TreeFolder) => void;
+  onOpenNote?: (note: TreeNote) => void;
 }) {
   const tree = useMemo(() => buildNoteTree(folders, notes, mode), [folders, notes, mode]);
   const [openIds, setOpenIds] = useState<Set<string>>(() => new Set(notebookId ? loadOpenFolders(notebookId) : []));
@@ -489,6 +491,7 @@ export function NoteTree({
             onCreateNote={onCreateNote}
             onCreateFolder={(id) => { onSelectFolder(id); expand(id); onCreateFolder(id); }}
             onShareFolder={onShareFolder}
+            onOpenNote={onOpenNote}
             onMoveNote={setMoving}
             onMoveToNotebook={onMoveToNotebook}
             onShiftFolder={shiftFolder}
@@ -549,6 +552,7 @@ function TreeRow({
   onMoveNote,
   onMoveToNotebook,
   onShiftFolder,
+  onOpenNote,
 }: {
   node: NoteTreeNode;
   depth: number;
@@ -580,6 +584,7 @@ function TreeRow({
   onMoveNote: (note: TreeNote) => void;
   onMoveToNotebook?: (note: TreeNote) => void;
   onShiftFolder: (folderId: string, dir: -1 | 1) => void;
+  onOpenNote?: (note: TreeNote) => void;
 }) {
   const pad = { paddingLeft: 8 + depth * 16 };
   if (node.kind === "folder") {
@@ -690,6 +695,7 @@ function TreeRow({
             onMoveNote={onMoveNote}
             onMoveToNotebook={onMoveToNotebook}
             onShiftFolder={onShiftFolder}
+            onOpenNote={onOpenNote}
           />
         ))}
       </div>
@@ -720,6 +726,7 @@ function TreeRow({
           <Link
             to={`/w/${wsId}/n/${n.id}`}
             draggable={false}
+            onClick={() => onOpenNote?.(n)}
             className={cn(
               "group flex h-8 items-center gap-2 rounded-lg px-2 text-sm transition",
               active ? "bg-primary text-primary-foreground shadow-sm" : "hover:bg-muted",

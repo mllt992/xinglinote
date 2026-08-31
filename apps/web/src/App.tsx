@@ -72,12 +72,18 @@ import { UserAvatar } from "./components/user-avatar";
 import { NotificationsPage } from "./components/notifications-page";
 import { readMarkdownZip } from "./lib/zip";
 import { QuickOpen, useQuickOpenHotkey } from "./components/quick-open";
+import { NotePreviewPane, NoteTabBar } from "./components/note-workbench";
 import { AppNav, loadLastWorkspace, saveLastWorkspace, useSquareEnabled, type NavPlace } from "./components/app-nav";
 import { CircleRail, SquareRail } from "./components/feed-rail";
 import { feedUpdateTotal, formatFeedUpdateLabel, useFeedBadges } from "./components/feed-updates";
 import { SquareCatalog } from "./components/square-catalog";
 import { copyPlainText, copyRichText } from "./lib/clipboard";
 import { toSafeHtml } from "./lib/render-html";
+import {
+  NOTE_TAB_MIME, addWorkbenchPane, closeWorkbenchTab, loadWorkbench, openWorkbenchTab, placeWorkbenchPane, readDraggedNoteTab,
+  removeWorkbenchPane, reorderWorkbenchTab, saveWorkbench, updatePaneWidths, updateWorkbenchTab,
+  type NoteWorkbenchState, type WorkbenchTab,
+} from "./lib/note-workbench";
 
 /** 字号在档位里挪一格，到头就停住。 */
 function stepScale(current: number, delta: number): number {
@@ -395,21 +401,41 @@ function Workspace() {
   const circleUpdates = useFeedBadges({ workspaceId: wsId }).circle;
   const circleBadge = feedUpdateTotal(circleUpdates);
   const [spaces, setSpaces] = useState<Ws[]>([]); const [nbs, setNbs] = useState<Nb[]>([]); const [nbId, setNbId] = useState<string>();
+  const [workbenchStore, setWorkbenchStore] = useState<{ workspaceId?: string; state: NoteWorkbenchState }>(() => ({ workspaceId: wsId, state: loadWorkbench(wsId) }));
+  const workbench = workbenchStore.workspaceId === wsId ? workbenchStore.state : loadWorkbench(wsId);
+  const focusedNoteRef = useRef<string | undefined>(noteId);
+  const [noteCache, setNoteCache] = useState<Record<string, NoteDto>>({});
   const autoOpenNb = useRef<string | null>(null);
   const [folders, setFolders] = useState<FolderDto[]>([]); const [activeFolder, setActiveFolder] = useState<string | null>(null); const [tree, setTree] = useState<TreeNote[]>([]); const [movingNote, setMovingNote] = useState<TreeNote | null>(null); const [movingNoteToNb, setMovingNoteToNb] = useState<TreeNote | null>(null);
   const [noteSort, setNoteSort] = useState<NoteSortMode>("created"); const [treeCanEdit, setTreeCanEdit] = useState(false);
   /** 侧栏里笔记本怎么排。按工作区记，默认「自定义」——侧栏是人自己摆的秩序。 */
   const [nbSort, setNbSort] = useState<NoteSortMode>("custom");
   const [reloading, setReloading] = useState(false);
+  const [noteLoadAttempt, setNoteLoadAttempt] = useState(0);
   const [note, setNote] = useState<NoteDto | null>(null); const noteRef = useRef<NoteDto | null>(null); const saveTimer = useRef<number | null>(null); const savingRef = useRef(false); const saveQueuedRef = useRef(false); const saveActionRef = useRef<() => void>(() => {}); const dirtyMetadataRef = useRef(new Set<NoteMetadataKey>()); const titleComposingRef = useRef(false); const conflictRef = useRef<NoteSaveConflict | null>(null); const [conflict, setConflict] = useState<NoteSaveConflict | null>(null); const [status, setStatus] = useState("就绪"); const [statusErr, setStatusErr] = useState(false); const [saving, setSaving] = useState(false); const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   /** 编辑器状态条：dirty / saving / saved / conflict（规范 §11.4）。冲突与保存失败必须和「已保存」看得出区别。 */
   const say = (text: string, error = false) => { setStatus(text); setStatusErr(error); };
   const [search, setSearch] = useState(""); const [hits, setHits] = useState<Hit[]>([]); const [allSpaces, setAllSpaces] = useState(false); const [titleOnly, setTitleOnly] = useState(false); const [backlinks, setBacklinks] = useState<Array<{ id: string; title: string; snippet: string }>>([]); const [atts, setAtts] = useState<Att[]>([]); const [rail, setRailState] = useState<RailTab | null>(loadRailTab); const [create, setCreate] = useState<CreateKind>(null);  const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null); const [showCollab, setShowCollab] = useState(false); const [showImport, setShowImport] = useState(false); const [favorited, setFavorited] = useState(false); const [viewers, setViewers] = useState<string[]>([]); const [quickOpen, setQuickOpen] = useState(false);  const[showAsk,setShowAsk]=useState(false); const [showNotebookAccess,setShowNotebookAccess]=useState(false); const [moveNb,setMoveNb]=useState<Nb|null>(null); const [site, setSite] = useState<{ published: boolean; slug: string; pending?: boolean; canPublish?: boolean; canRequest?: boolean } | null>(null);
   const activeWs = spaces.find(x => x.id === wsId); const activeNb = nbs.find(x => x.id === nbId);
 
+  function setWorkbench(update: (current: NoteWorkbenchState) => NoteWorkbenchState) {
+    setWorkbenchStore(current => {
+      const state = current.workspaceId === wsId ? current.state : loadWorkbench(wsId);
+      return { workspaceId: wsId, state: update(state) };
+    });
+  }
+
   useQuickOpenHotkey(setQuickOpen);
   useEffect(() => { if (me === null) nav("/login"); }, [me, nav]);
   useEffect(() => { if (wsId) saveLastWorkspace(wsId); }, [wsId]);
+  useEffect(() => {
+    setWorkbenchStore({ workspaceId: wsId, state: loadWorkbench(wsId) });
+    focusedNoteRef.current = noteId;
+    setNoteCache({});
+  }, [wsId]);
+  useEffect(() => {
+    if (workbenchStore.workspaceId === wsId) saveWorkbench(wsId, workbenchStore.state);
+  }, [workbenchStore, wsId]);
   useEffect(() => { api<{ workspaces: Ws[] }>("/api/v1/workspaces").then(d => { setSpaces(d.workspaces); if (!wsId && me?.personalWorkspaceId) nav(`/w/${me.personalWorkspaceId}`, { replace: true }); }); }, [me, wsId, nav]);
   useEffect(() => { if (!wsId) return; setNbSort(loadWorkspaceNotebookSort(wsId)); api<{ notebooks: Nb[] }>(`/api/v1/workspaces/${wsId}/notebooks`).then(d => { setNbs(d.notebooks); setNbId(d.notebooks[0]?.id); }); }, [wsId]);
   async function refreshTree(id = nbId): Promise<TreeNote[]> { if (!id) return []; const d = await api<{ folders: FolderDto[]; notes: TreeNote[]; canEdit?: boolean }>(`/api/v1/notebooks/${id}/tree`); setFolders(d.folders); setTree(d.notes); setTreeCanEdit(!!d.canEdit); return d.notes; }
@@ -432,6 +458,35 @@ function Workspace() {
     if (receivedMode) { autoOpenNb.current = id; setNbId(id); return; }
     if (id === nbId) return;
     autoOpenNb.current = id; setNbId(id);
+  }
+  function focusWorkbenchTab(tab: WorkbenchTab) {
+    if (!wsId || tab.id === noteId) return;
+    // 先切侧栏再换 URL；网络慢时也不会让新笔记短暂挂在旧笔记本下面。
+    setNbId(tab.notebookId);
+    nav(`/w/${wsId}/n/${tab.id}`);
+  }
+  function closeOpenTab(id: string) {
+    if (!wsId) return;
+    const closed = closeWorkbenchTab(workbench, id, noteId);
+    setWorkbench(() => closed.state);
+    setNoteCache(current => { const next = { ...current }; delete next[id]; return next; });
+    if (id !== noteId) return;
+    const next = closed.state.tabs.find(tab => tab.id === closed.nextActiveId);
+    if (next) { setNbId(next.notebookId); nav(`/w/${wsId}/n/${next.id}`); }
+    else nav(`/w/${wsId}`);
+  }
+  function closeNotebookTabs(notebookId: string) {
+    if (!wsId) return;
+    const removed = new Set(workbench.tabs.filter(tab => tab.notebookId === notebookId).map(tab => tab.id));
+    if (!removed.size) return;
+    let next = workbench;
+    for (const id of removed) next = closeWorkbenchTab(next, id, noteId).state;
+    setWorkbench(() => next);
+    setNoteCache(cache => Object.fromEntries(Object.entries(cache).filter(([id]) => !removed.has(id))));
+    if (!noteId || !removed.has(noteId)) return;
+    const fallback = next.tabs[0];
+    if (fallback) { setNbId(fallback.notebookId); nav(`/w/${wsId}/n/${fallback.id}`); }
+    else nav(`/w/${wsId}`);
   }
   function changeNoteSort(mode: NoteSortMode) { setNoteSort(mode); if (nbId) saveNotebookNoteSort(nbId, mode); }
   function changeNotebookSort(mode: NoteSortMode) { setNbSort(mode); if (wsId) saveWorkspaceNotebookSort(wsId, mode); }
@@ -481,10 +536,54 @@ function Workspace() {
       void refreshTree();
     }
   }
-  useEffect(() => { dirtyMetadataRef.current.clear(); conflictRef.current = null; setConflict(null); if (!noteId) { setNote(null); setAtts([]); setLastSavedAt(null); return; } api<NoteDto>(`/api/v1/notes/${noteId}`).then(loaded => { setNote(loaded); noteRef.current = loaded; const savedAt = loaded.updatedAt ? new Date(loaded.updatedAt).getTime() : NaN; setLastSavedAt(Number.isFinite(savedAt) ? savedAt : null); say(`已保存 · v${loaded.version}`); }); api<{ items: typeof backlinks }>(`/api/v1/notes/${noteId}/backlinks`).then(d => setBacklinks(d.items)); api<{ attachments: Att[] }>(`/api/v1/notes/${noteId}/attachments`).then(d => setAtts(d.attachments)).catch(() => setAtts([])); }, [noteId]);
+  useEffect(() => {
+    let cancelled = false;
+    dirtyMetadataRef.current.clear(); conflictRef.current = null; setConflict(null);
+    if (!noteId) { setNote(null); noteRef.current = null; setAtts([]); setBacklinks([]); setLastSavedAt(null); return; }
+    say("正在打开…");
+    // URL 已经换篇就立刻卸掉旧编辑器；否则慢请求期间用户会在 B 标签下继续改到 A。
+    setNote(current => current?.id === noteId ? current : null);
+    if (noteRef.current?.id !== noteId) noteRef.current = null;
+    api<NoteDto>(`/api/v1/notes/${noteId}`).then(loaded => {
+      if (cancelled) return;
+      setNote(loaded); noteRef.current = loaded;
+      const savedAt = loaded.updatedAt ? new Date(loaded.updatedAt).getTime() : NaN;
+      setLastSavedAt(Number.isFinite(savedAt) ? savedAt : null); say(`已保存 · v${loaded.version}`);
+    }).catch(error => {
+      if (cancelled) return;
+      setNote(null); noteRef.current = null; say((error as Error).message, true);
+      const code = (error as { code?: string }).code;
+      if (code === "NOT_FOUND" || code === "GONE_TRASHED" || code === "FORBIDDEN") closeOpenTab(noteId);
+    });
+    api<{ items: typeof backlinks }>(`/api/v1/notes/${noteId}/backlinks`).then(d => { if (!cancelled) setBacklinks(d.items); }).catch(() => { if (!cancelled) setBacklinks([]); });
+    api<{ attachments: Att[] }>(`/api/v1/notes/${noteId}/attachments`).then(d => { if (!cancelled) setAtts(d.attachments); }).catch(() => { if (!cancelled) setAtts([]); });
+    return () => { cancelled = true; };
+  }, [noteId, noteLoadAttempt]);
   useEffect(() => { noteRef.current = note; }, [note]);
   /** 从搜索、快速打开或深链进来的笔记可能不在当前笔记本：侧栏跟着笔记走，面包屑才不会张冠李戴。 */
   useEffect(() => { if (note?.notebookId) setNbId(note.notebookId); }, [note?.notebookId]);
+  /** 当前笔记进入工作台；标题和搬本结果也同步到标签。正文只留内存，绝不写进布局偏好。 */
+  useEffect(() => {
+    if (!note) return;
+    const tab: WorkbenchTab = { id: note.id, title: note.title, notebookId: note.notebookId };
+    setWorkbench(current => openWorkbenchTab(current, tab, focusedNoteRef.current));
+    focusedNoteRef.current = note.id;
+  }, [note?.id, note?.title, note?.notebookId]);
+  useEffect(() => { if (note) setNoteCache(current => ({ ...current, [note.id]: note })); }, [note]);
+
+  /** 并列窗格只预取可见的非焦点笔记；取得焦点时仍由上面的主请求重新校验版本。 */
+  useEffect(() => {
+    let cancelled = false;
+    for (const id of workbench.paneIds) {
+      if (id === note?.id || noteCache[id]) continue;
+      void api<NoteDto>(`/api/v1/notes/${id}`).then(loaded => {
+        if (!cancelled) setNoteCache(current => ({ ...current, [id]: loaded }));
+      }).catch(() => {
+        if (!cancelled) setWorkbench(current => closeWorkbenchTab(current, id, noteId).state);
+      });
+    }
+    return () => { cancelled = true; };
+  }, [workbench.paneIds.join("\0"), note?.id]);
 
   useEffect(() => {
     if (!noteId) { setViewers([]); setFavorited(false); return; }
@@ -741,7 +840,8 @@ function Workspace() {
   async function deleteCurrent() {
     if (!note || !wsId) return;
     if (!await askConfirm({ title: `把《${note.title || "未命名笔记"}》移到回收站？`, description: "笔记会从列表里消失，30 天内可以在回收站里恢复，之后自动销毁。", confirmText: "移到回收站", destructive: true })) return;
-    try { await api(`/api/v1/notes/${note.id}`, { method: "DELETE" }); await refreshTree(); toast.success("已移到回收站"); nav(`/w/${wsId}`); }
+    if (saveTimer.current !== null) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    try { await api(`/api/v1/notes/${note.id}`, { method: "DELETE" }); await refreshTree(); toast.success("已移到回收站"); closeOpenTab(note.id); }
     catch (e) { toast.error("删除失败", (e as Error).message); }
   }
   const canDeleteNotebook = (activeWs?.role === "owner" || activeWs?.role === "admin") && !activeWs?.frozen;
@@ -753,9 +853,9 @@ function Workspace() {
       await api(`/api/v1/notebooks/${nb.id}`, { method: "DELETE" });
       const remaining = nbs.filter(x => x.id !== nb.id);
       setNbs(remaining);
+      closeNotebookTabs(nb.id);
       if (nbId === nb.id) {
         setNbId(remaining[0]?.id);
-        if (noteId) nav(`/w/${wsId}`);
       }
       toast.success(`已将《${nb.title}》移到回收站`);
     } catch (e) { toast.error("删除笔记本失败", (e as Error).message); }
@@ -766,7 +866,8 @@ function Workspace() {
   function notebookMoved(nb: Nb, target: Ws, moved: { notes: number; droppedMembers: number; slugChanged: boolean }) {
     const remaining = nbs.filter(x => x.id !== nb.id);
     setNbs(remaining);
-    if (nbId === nb.id) { setNbId(remaining[0]?.id); if (noteId) nav(`/w/${wsId}`); }
+    closeNotebookTabs(nb.id);
+    if (nbId === nb.id) setNbId(remaining[0]?.id);
     const notes = [`${moved.notes} 篇笔记已经在《${target.name}》里`];
     if (moved.droppedMembers) notes.push(`${moved.droppedMembers} 位白名单成员因为不在目标工作区被摘掉`);
     if (moved.slugChanged) notes.push("目标工作区已有同名地址，文档站换了新地址");
@@ -807,13 +908,16 @@ function Workspace() {
       const current = await api<NoteDto>(`/api/v1/notes/${n.id}`);
       const saved = withCanEdit(await api<NoteDto>(`/api/v1/notes/${n.id}`, { method: "PATCH", body: JSON.stringify({ expectedVersion: current.version, title: title.trim() }) }), noteRef.current ?? current);
       setTree(t => t.map(x => x.id === n.id ? { ...x, title: saved.title } : x));
+      setWorkbench(state => updateWorkbenchTab(state, { id: saved.id, title: saved.title, notebookId: saved.notebookId }));
+      setNoteCache(cache => ({ ...cache, [saved.id]: saved }));
       if (noteRef.current?.id === n.id) { setNote(saved); noteRef.current = saved; say(`已保存 · v${saved.version}`); }
     } catch (e) { toast.error("重命名失败", (e as Error).message); }
   }
   async function deleteNoteFromTree(n: TreeNote) {
     if (!wsId) return;
     if (!await askConfirm({ title: `把《${n.title || "未命名笔记"}》移到回收站？`, description: "笔记会从列表里消失，30 天内可以在回收站里恢复，之后自动销毁。", confirmText: "移到回收站", destructive: true })) return;
-    try { await api(`/api/v1/notes/${n.id}`, { method: "DELETE" }); await refreshTree(); toast.success("已移到回收站"); if (noteId === n.id) nav(`/w/${wsId}`); }
+    if (noteId === n.id && saveTimer.current !== null) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    try { await api(`/api/v1/notes/${n.id}`, { method: "DELETE" }); await refreshTree(); toast.success("已移到回收站"); closeOpenTab(n.id); }
     catch (e) { toast.error("删除失败", (e as Error).message); }
   }
   async function moveNoteToFolder(id: string, folderId: string | null) {
@@ -854,6 +958,9 @@ function Workspace() {
         setNote(live => live?.id === id ? { ...live, notebookId: saved.notebookId, version: saved.version } : live);
         setNbId(saved.notebookId);
       }
+      const open = workbench.tabs.find(tab => tab.id === id);
+      if (open) setWorkbench(state => updateWorkbenchTab(state, { ...open, notebookId: saved.notebookId }));
+      setNoteCache(cache => cache[id] ? ({ ...cache, [id]: { ...cache[id]!, notebookId: saved.notebookId, version: saved.version } }) : cache);
       toast.success(`已移到「${destNb?.title ?? "笔记本"}」`);
     } catch (e) {
       toast.error("移动失败", (e as Error).message);
@@ -992,6 +1099,13 @@ function Workspace() {
   const [palette, setPalette] = useState(false);
   const [cursor, setCursor] = useState<CursorInfo | null>(null);
   const sectionRef = useRef<HTMLElement | null>(null);
+  const paneAreaRef = useRef<HTMLDivElement | null>(null);
+  const visiblePaneIds = note
+    ? (narrow ? [note.id] : workbench.paneIds.includes(note.id) ? workbench.paneIds : [note.id])
+    : [];
+  const visiblePaneWidths = visiblePaneIds.length === workbench.paneWidths.length
+    ? workbench.paneWidths
+    : visiblePaneIds.map(() => 1 / Math.max(1, visiblePaneIds.length));
 
   function startResize(which: "notebooks" | "tree", event: React.PointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -1006,6 +1120,29 @@ function Workspace() {
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
+    document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none";
+  }
+
+  function startPaneResize(index: number, event: React.PointerEvent<HTMLDivElement>) {
+    const host = paneAreaRef.current;
+    if (!host || index < 0 || index >= visiblePaneWidths.length - 1) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const totalWidth = host.getBoundingClientRect().width || 1;
+    const initial = visiblePaneWidths.slice();
+    const pair = initial[index]! + initial[index + 1]!;
+    const min = Math.min(0.16, pair / 2);
+    const move = (next: PointerEvent) => {
+      const widths = initial.slice();
+      const left = Math.min(pair - min, Math.max(min, initial[index]! + (next.clientX - startX) / totalWidth));
+      widths[index] = left; widths[index + 1] = pair - left;
+      setWorkbench(current => updatePaneWidths(current, widths));
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", stop);
+      document.body.style.cursor = ""; document.body.style.userSelect = "";
+    };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", stop);
     document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none";
   }
 
@@ -1157,7 +1294,7 @@ function Workspace() {
           <Button variant={titleOnly ? "secondary" : "ghost"} size="sm" onClick={() => { const v = !titleOnly; setTitleOnly(v); void runSearch(search, { titleOnly: v }); }}>仅标题</Button>
           <span className="ml-auto pr-1 text-[11px] text-muted-foreground">{hits.length} 条</span>
         </div>
-        {hits.length === 0 ? <p className="px-3 py-6 text-center text-xs text-muted-foreground">没有匹配的笔记。</p> : hits.map(h => <button key={`${h.kind ?? "note"}:${h.id}`} className="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left text-sm hover:bg-muted" onClick={() => { nav(h.kind === "saved_share" ? `/w/${wsId}/received/${h.id}` : `/w/${h.workspaceId}/n/${h.id}`); setSearch(""); setHits([]); }}><Search className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1"><span className="block truncate">{h.title}</span><span className="block truncate text-[11px] text-muted-foreground">{h.kind === "saved_share" ? h.snippet : `${h.workspaceId !== wsId ? `${spaces.find(w => w.id === h.workspaceId)?.name ?? "其他工作区"} · ` : ""}${h.snippet}`}</span></span></button>)}</div>}</div>
+        {hits.length === 0 ? <p className="px-3 py-6 text-center text-xs text-muted-foreground">没有匹配的笔记。</p> : hits.map(h => <button key={`${h.kind ?? "note"}:${h.id}`} className="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left text-sm hover:bg-muted" onClick={() => { if (h.kind !== "saved_share" && h.workspaceId === wsId) { setNbId(h.notebookId); setWorkbench(current => openWorkbenchTab(current, { id: h.id, title: h.title, notebookId: h.notebookId }, noteId)); } nav(h.kind === "saved_share" ? `/w/${wsId}/received/${h.id}` : `/w/${h.workspaceId}/n/${h.id}`); setSearch(""); setHits([]); }}><Search className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1"><span className="block truncate">{h.title}</span><span className="block truncate text-[11px] text-muted-foreground">{h.kind === "saved_share" ? h.snippet : `${h.workspaceId !== wsId ? `${spaces.find(w => w.id === h.workspaceId)?.name ?? "其他工作区"} · ` : ""}${h.snippet}`}</span></span></button>)}</div>}</div>
       <Tooltip content="用 AI 问这个工作区"><Button variant={showAsk ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" aria-pressed={showAsk} onClick={() => setShowAsk(v => !v)}><Sparkles /><span className="hidden lg:inline">问知识库</span></Button></Tooltip>
       <Tooltip content="快速打开（Ctrl+K）"><Button variant="ghost" size="icon" aria-label="快速打开" onClick={() => setQuickOpen(true)}><Search /></Button></Tooltip>
       <NotificationBell />
@@ -1179,9 +1316,37 @@ function Workspace() {
 {site?.canPublish && !site.published && site.pending && <DropdownMenuItem onSelect={() => void changeSite({ action: "approve" }, "已通过，文档站已上线")}><Globe2 />通过并上线文档站</DropdownMenuItem>}
 {site?.canPublish && !site.published && site.pending && <DropdownMenuItem onSelect={() => void changeSite({ action: "reject" }, "已驳回发布申请")}><Globe2 />驳回发布申请</DropdownMenuItem>}
 {site?.canPublish && <DropdownMenuItem onSelect={() => void changeSite({ published: !site.published }, site.published ? "已下线文档站" : "文档站已发布")}><Globe2 />{site.published ? "下线文档站" : "发布为文档站"}</DropdownMenuItem>}
-{site?.canRequest && !site.published && <DropdownMenuItem onSelect={() => void changeSite({ published: !site.pending }, site.pending ? "已撤回申请" : "已提交，等管理员审核")}><Globe2 />{site.pending ? "撤回发布申请" : "申请发布为文档站"}</DropdownMenuItem>}{canMoveNotebook && activeNb && <DropdownMenuItem onSelect={() => setMoveNb(activeNb)}><FolderInput />移动到其他工作区…</DropdownMenuItem>}<DropdownMenuItem onSelect={() => setShowImport(true)}><Upload />导入 Markdown 或 zip</DropdownMenuItem><DropdownMenuItem onSelect={() => { if (nbId) void downloadZip(`/api/v1/notebooks/${nbId}/export.zip`); }}><Download />导出这个笔记本</DropdownMenuItem>{canDeleteNotebook && activeNb && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onSelect={() => void deleteNotebook(activeNb)}><Trash2 />删除笔记本</DropdownMenuItem></>}</DropdownMenuContent></DropdownMenu><Tooltip content="新建文件夹"><Button variant="ghost" size="icon" className="size-8" onClick={() => setCreate("folder")}><FolderPlus /></Button></Tooltip><Tooltip content="新建笔记"><Button size="icon" className="size-8" onClick={() => void createNote()}><FilePlus2 /></Button></Tooltip></div><ScrollArea className="flex-1"><div className="p-2.5"><NoteTree folders={folders} notes={tree} noteId={noteId} wsId={wsId} notebookId={nbId} activeFolder={activeFolder} mode={noteSort} canEdit={treeCanEdit} onSelectFolder={setActiveFolder} onReorder={persistNoteOrder} onMoveNote={(id, folderId) => void moveNoteToFolder(id, folderId)} onMoveToNotebook={nbs.some(n => n.id !== nbId) ? (n) => setMovingNoteToNb(n) : undefined} onMoveFolder={(id, parentId) => void moveFolderTo(id, parentId)} onReorderFolders={persistFolderOrder} onPlaceFolder={(id, parentId, ids) => void persistFolderPlace(id, parentId, ids)} onRenameNote={treeCanEdit ? renameNote : undefined} onDeleteNote={treeCanEdit ? deleteNoteFromTree : undefined} onRenameFolder={treeCanEdit ? renameFolder : undefined} onDeleteFolder={treeCanEdit ? deleteFolder : undefined} onCreateNote={(folderId) => { setActiveFolder(folderId); void createNote(folderId); }} onCreateFolder={(parentId) => { setActiveFolder(parentId); setCreate("folder"); }} onShareFolder={f => setShareTarget({ kind: "folder", id: f.id, title: f.title })} /></div></ScrollArea></aside>}
+{site?.canRequest && !site.published && <DropdownMenuItem onSelect={() => void changeSite({ published: !site.pending }, site.pending ? "已撤回申请" : "已提交，等管理员审核")}><Globe2 />{site.pending ? "撤回发布申请" : "申请发布为文档站"}</DropdownMenuItem>}{canMoveNotebook && activeNb && <DropdownMenuItem onSelect={() => setMoveNb(activeNb)}><FolderInput />移动到其他工作区…</DropdownMenuItem>}<DropdownMenuItem onSelect={() => setShowImport(true)}><Upload />导入 Markdown 或 zip</DropdownMenuItem><DropdownMenuItem onSelect={() => { if (nbId) void downloadZip(`/api/v1/notebooks/${nbId}/export.zip`); }}><Download />导出这个笔记本</DropdownMenuItem>{canDeleteNotebook && activeNb && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onSelect={() => void deleteNotebook(activeNb)}><Trash2 />删除笔记本</DropdownMenuItem></>}</DropdownMenuContent></DropdownMenu><Tooltip content="新建文件夹"><Button variant="ghost" size="icon" className="size-8" onClick={() => setCreate("folder")}><FolderPlus /></Button></Tooltip><Tooltip content="新建笔记"><Button size="icon" className="size-8" onClick={() => void createNote()}><FilePlus2 /></Button></Tooltip></div><ScrollArea className="flex-1"><div className="p-2.5"><NoteTree folders={folders} notes={tree} noteId={noteId} wsId={wsId} notebookId={nbId} activeFolder={activeFolder} mode={noteSort} canEdit={treeCanEdit} onSelectFolder={setActiveFolder} onReorder={persistNoteOrder} onMoveNote={(id, folderId) => void moveNoteToFolder(id, folderId)} onMoveToNotebook={nbs.some(n => n.id !== nbId) ? (n) => setMovingNoteToNb(n) : undefined} onMoveFolder={(id, parentId) => void moveFolderTo(id, parentId)} onReorderFolders={persistFolderOrder} onPlaceFolder={(id, parentId, ids) => void persistFolderPlace(id, parentId, ids)} onRenameNote={treeCanEdit ? renameNote : undefined} onDeleteNote={treeCanEdit ? deleteNoteFromTree : undefined} onRenameFolder={treeCanEdit ? renameFolder : undefined} onDeleteFolder={treeCanEdit ? deleteFolder : undefined} onCreateNote={(folderId) => { setActiveFolder(folderId); void createNote(folderId); }} onCreateFolder={(parentId) => { setActiveFolder(parentId); setCreate("folder"); }} onShareFolder={f => setShareTarget({ kind: "folder", id: f.id, title: f.title })} onOpenNote={opened => { if (!nbId) return; setWorkbench(current => openWorkbenchTab(current, { id: opened.id, title: opened.title, notebookId: nbId }, noteId)); }} /></div></ScrollArea></aside>}
 
-      <section ref={sectionRef} data-zen={zen ? "1" : undefined} className="relative flex min-h-0 min-w-0 flex-col bg-background">{note ? <>
+      <section ref={sectionRef} data-zen={zen ? "1" : undefined} className="relative flex min-h-0 min-w-0 flex-col bg-background">
+        <NoteTabBar
+          tabs={workbench.tabs}
+          activeId={noteId}
+          paneIds={workbench.paneIds}
+          onFocus={focusWorkbenchTab}
+          onClose={closeOpenTab}
+          onAddPane={id => setWorkbench(current => addWorkbenchPane(current, id))}
+          onRemovePane={id => setWorkbench(current => removeWorkbenchPane(current, id, noteId))}
+          onReorder={(source, target) => setWorkbench(current => reorderWorkbenchTab(current, source, target))}
+        />
+        {note ? <div ref={paneAreaRef} className="flex min-h-0 flex-1 overflow-hidden">
+          {visiblePaneIds.map((paneId, paneIndex) => {
+            const paneNote = paneId === note.id ? note : noteCache[paneId];
+            const paneTab = workbench.tabs.find(tab => tab.id === paneId);
+            return <div
+              key={paneId}
+              className="relative min-h-0 min-w-0 shrink-0"
+              style={{ width: `${(visiblePaneWidths[paneIndex] ?? 1) * 100}%` }}
+              onDragOver={event => {
+                if (!Array.from(event.dataTransfer.types).includes(NOTE_TAB_MIME)) return;
+                event.preventDefault(); event.dataTransfer.dropEffect = "move";
+              }}
+              onDrop={event => {
+                const id = readDraggedNoteTab(event.dataTransfer); if (!id) return;
+                event.preventDefault(); setWorkbench(current => placeWorkbenchPane(current, id, paneIndex));
+              }}
+            >
+              {paneId === note.id ? <div className="flex h-full min-h-0 flex-col">
         <input id="note-attachment-input" className="hidden" type="file" onChange={async e=>{const f=e.target.files?.[0];if(!f)return;const md=await uploadAttachment(f);const current=noteRef.current;if(md&&current)changeNote({bodyMd:`${current.bodyMd}\n\n${md}`});e.target.value=''}} />
         <input id="note-inline-attachment-input" className="hidden" type="file" onChange={async e=>{const f=e.target.files?.[0];if(!f)return;const md=await uploadAttachment(f);if(md)editorRef.current?.insertText(md);e.target.value=''}} />
         <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-4"><div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"><span className="shrink-0">{activeNb?.title}</span>{folderAncestorIds(folders, tree.find(n => n.id === note.id)?.folderId ?? null).slice().reverse().map(id => { const f = folders.find(x => x.id === id); return f ? <span key={f.id} className="flex min-w-0 items-center gap-1.5"><ChevronRight className="size-3 shrink-0" /><span className="truncate">{f.title}</span></span> : null; })}<ChevronRight className="size-3 shrink-0" /><span className="truncate text-foreground">{note.title || "未命名"}</span>{note.moderation?.held && <Badge className={note.moderation.status === "rejected" ? "border-transparent bg-destructive/10 text-destructive" : "border-transparent bg-[color-mix(in_srgb,var(--warning)_14%,transparent)] text-[var(--warning)]"}>{note.moderation.queued ? "审核中" : note.moderation.status === "rejected" ? "未通过审核" : "待人工审核"}</Badge>}</div><div className="ml-auto flex items-center gap-1">{viewers.length > 0 && <Tooltip content={`${viewers.join("、")} 也打开着这篇`}><Badge className="mr-1 gap-1"><Users className="size-3" />{viewers.length === 1 ? `${viewers[0]} 在看` : `${viewers.length} 人在看`}</Badge></Tooltip>}
@@ -1230,7 +1395,28 @@ ${a.mime.startsWith("image/") ? "!" : ""}[${a.filename}](${a.url})` }, true)}
           />}
         </div>
         <EditorStatusBar status={status} statusErr={statusErr} bodyMd={note.bodyMd} cursor={cursor} readOnly={!note.canEdit} vimMode={vimMode} lastSavedAt={lastSavedAt} saving={saving} onSave={() => saveActionRef.current()} right={<CollabBadge collab={collab} />} />
-      </> : <div className="grid h-full place-items-center p-8"><div className="max-w-sm text-center"><span className="mx-auto grid size-14 place-items-center rounded-2xl bg-muted"><Notebook className="size-6 text-muted-foreground" /></span><h2 className="mt-5 text-lg font-semibold tracking-tight">选择一篇笔记开始</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">从左侧打开现有笔记，或者新建一篇内容。</p><Button className="mt-5" onClick={() => void createNote()}><FilePlus2 />新建笔记</Button></div></div>}</section>
+              </div> : <NotePreviewPane
+                note={paneNote}
+                notebookTitle={nbs.find(item => item.id === (paneNote?.notebookId ?? paneTab?.notebookId))?.title}
+                loading={!paneNote}
+                onFocus={() => { if (paneTab) focusWorkbenchTab(paneTab); }}
+              />}
+              {paneIndex < visiblePaneIds.length - 1 && <div
+                role="separator"
+                aria-label={`调整第 ${paneIndex + 1}、${paneIndex + 2} 个笔记窗格宽度`}
+                aria-orientation="vertical"
+                onPointerDown={event => startPaneResize(paneIndex, event)}
+                className="absolute inset-y-0 -right-1 z-30 w-2 cursor-col-resize border-r border-border hover:bg-primary/20"
+              />}
+            </div>;
+          })}
+        </div> : <div className="grid h-full place-items-center p-8">{noteId
+          ? statusErr
+            ? <div className="max-w-sm text-center"><AlertCircle className="mx-auto mb-3 size-6 text-destructive" /><p className="text-sm font-medium">笔记加载失败</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{status}</p><Button variant="outline" size="sm" className="mt-4" onClick={() => setNoteLoadAttempt(value => value + 1)}><RotateCcw />重试</Button></div>
+            : <div className="text-center text-sm text-muted-foreground"><Circle className="mx-auto mb-3 size-5 animate-pulse fill-current" />正在打开笔记…</div>
+          : <div className="max-w-sm text-center"><span className="mx-auto grid size-14 place-items-center rounded-2xl bg-muted"><Notebook className="size-6 text-muted-foreground" /></span><h2 className="mt-5 text-lg font-semibold tracking-tight">选择一篇笔记开始</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">从左侧打开现有笔记，或者新建一篇内容。</p><Button className="mt-5" onClick={() => void createNote()}><FilePlus2 />新建笔记</Button></div>}
+        </div>}
+      </section>
       </>}
     </main>
     {showAsk && <AskSidebar workspaceId={wsId} notebookId={nbId} notebookTitle={activeNb?.title} overlay={narrow} onClose={() => setShowAsk(false)} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} />}
