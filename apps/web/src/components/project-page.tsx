@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  Archive, ArrowRightLeft, ChevronRight, Clock, MoreHorizontal, Plus,
+  Archive, ArrowRightLeft, ChevronRight, Clock, MoreHorizontal, Plus, Tag,
 } from "lucide-react";
 import { api } from "../api";
 import { cn } from "../lib/utils";
@@ -9,10 +9,11 @@ import { saveLastWorkspace } from "./app-nav";
 import { BoardView } from "./board-view";
 import { GanttView, PulseView, TimeView } from "./gantt-time-pulse";
 import {
-  type Detail, type Member, type Task, type View, type Workspace,
-  boardColumns, COLOR_DOT, doneCol, fmtClock, fmtSec, HEALTH_BAND_LABEL, healthTone, openCol, pickTask, VIEWS,
+  type Detail, type Member, type TagBundle, type Task, type View, type Workspace,
+  applyTagBundle, boardColumns, COLOR_DOT, doneCol, fmtClock, fmtSec, HEALTH_BAND_LABEL, healthTone, openCol, pickTask, VIEWS,
 } from "./project-model";
 import { MoveProjectDialog, ProjectDialog, TaskDialog } from "./project-dialogs";
+import { TagManagerDialog } from "./project-tags";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { useConfirm } from "./ui/confirm";
@@ -34,15 +35,24 @@ export function ProjectPage() {
   const [members, setMembers] = useState<Member[]>([]);
   const [spaces, setSpaces] = useState<Workspace[]>([]);
   const [movingProject, setMovingProject] = useState(false);
+  const [managingTags, setManagingTags] = useState(false);
   const [tick, setTick] = useState(0);
 
   useEffect(() => { api<{ workspaces: Workspace[] }>("/api/v1/workspaces").then(result => setSpaces(result.workspaces)).catch(() => {}); }, []);
   const load = useCallback(async () => {
     try {
       const next = await api<Detail>(`/api/v1/projects/${projectId}`);
-      setData(next);
-      setError("");
-      return next;
+      try {
+        const bundle = await api<TagBundle>(`/api/v1/projects/${projectId}/tags`);
+        const painted = applyTagBundle(next, bundle);
+        setData(painted);
+        setError("");
+        return painted;
+      } catch {
+        setData(next);
+        setError("");
+        return next;
+      }
     } catch (e) { setError((e as Error).message); setData(null); return null; }
   }, [projectId]);
   const reloadEditing = useCallback(async (id: string) => {
@@ -117,6 +127,7 @@ export function ProjectPage() {
           <DropdownMenuContent align="end">
             {VIEWS.map(v => <DropdownMenuItem key={v.id} className="md:hidden" onSelect={() => setView(v.id)}><v.icon />{v.label}</DropdownMenuItem>)}
             {!readonly && <DropdownMenuItem onSelect={() => setEditProject(true)}>编辑项目</DropdownMenuItem>}
+            <DropdownMenuItem onSelect={() => setManagingTags(true)}><Tag />标签</DropdownMenuItem>
             {p.canArchive && !currentSpace?.frozen && moveTargets.length > 0 && <DropdownMenuItem onSelect={() => setMovingProject(true)}><ArrowRightLeft />移动到其他工作区…</DropdownMenuItem>}
             {p.canArchive && p.status !== "archived" && <DropdownMenuItem onSelect={async () => {
               if (!await ask({ title: "归档这个项目？", description: "列表里不再出现，详情仍能打开只读。", confirmText: "归档" })) return;
@@ -135,7 +146,7 @@ export function ProjectPage() {
     </header>
     {p.status === "archived" && <div className="border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground">已归档，只读。创建者或管理员可以从右上角拉回。</div>}
     <div className="min-h-0 flex-1">
-      {view === "board" && <BoardView projectId={projectId} columns={boardColumns(data)} tasks={data.tasks} cancelled={data.cancelled} canEdit={!readonly} onOpen={t => setEditing(pickTask(data, t.id) ?? t)} onChanged={() => load()} onQuickCreate={async title => {
+      {view === "board" && <BoardView projectId={projectId} columns={boardColumns(data)} tasks={data.tasks} cancelled={data.cancelled} tags={data.tags ?? []} canEdit={!readonly} onOpen={t => setEditing(pickTask(data, t.id) ?? t)} onChanged={() => load()} onQuickCreate={async title => {
         try {
           await api(`/api/v1/projects/${projectId}/tasks`, { method: "POST", body: JSON.stringify({ title }) });
           await load();
@@ -169,11 +180,33 @@ export function ProjectPage() {
       columns={boardColumns(data)}
       wsId={p.workspaceId}
       members={members}
+      tags={data.tags ?? []}
+      milestones={data.milestones}
       canEdit={!readonly}
       onOpenChange={v => { if (!v) { setCreating(false); setEditing(null); } }}
+      onToggleTag={async (tagId, on) => {
+        if (!editing) return;
+        if (on) await api(`/api/v1/project-tasks/${editing.id}/tags`, { method: "POST", body: JSON.stringify({ tagId }) });
+        else await api(`/api/v1/project-tasks/${editing.id}/tags/${tagId}`, { method: "DELETE" });
+        await reloadEditing(editing.id);
+      }}
+      onMilestone={async milestoneId => {
+        if (!editing) return;
+        await api(`/api/v1/project-tasks/${editing.id}/milestone`, { method: "POST", body: JSON.stringify({ milestoneId }) });
+        await reloadEditing(editing.id);
+      }}
       onSubmit={async body => {
+        const tagIds = Array.isArray(body.tagIds) ? body.tagIds as string[] : [];
+        const milestoneId = "milestoneId" in body ? (body.milestoneId as string | null) : undefined;
+        delete body.tagIds; delete body.milestoneId;
         if (editing) await api(`/api/v1/project-tasks/${editing.id}`, { method: "PATCH", body: JSON.stringify(body) });
-        else await api(`/api/v1/projects/${projectId}/tasks`, { method: "POST", body: JSON.stringify(body) });
+        else {
+          const created = await api<{ id: string }>(`/api/v1/projects/${projectId}/tasks`, { method: "POST", body: JSON.stringify(body) });
+          for (const tagId of tagIds) {
+            await api(`/api/v1/project-tasks/${created.id}/tags`, { method: "POST", body: JSON.stringify({ tagId }) });
+          }
+          if (milestoneId) await api(`/api/v1/project-tasks/${created.id}/milestone`, { method: "POST", body: JSON.stringify({ milestoneId }) });
+        }
         setCreating(false); setEditing(null);
         await load();
       }}
@@ -207,6 +240,28 @@ export function ProjectPage() {
         await api(`/api/v1/projects/${p.id}`, { method: "PATCH", body: JSON.stringify(body) });
         toast.success("已保存");
         setEditProject(false);
+        await load();
+      }}
+    />
+    <TagManagerDialog
+      open={managingTags}
+      tags={data.tags ?? []}
+      canEdit={!readonly}
+      onOpenChange={setManagingTags}
+      onCreate={async (name, color) => {
+        await api(`/api/v1/projects/${projectId}/tags`, { method: "POST", body: JSON.stringify({ name, color }) });
+        await load();
+      }}
+      onRename={async (id, name) => {
+        await api(`/api/v1/project-tags/${id}`, { method: "PATCH", body: JSON.stringify({ name }) });
+        await load();
+      }}
+      onRecolor={async (id, color) => {
+        await api(`/api/v1/project-tags/${id}`, { method: "PATCH", body: JSON.stringify({ color }) });
+        await load();
+      }}
+      onDelete={async id => {
+        await api(`/api/v1/project-tags/${id}`, { method: "DELETE" });
         await load();
       }}
     />
