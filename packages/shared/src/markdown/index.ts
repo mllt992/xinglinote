@@ -19,7 +19,7 @@ export { slugifyHeading } from "./headings.js";
 export { stripTaskAnchorSuffix, taskAnchorSuffixStart, toggleTaskAt } from "./tasklist.js";
 export type { Align, ParsedTable, TableOp } from "./table.js";
 export { applyTableOp, canDeleteColumn, canDeleteRow, parseTable, serializeTable } from "./table.js";
-export { parseWikiRef } from "./wikilink.js";
+export { parseWikiRef, retitleWikiRaw, applyWikiRawRewrites, previousWikiTargetId } from "./wikilink.js";
 
 /** 库内（登录后）与公开页（文档站 / 分享 / 广场）的双链规则不同，其余完全一致。 */
 export type RenderMode = "library" | "public";
