@@ -9,6 +9,9 @@ import {
   defaultColumn,
   effectiveTaskStatus,
   healthBand,
+  isTagColor,
+  MAX_TAGS_PER_PROJECT,
+  MAX_TAGS_PER_TASK,
   scoreProjectHealth,
   type HealthTask,
 } from "./projects.ts";
@@ -112,4 +115,12 @@ test("默认列与现有任务 status 对齐；自定义列映射健康度语义
   assert.equal(effectiveTaskStatus("ship", custom), "done");
   assert.equal(columnKeyFromTitle("阻塞", ["阻塞"]), "阻塞-2");
   assert.equal(columnKeyFromTitle("cancelled", []), "cancelled-2");
+});
+
+test("标签色与项目色同一套，每个项目 / 任务有上限", () => {
+  assert.equal(isTagColor("ink"), true);
+  assert.equal(isTagColor("accent"), true);
+  assert.equal(isTagColor("hotpink"), false);
+  assert.equal(MAX_TAGS_PER_PROJECT, 40);
+  assert.equal(MAX_TAGS_PER_TASK, 8);
 });
