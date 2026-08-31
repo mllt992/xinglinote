@@ -4,8 +4,9 @@ import { and,eq,inArray,isNull,or } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import {
   aiChunks,attachments,calendarItems,calendarReminders,comments,corrections,folders,links,
-  noteFavorites,notebooks,notes,noteVersions,noteVisits,posts,projectColumns,projectMilestones,projectTasks,projectTimeEntries,projects,
+  noteFavorites,notebooks,notes,noteVersions,noteVisits,posts,projectMilestones,projectTasks,projectTimeEntries,projects,
 } from "../db/schema.ts";
+import { projectColumns } from "../db/project-columns.ts";
 import { env } from "../env.ts";
 import { releaseStoredFile } from "./blobs.ts";
 export async function descendantFolderIds(rootId:string){const all=await db.select({id:folders.id,parentId:folders.parentId}).from(folders);const ids=[rootId];for(let i=0;i<ids.length;i++)for(const f of all)if(f.parentId===ids[i]&&!ids.includes(f.id))ids.push(f.id);return ids;}
