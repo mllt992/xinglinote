@@ -5,7 +5,7 @@ import {
   calendarOverrides, calendarReminders, calendarSubscriptions, calendarTemplates,
   comments, contentReports, corrections, folders, instanceSettings, links, mcpAttachmentUploads, mcpTokens,
   moderationReviews, navGroups, navLinks, notebookMembers, notebooks, noteCollab,
-  notes, noteFavorites, noteVersions, noteVisits, postAssets, postFavorites, postReactions, posts, projectMilestones, projectTasks, projectTimeEntries, projects,
+  notes, noteFavorites, noteVersions, noteVisits, postAssets, postFavorites, postReactions, posts, projectColumns, projectMilestones, projectTasks, projectTimeEntries, projects,
   registrationCodes, registrationCodeUsages, savedShares, serviceRequests, sessions,
   shareLinks, themes, users, workspaceInvites, workspaceMembers, workspaces,
 } from "../db/schema.ts";
@@ -205,6 +205,7 @@ export async function restoreWorkspacePackage(input: {
   const templateMap = idMap(snapshot.calendarTemplates);
   const feedMap = idMap(snapshot.calendarFeedTokens);
   const projectMap = idMap(snapshot.projects);
+  const columnMap = idMap(snapshot.projectColumns ?? []);
   const taskMap = idMap(snapshot.projectTasks);
   const timeMap = idMap(snapshot.projectTimeEntries);
   const milestoneMap = idMap(snapshot.projectMilestones);
@@ -323,6 +324,9 @@ export async function restoreWorkspacePackage(input: {
       await insertRows(tx, projects, snapshot.projects.map(raw => ({
         ...revive(raw), id: projectMap.get(String(raw.id)), workspaceId: targetWorkspaceId,
         createdBy: mapUser(raw.createdBy), updatedBy: mapUser(raw.updatedBy),
+      })));
+      await insertRows(tx, projectColumns, (snapshot.projectColumns ?? []).map(raw => ({
+        ...revive(raw), id: columnMap.get(String(raw.id)), projectId: mapped(projectMap, raw.projectId),
       })));
       const parentTasks = snapshot.projectTasks.filter(raw => !raw.parentId);
       const childTasks = snapshot.projectTasks.filter(raw => !!raw.parentId);
