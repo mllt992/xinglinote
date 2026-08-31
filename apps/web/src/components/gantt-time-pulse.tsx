@@ -5,6 +5,7 @@ import {
   type BoardCol, type Detail, type Milestone, type Project, type Pulse, type Task,
   flattenTasks, fmtClock, fmtMin, fmtSec, HEALTH_BAND_LABEL, healthTone, isoDate, toIso,
 } from "./project-model";
+import { tasksOfMilestone } from "./project-tags";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { ScrollArea } from "./ui/scroll-area";
@@ -59,8 +60,9 @@ export function GanttView({ tasks, milestones, canEdit, onOpen, onFillDate, onRe
         </div>
         {dated.map(t => {
           const { from, to } = span(t);
+          const mile = milestones.find(m => m.id === t.milestoneId);
           return <div key={t.id} className="relative mb-1 flex h-8 items-center">
-            <button className="w-40 shrink-0 truncate pr-2 text-left text-xs hover:underline" onClick={() => onOpen(t)}>{t.title}</button>
+            <button className="w-40 shrink-0 truncate pr-2 text-left text-xs hover:underline" onClick={() => onOpen(t)}>{t.title}{mile ? <span className="ml-1 text-[10px] text-muted-foreground">◇{mile.title}</span> : null}</button>
             <div className="relative h-8" style={{ width: days.length * COL }}>
               <div className="absolute inset-y-0 border-l border-primary/40" style={{ left: days.findIndex(d => dayKey(d) === today) * COL }} />
               <GanttBar left={from * COL} width={(to - from) * COL} canEdit={canEdit} onShift={delta => {
@@ -94,6 +96,17 @@ export function GanttView({ tasks, milestones, canEdit, onOpen, onFillDate, onRe
       <p className="text-xs font-medium text-muted-foreground">补上日期</p>
       {undated.length ? undated.map(t => <button key={t.id} onClick={() => onFillDate(t)} className="mt-2 block w-full truncate rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted">{t.title}</button>)
         : <p className="mt-2 text-xs text-muted-foreground">有日期的条都在图上。</p>}
+      {!!milestones.length && <div className="mt-6">
+        <p className="text-xs font-medium text-muted-foreground">里程碑对应任务</p>
+        {milestones.map(m => {
+          const linked = tasksOfMilestone(flattenTasks(tasks), m.id);
+          return <div key={m.id} className="mt-2">
+            <p className="text-[11px] font-medium">◇ {m.title} · {isoDate(m.dueAt)}</p>
+            {linked.length ? linked.map(t => <button key={t.id} type="button" onClick={() => onOpen(t)} className="mt-0.5 block w-full truncate rounded-md px-1 py-0.5 text-left text-xs text-muted-foreground hover:bg-muted">{t.title}{t.dueAt ? ` · ${isoDate(t.dueAt)}` : ""}</button>)
+              : <p className="mt-0.5 text-[11px] text-muted-foreground">还没挂任务</p>}
+          </div>;
+        })}
+      </div>}
       {canEdit && onAddMilestone && <form className="mt-6 grid gap-2" onSubmit={e => {
         e.preventDefault();
         const title = milestoneTitle.trim();

@@ -36,6 +36,13 @@ export const MAX_ACTIVE_PROJECTS = 200;
 export const MAX_TASKS_PER_PROJECT = 2000;
 export const MAX_SUBTASKS = 20;
 export const MAX_COLUMNS = 24;
+export const MAX_TAGS_PER_PROJECT = 40;
+export const MAX_TAGS_PER_TASK = 8;
+export const TAG_COLORS = PROJECT_COLORS;
+export type TagColor = ProjectColor;
+export function isTagColor(value: unknown): value is TagColor {
+  return typeof value === "string" && (TAG_COLORS as readonly string[]).includes(value);
+}
 export const STALE_DOING_MS = 7 * 86400_000;
 export const NEAR_DUE_MS = 3 * 86400_000;
 export const OVERRUN_RATIO = 1.3;

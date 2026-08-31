@@ -45,6 +45,9 @@ const workspacePackage = base.extend({
   projectTasks: rows.default([]),
   projectTimeEntries: rows.default([]),
   projectMilestones: rows.default([]),
+  projectTags: rows.default([]),
+  projectTaskTags: rows.default([]),
+  projectTaskMilestones: rows.default([]),
   attachmentFiles: z.array(z.object({
     attachmentId: uuid,
     bytes: z.number().int().nonnegative(),
@@ -247,7 +250,18 @@ export function validateWorkspaceGraph(snapshot: WorkspaceBackupPackage) {
     assertRef(item.projectId, projectIds, "projectTimeEntries.projectId");
     assertRef(item.taskId, taskIds, "projectTimeEntries.taskId");
   }
+  const milestoneIds = idsOf(snapshot.projectMilestones, "projectMilestones");
   for (const item of snapshot.projectMilestones) assertRef(item.projectId, projectIds, "projectMilestones.projectId");
+  const tagIds = idsOf(snapshot.projectTags ?? [], "projectTags");
+  for (const item of snapshot.projectTags ?? []) assertRef(item.projectId, projectIds, "projectTags.projectId");
+  for (const item of snapshot.projectTaskTags ?? []) {
+    assertRef(item.taskId, taskIds, "projectTaskTags.taskId");
+    assertRef(item.tagId, tagIds, "projectTaskTags.tagId");
+  }
+  for (const item of snapshot.projectTaskMilestones ?? []) {
+    assertRef(item.taskId, taskIds, "projectTaskMilestones.taskId");
+    assertRef(item.milestoneId, milestoneIds, "projectTaskMilestones.milestoneId");
+  }
 
   const files = new Map(snapshot.attachmentFiles.map(file => [file.attachmentId, file]));
   for (const a of snapshot.attachments) {

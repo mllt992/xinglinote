@@ -8,6 +8,7 @@ import {
   posts, postAssets, postReactions, registrationCodes, registrationCodeUsages,
   savedShares, serviceRequests, shareLinks, themes, users, workspaceMembers, workspaces,
 } from "../db/schema.ts";
+import { projectTags, projectTaskMilestones, projectTaskTags } from "../db/project-tags.ts";
 import { applyRetention, upload, type BackupCred, type BackupTargetRef } from "./backup-transfer.ts";
 import { checksum, encryptPackage, fingerprint, WORKSPACE_BACKUP_VERSION } from "./backup-package.ts";
 import { readStoredFile } from "./blobs.ts";
@@ -94,6 +95,15 @@ export async function workspaceSnapshot(id: string) {
     projectTasks: await byIds(projectIds, ids => db.select().from(projectTasks).where(inArray(projectTasks.projectId, ids))),
     projectTimeEntries: await byIds(projectIds, ids => db.select().from(projectTimeEntries).where(inArray(projectTimeEntries.projectId, ids))),
     projectMilestones: await byIds(projectIds, ids => db.select().from(projectMilestones).where(inArray(projectMilestones.projectId, ids))),
+    projectTags: await byIds(projectIds, ids => db.select().from(projectTags).where(inArray(projectTags.projectId, ids))),
+    projectTaskTags: await byIds(
+      (await byIds(projectIds, ids => db.select({ id: projectTasks.id }).from(projectTasks).where(inArray(projectTasks.projectId, ids)))).map(t => t.id),
+      ids => db.select().from(projectTaskTags).where(inArray(projectTaskTags.taskId, ids)),
+    ),
+    projectTaskMilestones: await byIds(
+      (await byIds(projectIds, ids => db.select({ id: projectTasks.id }).from(projectTasks).where(inArray(projectTasks.projectId, ids)))).map(t => t.id),
+      ids => db.select().from(projectTaskMilestones).where(inArray(projectTaskMilestones.taskId, ids)),
+    ),
   };
 }
 
