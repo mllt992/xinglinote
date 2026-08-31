@@ -46,7 +46,7 @@ export async function recordNoteVersion(tx: VersionDb, opts: {
   editorId: string;
   source: string;
   matchEditor?: boolean;
-  /** 强制覆盖别人那一版时不要合并，否刘刚推进历史的对方快照会被改成覆盖后的正文。 */
+  /** 强制覆盖别人那一版时不要合并，否则刚推进历史的对方快照会被改成覆盖后的正文。 */
   merge?: boolean;
 }) {
   const recent = opts.merge === false ? [] : await tx.select({
