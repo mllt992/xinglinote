@@ -32,6 +32,7 @@ import { workbenchRoutes } from "./routes/workbench.ts";
 import { backupRoutes } from "./routes/backups.ts";
 import { calendarFeedRoutes, calendarRoutes } from "./routes/calendar.ts";
 import { projectRoutes } from "./routes/projects.ts";
+import { projectTagRoutes } from "./routes/project-tags.ts";
 import { pushRoutes } from "./routes/push.ts";
 import { navRoutes } from "./routes/nav.ts";
 import { attachCollab } from "./routes/collab.ts";
@@ -126,6 +127,7 @@ app.route("/api/v1", workspaceLifecycleRoutes);
 app.route("/api/v1", backupRoutes);
 app.route("/api/v1", calendarRoutes);
 app.route("/api/v1", projectRoutes);
+app.route("/api/v1", projectTagRoutes);
 app.route("/api/v1", pushRoutes);
 app.route("/api/v1", navRoutes);
 
