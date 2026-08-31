@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { commentAnchorAt, resolveCommentAnchor } from "./note-comments.js";
+import { commentAnchorAt, pickQuoteSelection, resolveCommentAnchor } from "./note-comments.js";
 
 test("保存选区与前后文，并能在原位置精确定位", () => {
   const source = "开头\n需要评论的句子\n结尾";
@@ -32,4 +32,20 @@ test("重复原文用上下文消歧，无法消歧时不误跳", () => {
 test("原文被改掉后锚点明确失效", () => {
   const anchor = commentAnchorAt("旧原文", 1, { from: 0, to: 3, text: "旧原文" })!;
   assert.equal(resolveCommentAnchor("新原文", anchor), null);
+});
+
+test("引用按钮：当前选区为空时用记住的那次非空选区", () => {
+  const source = "开头\n需要评论的句子\n结尾";
+  const text = "需要评论的句子";
+  const from = source.indexOf(text);
+  const remembered = { from, to: from + text.length, text };
+  assert.deepEqual(pickQuoteSelection(null, remembered, source), remembered);
+  assert.equal(pickQuoteSelection(null, null, source), null);
+});
+
+test("记住的选区对不上当前正文时丢弃，避免引用到已经改掉的一段", () => {
+  const remembered = { from: 0, to: 3, text: "旧原文" };
+  assert.equal(pickQuoteSelection(null, remembered, "新原文"), null);
+  const live = { from: 0, to: 3, text: "新原文" };
+  assert.deepEqual(pickQuoteSelection(live, remembered, "新原文"), live);
 });

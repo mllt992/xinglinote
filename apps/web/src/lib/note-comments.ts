@@ -15,6 +15,20 @@ export function commentAnchorAt(source: string, version: number, selection: Text
   };
 }
 
+/**
+ * 引用按钮点击时焦点已经离开编辑器。live 为空就用记住的那次非空选区，
+ * 但仍必须和当前正文对得上，避免引用到已经改掉的一段。
+ */
+export function pickQuoteSelection(live: TextSelection | null, remembered: TextSelection | null, source: string): TextSelection | null {
+  for (const sel of [live, remembered]) {
+    if (!sel) continue;
+    if (sel.from < 0 || sel.to <= sel.from || sel.to > source.length) continue;
+    if (source.slice(sel.from, sel.to) !== sel.text) continue;
+    return sel;
+  }
+  return null;
+}
+
 function commonPrefix(a: string, b: string) {
   let n = 0;
   while (n < a.length && n < b.length && a[n] === b[n]) n++;

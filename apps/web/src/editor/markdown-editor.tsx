@@ -259,6 +259,8 @@ export function MarkdownEditor({
   const vimOn = useRef(vim);
   /** 协同接管期间，正文的事实源是 Y.Text，外面那个受控 value 不能再往回盖。 */
   const collabSession = useRef<CollabSession | null>(null);
+  /** 侧栏「引用选区」会抢走焦点；CM 选区可能被清成光标。记住最近一次非空选区。 */
+  const lastQuoteSel = useRef<{ text: string; from: number; to: number } | null>(null);
   const peers = useRef<CollabPeer[]>([]);
   const status = useRef<CollabStatus>("offline");
   // 不再根据滚动回调猜模式：调用方明确决定是即时渲染还是纯源码。
@@ -299,9 +301,17 @@ export function MarkdownEditor({
     },
     getSelection: () => {
       const instance = view.current;
-      if (!instance) return null;
+      if (!instance) return lastQuoteSel.current;
       const { from, to } = instance.state.selection.main;
-      return from === to ? null : { text: instance.state.sliceDoc(from, to), from, to };
+      if (from !== to) {
+        const live = { text: instance.state.sliceDoc(from, to), from, to };
+        lastQuoteSel.current = live;
+        return live;
+      }
+      const remembered = lastQuoteSel.current;
+      if (!remembered || remembered.to > instance.state.doc.length) return null;
+      if (instance.state.sliceDoc(remembered.from, remembered.to) !== remembered.text) return null;
+      return remembered;
     },
     getCursorPos: () => view.current?.state.selection.main.head ?? null,
     replaceRange: (from, to, text) => {
@@ -327,6 +337,7 @@ export function MarkdownEditor({
 
   useEffect(() => {
     if (!host.current) return;
+    lastQuoteSel.current = null;
     // 上次离开这篇时停在哪儿。偏移量按当前正文夹一下——中间可能被 MCP / AI 改短了。
     const spot = spots.get(resetKey ?? "");
     const clamp = (n: number) => Math.min(Math.max(n, 0), value.length);
@@ -400,9 +411,10 @@ export function MarkdownEditor({
               latest.current.onChange(next);
             }
             if (update.docChanged || update.selectionSet) {
+              const { head, from, to } = update.state.selection.main;
+              if (from !== to) lastQuoteSel.current = { text: update.state.sliceDoc(from, to), from, to };
               const report = latest.current.onCursor;
               if (report) {
-                const { head, from, to } = update.state.selection.main;
                 const line = update.state.doc.lineAt(head);
                 report({ line: line.number, col: head - line.from + 1, selected: to - from });
               }
