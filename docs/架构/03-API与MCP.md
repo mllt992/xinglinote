@@ -248,7 +248,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | DELETE | `/api/v1/push/devices/:id` | 移除一台 |
 | POST | `/api/v1/push/test` | 给自己发一条测试推送，6 次 / 分钟 |
 | POST | `/api/v1/admin/push/vapid` | 生成 / 轮换 VAPID；轮换会把所有旧订阅一并置 `gone` |
-| WS | `/api/v1/notes/:id/collab` | 协同房间（y-websocket 协议：`0`=sync、`1`=awareness）。**升级前**跑 `noteAccess(id, user, 'edit')`：能编辑给 `mode=write`，只能读给 `mode=read`（收得到光标、发不出更新，服务端丢弃其 update 帧），读都不能读**一律回 404**——403 会告诉对方这篇存在 |
+| WS | `/api/v1/notes/:id/collab` | 协同房间（y-websocket 协议：`0`=sync、`1`=awareness）。**升级前**跑 `noteAccess(id, user, 'edit')`：能编辑给 `mode=write`，只能读给 `mode=read`（收得到光标、发不出更新，服务端丢弃其 update 帧），读都不能读**一律回 404**—403 会告诉对方这篇存在 |
 
 ### 2.8 项目
 
@@ -260,14 +260,18 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 | GET | `/api/v1/projects` | 当前用户所有工作区的可见项目；`?archived=1` 看归档。带工作区摘要与汇总后的本周节奏 |
 | POST | `/api/v1/workspaces/:id/projects` | 建项目；未归档上限 200 |
 | GET | `/api/v1/workspaces/:id/projects/running` | 当前用户正在跑的一只计时 |
-| GET | `/api/v1/projects/:id` | 详情：任务树、里程碑、脉搏、正在跑的表 |
+| GET | `/api/v1/projects/:id` | 详情：任务树、看板列、里程碑、脉搏、正在跑的表。无列则补种默认五列 |
 | PATCH | `/api/v1/projects/:id` | 改标题/状态/色/期/可见性。改可见性或归档走 archive ACL |
 | POST | `/api/v1/projects/:id/archive` | 归档；列表默认不再出现，详情只读 |
 | POST | `/api/v1/projects/:id/unarchive` | 拉回，落成 `done` |
 | POST | `/api/v1/projects/:id/move` | `{ workspaceId }`；原地跨工作区移动，双端权限与冻结检查；同步任务工作区并清空目标区无效指派 |
+| POST | `/api/v1/projects/:id/columns` | `{ title }` 加列；生成唯一 `key` |
+| PATCH | `/api/v1/project-columns/:id` | 改名 / `isDefault` / `isDone` / `isWip` |
+| POST | `/api/v1/projects/:id/columns/reorder` | `{ ids }` 全量换序 |
+| DELETE | `/api/v1/project-columns/:id` | 卡片改写到默认列后删列；不能删最后一列 |
 | POST | `/api/v1/projects/:id/tasks` | 建任务；可选挂笔记、一层子任务 |
 | PATCH | `/api/v1/project-tasks/:id` | 改字段；不回写笔记正文 |
-| POST | `/api/v1/project-tasks/:id/move` | `{ status, beforeId? }` 看板拖拽 |
+| POST | `/api/v1/project-tasks/:id/move` | `{ status }` 为列 key（或旧五列），`beforeId?` 看板拖拽 |
 | POST | `/api/v1/project-tasks/:id/reschedule` | `{ startAt, dueAt }` 甘特改期 |
 | DELETE | `/api/v1/project-tasks/:id` | 连子任务和工时一起删 |
 | POST | `/api/v1/projects/:id/time/start` | 开表；同一人已有一只会先停 |
@@ -333,7 +337,7 @@ Actor 从 session 或 MCP Bearer 注入，handler 禁止自己解析 Cookie 后�
 冲突：`409 CONFLICT_VERSION`，`error.fields` 带 `version` / `expected_version` / `current_version` / `updatedBy`（显示名）/ `title` / `bodyMd`。前端停自动保存、出横幅，禁止拿旧 version 连打。成功保存时，同一篇同一 source 5 分钟内的历史行合并（设计 03 §2.4）。
 
 **保存的响应也是一份完整的 `NoteDTO`，`canEdit` 一个都不能少。** 前端拿它整个换掉手上的笔记对象，
-缺字段等于告诉界面「这篇变只读了」——编辑器锁上、协同房间被拆、自动保存自己停掉，
+缺字段等于告诹界面「这篇变只读了」——编辑器锁上、协同房间被拆、自动保存自己停掉，
 用户只看见「人还在编辑页却存不进去」，非刷新不可。以后新增写接口同理。
 
 ---
