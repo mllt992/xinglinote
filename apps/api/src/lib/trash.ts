@@ -4,7 +4,7 @@ import { and,eq,inArray,isNull,or } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import {
   aiChunks,attachments,calendarItems,calendarReminders,comments,corrections,folders,links,
-  noteFavorites,notebooks,notes,noteVersions,noteVisits,posts,projectMilestones,projectTasks,projectTimeEntries,projects,
+  noteFavorites,notebooks,notes,noteVersions,noteVisits,posts,projectColumns,projectMilestones,projectTasks,projectTimeEntries,projects,
 } from "../db/schema.ts";
 import { env } from "../env.ts";
 import { releaseStoredFile } from "./blobs.ts";
@@ -63,6 +63,7 @@ export async function purgeWorkspaceProjects(workspaceId:string, tx: Pick<typeof
   const ids=rows.map(r=>r.id);
   await tx.delete(projectTimeEntries).where(inArray(projectTimeEntries.projectId,ids));
   await tx.delete(projectMilestones).where(inArray(projectMilestones.projectId,ids));
+  await tx.delete(projectColumns).where(inArray(projectColumns.projectId,ids));
   await tx.delete(projectTasks).where(eq(projectTasks.workspaceId,workspaceId));
   await tx.delete(projects).where(eq(projects.workspaceId,workspaceId));
 }
