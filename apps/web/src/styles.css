@@ -369,6 +369,17 @@ html[data-mode="dark"] {
 
 /* 表格的可视化编辑（设计 17 §3.5）。把手平时不占位，hover 才出现，只读态整套不挂。 */
 .cm-md-table.cm-table-editable { position: relative; }
+.cm-md-table.cm-table-editable :is(th, td)[data-table-cell] { cursor: text; }
+.cm-md-table.cm-table-editable :is(th, td)[data-table-cell]:focus-visible {
+  outline: 2px solid var(--primary); outline-offset: -2px;
+}
+.cm-md-table .cm-table-cell-editing { padding: 0; }
+.cm-table-cell-input {
+  display: block; box-sizing: border-box; width: 100%; min-width: 7rem; resize: none; overflow: hidden;
+  border: 2px solid var(--primary); border-radius: 3px; background: var(--background);
+  padding: calc(.5em - 1px) calc(.7em - 1px); color: var(--foreground);
+  font: inherit; line-height: inherit; outline: none;
+}
 .cm-table-tools {
   position: absolute; z-index: 5; display: flex; gap: 2px;
   padding: 2px; border-radius: 6px;

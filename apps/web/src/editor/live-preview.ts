@@ -141,7 +141,7 @@ class MathWidget extends WidgetType {
 }
 
 /**
- * 表格：光标不在里面时渲成真表格，进去了就回源码——改的还是 Markdown，一个字节不动。
+ * 表格：光标不在里面时渲成真表格；单击某格直接在格内改它的 Markdown 内容。
  * 可编辑时再挂上增删行列 / 对齐 / 拖列宽的把手（设计 17 §3.5）。
  */
 class TableWidget extends WidgetType {
@@ -156,8 +156,10 @@ class TableWidget extends WidgetType {
     mountTableEditor(box, { view, source: this.source, canEdit: this.canEdit, noteId: this.noteId });
     return box;
   }
-  /** 把手上的事件归自己，其余（点一下把光标放进表格）照旧交给 CodeMirror。 */
-  ignoreEvent(event: Event) { return !!(event.target as HTMLElement | null)?.closest?.("[data-table-handle]"); }
+  /** 单元格和把手自己处理事件，不能让 CodeMirror 把单击映射回整段源码。 */
+  ignoreEvent(event: Event) {
+    return !!(event.target as HTMLElement | null)?.closest?.("[data-table-cell], [data-table-handle]");
+  }
 }
 
 /** ```mermaid：光标不在块里就画成图，进去了就回源码。和表格同一个口径。 */

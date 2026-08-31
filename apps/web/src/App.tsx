@@ -95,7 +95,8 @@ async function downloadZip(path: string) {
   // 一次都没生效过，下载下来全叫 export.zip。
   const name = decodeURIComponent(res.headers.get("Content-Disposition")?.match(/filename\*=UTF-8''(.+)$/)?.[1] ?? "export.zip");
   const url = URL.createObjectURL(await res.blob());
-  const a = document.createElement("a"); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url);
+  const a = document.createElement("a"); a.href = url; a.download = name; document.body.append(a); a.click(); a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 function useMe() {
   const [me, setMe] = useState<Me | null | undefined>();
@@ -891,7 +892,7 @@ function Workspace() {
     if (!current) return;
     const done = kind === "markdown"
       ? await copyPlainText(current.bodyMd)
-      : await copyRichText(toSafeHtml(current.bodyMd), plainTextOf(current.bodyMd));
+      : await copyRichText(toSafeHtml(current.bodyMd));
     if (done) toast.success(kind === "markdown" ? "已复制 Markdown 正文" : "已复制富文本");
     else toast.error("复制失败", "浏览器没有授予剪贴板权限，请选中正文后手动复制。");
   }

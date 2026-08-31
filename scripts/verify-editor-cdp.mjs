@@ -223,6 +223,15 @@ result.wysiwygProportionalFont = await ex(`(()=>{const el=document.querySelector
 result.wysiwygCodeStaysMono = await ex(`(()=>{const el=document.querySelector('.cm-md-code-line');return !!el && /mono/i.test(getComputedStyle(el).fontFamily)})()`);
 // 元素粒度：光标在标题行，同一行里的行内标记该露出；换到别处该重新藏起来
 result.wysiwygRevealsByElement = await ex(`!document.querySelector('.cm-content').innerText.includes('**')`);
+// 点某一格只在格内露出输入框，整张表仍保持渲染；保存后只改这格的 Markdown 内容
+await click(`document.querySelector('.cm-content .cm-md-table tbody td')`);
+result.wysiwygEditsOneCell = await ex(`!!document.querySelector('.cm-md-table table .cm-table-cell-input') && !!document.querySelector('.cm-md-table table')`);
+await type('改');
+await press('Enter', 'Enter', 13);
+await settle();
+const cellEdited = (await call(`/api/v1/notes/${noteId}`)).bodyMd;
+result.wysiwygCellEditWritesMarkdown = /\|\s*1改\s*\|\s*2\s*\|/.test(cellEdited);
+result.wysiwygTableStaysRendered = await until(`!!document.querySelector('.cm-content .cm-md-table table')`);
 // 切回源码模式后表格该回到源码
 await ex(`(()=>{const el=document.querySelector('button[aria-label="切换即时渲染"]');el&&el.click()})()`);
 await wait(700);

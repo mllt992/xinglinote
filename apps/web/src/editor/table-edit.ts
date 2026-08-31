@@ -99,15 +99,16 @@ export function mountTableEditor(box: HTMLElement, opts: TableEditorOptions) {
    * 找到这张表此刻在文档里的位置再替换。不能把构造时的 from 记死：
    * 上面的内容一变，那个偏移就指到别处去了。
    */
-  function apply(op: TableOp) {
+  function apply(op: TableOp, focusEditor = true) {
     const view = opts.view;
     const from = view.posAtDOM(box);
     const to = from + opts.source.length;
-    if (view.state.sliceDoc(from, to) !== opts.source) return;   // 文档已经变了，这次点击作废
+    if (view.state.sliceDoc(from, to) !== opts.source) return false; // 文档已经变了，这次点击作废
     const next = applyTableOp(opts.source, op);
-    if (next === null) return;
+    if (next === null) return false;
     view.dispatch({ changes: { from, to, insert: next }, userEvent: "input.table" });
-    view.focus();
+    if (focusEditor) view.focus();
+    return true;
   }
 
   const tools = document.createElement("div");
@@ -117,6 +118,126 @@ export function mountTableEditor(box: HTMLElement, opts: TableEditorOptions) {
   box.append(tools);
 
   let armed: { kind: "col"; index: number } | { kind: "row"; index: number } | null = null;
+  let activeCell: { cell: HTMLTableCellElement; finish: (save: boolean, refocus?: boolean) => boolean } | null = null;
+
+  /** 表格写回会重建整个 widget；按原文位置找到新 widget，再打开指定单元格。 */
+  function reopenCell(from: number, row: number, col: number) {
+    queueMicrotask(() => {
+      for (const candidate of Array.from(opts.view.dom.querySelectorAll<HTMLElement>(".cm-md-table"))) {
+        let candidateFrom = -1;
+        try { candidateFrom = opts.view.posAtDOM(candidate); } catch { continue; }
+        if (candidateFrom !== from) continue;
+        const tr = candidate.querySelectorAll("tr")[row];
+        const cell = tr?.querySelectorAll<HTMLTableCellElement>(":scope > th, :scope > td")[col];
+        cell?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+        return;
+      }
+    });
+  }
+
+  /**
+   * 单格编辑用真实 textarea 承接输入，不把 CodeMirror 的选区挪进块级替换范围。
+   * 保存仍然走 setCell -> applyTableOp，所以写回的唯一事实源还是 Markdown。
+   */
+  function editCell(cell: HTMLTableCellElement, row: number, col: number) {
+    if (cell.querySelector(".cm-table-cell-input")) return;
+    if (activeCell && activeCell.cell !== cell) {
+      const from = opts.view.posAtDOM(box);
+      // 有修改时 widget 会重建，必须在新 widget 里继续；没修改则当前 DOM 还能直接用。
+      if (activeCell.finish(true, false)) { reopenCell(from, row, col); return; }
+    }
+    tools.hidden = true;
+    armed = null;
+
+    const original = parsed!.rows[row]?.[col] ?? "";
+    const oldChildren = Array.from(cell.childNodes);
+    const oldHeight = cell.getBoundingClientRect().height;
+    const input = document.createElement("textarea");
+    input.className = "cm-table-cell-input";
+    input.rows = 1;
+    input.value = original;
+    input.setAttribute("aria-label", `${row === 0 ? "表头" : `第 ${row} 行`}第 ${col + 1} 列`);
+    input.title = "Enter 保存，Esc 取消";
+    input.style.minHeight = `${Math.max(32, Math.round(oldHeight - 2))}px`;
+
+    let finished = false;
+    const restore = (refocus: boolean) => {
+      cell.classList.remove("cm-table-cell-editing");
+      cell.replaceChildren(...oldChildren);
+      if (refocus) cell.focus();
+    };
+    const finish = (save: boolean, refocus = true) => {
+      if (finished) return false;
+      finished = true;
+      input.removeEventListener("blur", onBlur);
+      if (activeCell?.cell === cell) activeCell = null;
+      if (!save || input.value === original) { restore(refocus); return false; }
+      // 写回失败通常意味着协作端刚改过这张表；保留当前表格，不误写到别的位置。
+      const changed = apply({ kind: "setCell", row, col, text: input.value }, refocus);
+      if (!changed) restore(refocus);
+      return changed;
+    };
+    const onBlur = () => finish(true, false);
+    const fit = () => {
+      input.style.height = "0";
+      input.style.height = `${Math.max(oldHeight - 2, input.scrollHeight)}px`;
+    };
+
+    input.addEventListener("mousedown", event => event.stopPropagation());
+    input.addEventListener("click", event => event.stopPropagation());
+    input.addEventListener("keydown", event => {
+      event.stopPropagation();
+      if (event.key === "Escape") { event.preventDefault(); finish(false); return; }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finish(true);
+        return;
+      }
+      if (event.key === "Tab") {
+        event.preventDefault();
+        const width = parsed!.rows[0]?.length ?? 1;
+        const count = parsed!.rows.length * width;
+        const current = row * width + col;
+        const next = (current + (event.shiftKey ? count - 1 : 1)) % count;
+        const nextRow = Math.floor(next / width), nextCol = next % width;
+        const target = table!.querySelectorAll("tr")[nextRow]
+          ?.querySelectorAll<HTMLTableCellElement>(":scope > th, :scope > td")[nextCol];
+        const from = opts.view.posAtDOM(box);
+        if (finish(true, false)) reopenCell(from, nextRow, nextCol);
+        else target && editCell(target, nextRow, nextCol);
+      }
+    });
+    input.addEventListener("input", fit);
+    input.addEventListener("blur", onBlur);
+
+    cell.classList.add("cm-table-cell-editing");
+    cell.replaceChildren(input);
+    fit();
+    activeCell = { cell, finish };
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+
+  for (const [row, tr] of Array.from(table.querySelectorAll("tr")).entries()) {
+    for (const [col, cell] of Array.from(tr.querySelectorAll(":scope > th, :scope > td")).entries()) {
+      const td = cell as HTMLTableCellElement;
+      td.dataset.tableCell = "1";
+      td.tabIndex = 0;
+      td.title = "点击编辑单元格";
+      td.addEventListener("mousedown", event => {
+        if ((event.target as HTMLElement).closest(".cm-table-cell-input, [data-table-handle]")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        editCell(td, row, col);
+      });
+      td.addEventListener("keydown", event => {
+        if (event.key !== "Enter" && event.key !== "F2") return;
+        event.preventDefault();
+        event.stopPropagation();
+        editCell(td, row, col);
+      });
+    }
+  }
 
   function showColumnTools(th: HTMLTableCellElement, index: number) {
     armed = { kind: "col", index };
@@ -149,6 +270,7 @@ export function mountTableEditor(box: HTMLElement, opts: TableEditorOptions) {
   box.addEventListener("mousemove", e => {
     const target = e.target as HTMLElement;
     if (target.closest("[data-table-handle]")) return;           // 别在自己的把手上又换一套把手
+    if (target.closest(".cm-table-cell-input")) { tools.hidden = true; armed = null; return; }
     const cell = target.closest("th, td") as HTMLTableCellElement | null;
     if (!cell) { tools.hidden = true; armed = null; return; }
     const row = cell.parentElement as HTMLTableRowElement;
