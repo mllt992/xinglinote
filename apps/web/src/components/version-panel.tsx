@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, History, RotateCcw } from "lucide-react";
+import { ArrowLeft, History, MoreHorizontal, Pencil, RotateCcw, Trash2 } from "lucide-react";
 import { collapseDiff, diffLines, diffStats, type DiffChunk } from "@kb/shared";
 import { api } from "../api";
 import { MarkdownView } from "../MarkdownView";
@@ -7,12 +7,14 @@ import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
 import { Tooltip } from "./ui/tooltip";
-import { useConfirm } from "./ui/confirm";
+import { useConfirm, usePrompt } from "./ui/confirm";
 import { useToast } from "./ui/toast";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 
 export type NoteVersion = {
   id: string;
   version: number;
+  name: string | null;
   title: string;
   bodyMd: string;
   source: string;
@@ -32,6 +34,10 @@ const SOURCE_LABELS: Record<string, string> = {
 
 function sourceLabel(source: string): string {
   return SOURCE_LABELS[source] ?? source;
+}
+
+function versionName(v: NoteVersion): string {
+  return v.name?.trim() || v.title || "未命名";
 }
 
 function timeLabel(iso: string): string {
@@ -69,14 +75,36 @@ function DiffBody({ chunks, onExpand }: { chunks: DiffChunk[]; onExpand: (index:
                 {line.op === "add" ? line.bLine : line.aLine}
               </span>
               <span className="w-3 shrink-0 select-none text-muted-foreground/70">
-                {line.op === "add" ? "+" : line.op === "del" ? "−" : " "}
+                {line.op === "add" ? "+" : line.op === "del" ? "\u2212" : " "}
               </span>
-              <span className="whitespace-pre-wrap break-words">{line.text || " "}</span>
+              <span className="whitespace-pre-wrap break-words">{line.text || "\u00a0"}</span>
             </div>
           ))
         ),
       )}
     </div>
+  );
+}
+
+function VersionActions({
+  onRename,
+  onDelete,
+}: {
+  onRename: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="size-8 shrink-0" aria-label="版本操作" onClick={e => e.stopPropagation()}>
+          <MoreHorizontal />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" onClick={e => e.stopPropagation()}>
+        <DropdownMenuItem onSelect={onRename}><Pencil />重命名</DropdownMenuItem>
+        <DropdownMenuItem className="text-destructive focus:bg-destructive/10" onSelect={onDelete}><Trash2 />删除</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -87,6 +115,8 @@ function VersionDetail({
   canEdit,
   onBack,
   onRestore,
+  onRename,
+  onDelete,
 }: {
   version: NoteVersion;
   currentTitle: string;
@@ -94,6 +124,8 @@ function VersionDetail({
   canEdit: boolean;
   onBack: () => void;
   onRestore: () => void;
+  onRename: () => void;
+  onDelete: () => void;
 }) {
   const [tab, setTab] = useState<"diff" | "full">("diff");
   const [expanded, setExpanded] = useState<number[]>([]);
@@ -109,6 +141,7 @@ function VersionDetail({
 
   const titleChanged = version.title !== currentTitle;
   const unchanged = stats.added === 0 && stats.removed === 0 && !titleChanged;
+  const named = Boolean(version.name?.trim());
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -117,11 +150,12 @@ function VersionDetail({
           <ArrowLeft />
         </Button>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">v{version.version} · {version.title || "未命名"}</p>
+          <p className="truncate text-sm font-medium">v{version.version} · {versionName(version)}</p>
           <p className="truncate text-[11px] text-muted-foreground">
-            {sourceLabel(version.source)} · {new Date(version.createdAt).toLocaleString("zh-CN")}
+            {named ? `${version.title || "未命名"} · ` : ""}{sourceLabel(version.source)} · {new Date(version.createdAt).toLocaleString("zh-CN")}
           </p>
         </div>
+        {canEdit && <VersionActions onRename={onRename} onDelete={onDelete} />}
         {canEdit && (
           <Tooltip content="把这个版本的内容写回笔记，作为一个新版本">
             <Button variant="outline" size="sm" onClick={onRestore}><RotateCcw />恢复</Button>
@@ -146,7 +180,7 @@ function VersionDetail({
         </div>
         {tab === "diff" && !unchanged && (
           <span className="ml-auto font-mono text-[11px]">
-            <span className="text-destructive">−{stats.removed}</span>{" "}
+            <span className="text-destructive">\u2212{stats.removed}</span>{" "}
             <span className="text-green-600 dark:text-green-400">+{stats.added}</span>
           </span>
         )}
@@ -180,7 +214,7 @@ function VersionDetail({
   );
 }
 
-/** 版本历史页签：列表 ⇄ 详情两级，详情里能看 diff、看原文、恢复。 */
+/** 版本历史页签：列表 ⇄ 详情两级，详情里能看 diff、看原文、恢复、改名、删除。 */
 export function VersionsTab({
   note,
   onRestored,
@@ -192,6 +226,7 @@ export function VersionsTab({
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const askConfirm = useConfirm();
+  const askPrompt = usePrompt();
   const toast = useToast();
 
   async function load(id: string) {
@@ -233,6 +268,46 @@ export function VersionsTab({
     }
   }
 
+  async function rename(v: NoteVersion) {
+    const next = await askPrompt({
+      title: `给 v${v.version} 起个名字`,
+      description: "方便认出有意义的快照。留空则去掉自定义名字。",
+      label: "版本名",
+      placeholder: v.title || "未命名",
+      defaultValue: v.name ?? "",
+      confirmText: "保存",
+      allowEmpty: true,
+    });
+    if (next === null) return;
+    try {
+      const saved = await api<NoteVersion>(`/api/v1/notes/${note.id}/versions/${v.version}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: next.slice(0, 80) }),
+      });
+      setVersions(list => list.map(item => item.id === saved.id ? { ...item, ...saved } : item));
+      toast.success(saved.name?.trim() ? `已命名为「${saved.name.trim()}」` : "已去掉自定义名字");
+    } catch (e) {
+      toast.error("改名失败", (e as Error).message);
+    }
+  }
+
+  async function remove(v: NoteVersion) {
+    if (!await askConfirm({
+      title: `删除 v${v.version}？`,
+      description: "只删这条历史快照，当前笔记内容不会被改动。删除后不能从回收站找回。",
+      confirmText: "删除这条历史",
+      destructive: true,
+    })) return;
+    try {
+      await api(`/api/v1/notes/${note.id}/versions/${v.version}`, { method: "DELETE" });
+      if (selected === v.id) setSelected(null);
+      setVersions(list => list.filter(item => item.id !== v.id));
+      toast.success(`已删除 v${v.version}`, "当前笔记没有改动");
+    } catch (e) {
+      toast.error("删除失败", (e as Error).message);
+    }
+  }
+
   if (current) {
     return (
       <VersionDetail
@@ -242,6 +317,8 @@ export function VersionsTab({
         canEdit={note.canEdit}
         onBack={() => setSelected(null)}
         onRestore={() => void restore(current)}
+        onRename={() => void rename(current)}
+        onDelete={() => void remove(current)}
       />
     );
   }
@@ -250,30 +327,36 @@ export function VersionsTab({
     <ScrollArea className="min-h-0 flex-1">
       <div className="space-y-1.5 p-3">
         <p className="px-1 pb-1 text-[11px] text-muted-foreground">
-          {loading ? "读取中…" : `${versions.length} 个版本 · 当前 v${note.version}`}
+          {loading ? "读取中\u2026" : `${versions.length} 个版本 \u00b7 当前 v${note.version}`}
         </p>
         {versions.length === 0 ? (
           <div className="py-16 text-center">
             <History className="mx-auto mb-3 size-8 text-muted-foreground/40" />
-            <p className="text-sm font-medium">{loading ? "读取中…" : "还没有历史版本"}</p>
+            <p className="text-sm font-medium">{loading ? "读取中\u2026" : "还没有历史版本"}</p>
             <p className="mt-1 text-xs text-muted-foreground">每次保存、采纳 AI 建议、接受纠错和恢复都会留下一个版本。</p>
           </div>
         ) : (
           versions.map(v => (
-            <button
-              key={v.id}
-              onClick={() => setSelected(v.id)}
-              className="block w-full rounded-xl border border-border p-3 text-left hover:bg-muted"
-            >
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-xs text-muted-foreground">v{v.version}</span>
-                <span className="min-w-0 flex-1 truncate text-sm font-medium">{v.title || "未命名"}</span>
-                <span className="shrink-0 text-[11px] text-muted-foreground">{timeLabel(v.createdAt)}</span>
-              </div>
-              <p className="mt-1 truncate text-[11px] text-muted-foreground">
-                {sourceLabel(v.source)} · {v.bodyMd.length} 字
-              </p>
-            </button>
+            <div key={v.id} className="flex items-stretch rounded-xl border border-border hover:bg-muted">
+              <button
+                onClick={() => setSelected(v.id)}
+                className="min-w-0 flex-1 p-3 text-left"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-xs text-muted-foreground">v{v.version}</span>
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">{versionName(v)}</span>
+                  <span className="shrink-0 text-[11px] text-muted-foreground">{timeLabel(v.createdAt)}</span>
+                </div>
+                <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                  {v.name?.trim() ? `${v.title || "未命名"} · ` : ""}{sourceLabel(v.source)} · {v.bodyMd.length} 字
+                </p>
+              </button>
+              {note.canEdit && (
+                <div className="flex items-start py-2 pr-2">
+                  <VersionActions onRename={() => void rename(v)} onDelete={() => void remove(v)} />
+                </div>
+              )}
+            </div>
           ))
         )}
       </div>
