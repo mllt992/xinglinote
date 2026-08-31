@@ -106,8 +106,22 @@ export function mountTableEditor(box: HTMLElement, opts: TableEditorOptions) {
     if (view.state.sliceDoc(from, to) !== opts.source) return false; // 文档已经变了，这次点击作废
     const next = applyTableOp(opts.source, op);
     if (next === null) return false;
-    view.dispatch({ changes: { from, to, insert: next }, userEvent: "input.table" });
+    // 单元格 mousedown 拦了默认行为，CM 光标往往还停在文末。
+    // 写回后 view.focus() 会把旧光标滚进视口，看起来像整篇跳到文末。
+    const scrollTop = view.scrollDOM.scrollTop;
+    // 光标放在表前一个字符，避免落进块小部件范围把表拆回源码；文首的表则放在表后。
+    const cursor = from > 0 ? from - 1 : from + next.length;
+    view.dispatch({
+      changes: { from, to, insert: next },
+      selection: { anchor: cursor, head: cursor },
+      userEvent: "input.table",
+      scrollIntoView: false,
+    });
+    const restore = () => { view.scrollDOM.scrollTop = scrollTop; };
+    restore();
     if (focusEditor) view.focus();
+    restore();
+    requestAnimationFrame(restore);
     return true;
   }
 
