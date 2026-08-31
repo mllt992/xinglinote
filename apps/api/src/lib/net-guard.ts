@@ -80,7 +80,8 @@ function errorChain(err: unknown): Array<{ name: string; message: string; code: 
   while (cur && !seen.has(cur) && out.length < 8) {
     seen.add(cur);
     if (cur instanceof Error) {
-      const code = typeof (cur as { code?: unknown }).code === "string" ? (cur as { code: string }).code : "";
+      const withCode = cur as Error & { code?: unknown };
+      const code = typeof withCode.code === "string" ? withCode.code : "";
       out.push({ name: cur.name, message: cur.message, code });
       const nested = (cur as { errors?: unknown }).errors;
       if (Array.isArray(nested) && nested[0] && !cur.cause) {
