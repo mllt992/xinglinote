@@ -4,6 +4,10 @@ import {
   canArchiveProject,
   canReadProject,
   canWriteProject,
+  columnKeyFromTitle,
+  DEFAULT_BOARD_COLUMNS,
+  defaultColumn,
+  effectiveTaskStatus,
   healthBand,
   scoreProjectHealth,
   type HealthTask,
@@ -92,4 +96,20 @@ test("有估时且实耗打穿 1.3 倍才扣 10；取消的不算完成率分母
   assert.equal(noEstimate.overrun, false);
   const rate = scoreProjectHealth({ dueAt: null }, [task({ status: "done" }), task({ status: "cancelled" })], now);
   assert.equal(rate.completion, 1);
+});
+
+test("默认列与现有任务 status 对齐；自定义列映射健康度语义", () => {
+  assert.equal(DEFAULT_BOARD_COLUMNS.map(c => c.key).join(","), "backlog,todo,doing,review,done");
+  assert.equal(defaultColumn(DEFAULT_BOARD_COLUMNS)?.key, "backlog");
+  assert.equal(effectiveTaskStatus("doing", DEFAULT_BOARD_COLUMNS), "doing");
+  assert.equal(effectiveTaskStatus("done", DEFAULT_BOARD_COLUMNS), "done");
+  assert.equal(effectiveTaskStatus("cancelled", DEFAULT_BOARD_COLUMNS), "cancelled");
+  const custom = [
+    { key: "inbox", title: "收件", isDefault: true, isDone: false, isWip: false },
+    { key: "ship", title: "交付", isDefault: false, isDone: true, isWip: false },
+  ];
+  assert.equal(effectiveTaskStatus("inbox", custom), "backlog");
+  assert.equal(effectiveTaskStatus("ship", custom), "done");
+  assert.equal(columnKeyFromTitle("阻塞", ["阻塞"]), "阻塞-2");
+  assert.equal(columnKeyFromTitle("cancelled", []), "cancelled-2");
 });
