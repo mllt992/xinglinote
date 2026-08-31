@@ -3,7 +3,7 @@ import { db } from "../db/client.ts";
 import {
   agents, attachments, backupRuns, backupTargets, calendarFeedTokens, calendarItems,
   calendarOverrides, calendarReminders, calendarSubscriptions, calendarTemplates,
-  comments, contentReports, corrections, folders, instanceSettings, moderationReviews, projectMilestones, projectTasks, projectTimeEntries, projects,
+  comments, contentReports, corrections, folders, instanceSettings, moderationReviews, projectColumns, projectMilestones, projectTasks, projectTimeEntries, projects,
   navGroups, navLinks, notebookMembers, notebooks, notes, noteVersions, notifications,
   posts, postAssets, postReactions, registrationCodes, registrationCodeUsages,
   savedShares, serviceRequests, shareLinks, themes, users, workspaceMembers, workspaces,
@@ -90,6 +90,7 @@ export async function workspaceSnapshot(id: string) {
     calendarTemplates: await db.select().from(calendarTemplates).where(eq(calendarTemplates.workspaceId, id)),
     calendarFeedTokens: await db.select().from(calendarFeedTokens).where(eq(calendarFeedTokens.workspaceId, id)),
     projects: projectRows,
+    projectColumns: await byIds(projectIds, ids => db.select().from(projectColumns).where(inArray(projectColumns.projectId, ids))),
     projectTasks: await byIds(projectIds, ids => db.select().from(projectTasks).where(inArray(projectTasks.projectId, ids))),
     projectTimeEntries: await byIds(projectIds, ids => db.select().from(projectTimeEntries).where(inArray(projectTimeEntries.projectId, ids))),
     projectMilestones: await byIds(projectIds, ids => db.select().from(projectMilestones).where(inArray(projectMilestones.projectId, ids))),
