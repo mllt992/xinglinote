@@ -74,6 +74,25 @@ try {
   result.privateHidden = await rejects(() => q(`/projects/${secret.id}`, {}, viewer), 'NOT_FOUND');
   result.privateMissingFromList = !(await q(`/workspaces/${ws.id}/projects`, {}, viewer)).data.projects.some(p => p.id === secret.id);
 
+  const detailCols = (await q(`/projects/${created.id}`, {}, c)).data;
+  result.defaultColumns = Array.isArray(detailCols.columns) && detailCols.columns.map(c => c.key).join(',') === 'backlog,todo,doing,review,done';
+  const added = (await q(`/projects/${created.id}/columns`, { method: 'POST', body: JSON.stringify({ title: '阻塞' }) }, c)).data;
+  result.addColumn = added.title === '阻塞' && !!added.key && added.key !== 'cancelled';
+  const renamed = (await q(`/project-columns/${added.id}`, { method: 'PATCH', body: JSON.stringify({ title: '卡住' }) }, c)).data;
+  result.renameColumn = renamed.title === '卡住';
+  const afterAdd = (await q(`/projects/${created.id}`, {}, c)).data;
+  const orderIds = afterAdd.columns.map(c => c.id);
+  const shifted = [orderIds[orderIds.length - 1], ...orderIds.slice(0, -1)];
+  const reordered = (await q(`/projects/${created.id}/columns/reorder`, { method: 'POST', body: JSON.stringify({ ids: shifted }) }, c)).data;
+  result.reorderColumns = reordered.columns[0].id === added.id;
+  await q(`/projects/${created.id}/tasks`, { method: 'POST', body: JSON.stringify({ title: '会跟着列走', status: added.key }) }, c);
+  const deleted = (await q(`/project-columns/${added.id}`, { method: 'DELETE' }, c)).data;
+  result.deleteMovesCards = deleted.moved >= 1 && deleted.movedTo === 'backlog';
+  const afterDel = (await q(`/projects/${created.id}`, {}, c)).data;
+  result.deleteKeepsTask = afterDel.tasks.concat(afterDel.cancelled || []).some(row => row.title === '会跟着列走' && row.status === 'backlog')
+    && !afterDel.columns.some(c => c.id === added.id);
+  result.existingBoardStillLoads = afterDel.columns.map(c => c.key).join(',').includes('todo') && afterDel.columns.length === 5;
+
   await q(`/projects/${created.id}/archive`, { method: 'POST' }, c);
   const afterArchive = (await q(`/workspaces/${ws.id}/projects`, {}, c)).data;
   const archivedList = (await q(`/workspaces/${ws.id}/projects?archived=1`, {}, c)).data;

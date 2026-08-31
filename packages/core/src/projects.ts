@@ -6,6 +6,7 @@ export const PROJECT_VISIBILITIES = ["workspace", "private"] as const;
 export const TASK_STATUSES = ["backlog", "todo", "doing", "review", "done", "cancelled"] as const;
 export const BOARD_COLUMNS = ["backlog", "todo", "doing", "review", "done"] as const;
 export const PROJECT_PRIORITIES = [0, 1, 2, 3] as const;
+export const CANCELLED_STATUS = "cancelled";
 
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 export type ProjectColor = (typeof PROJECT_COLORS)[number];
@@ -14,9 +15,27 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 export type BoardColumn = (typeof BOARD_COLUMNS)[number];
 export type HealthBand = "steady" | "tight" | "risk";
 
+export type BoardColumnDef = {
+  key: string;
+  title: string;
+  isDefault: boolean;
+  isDone: boolean;
+  isWip: boolean;
+};
+
+/** 与现有任务 status 对齐：老看板不改卡片就能加载。 */
+export const DEFAULT_BOARD_COLUMNS: readonly BoardColumnDef[] = [
+  { key: "backlog", title: "积压", isDefault: true, isDone: false, isWip: false },
+  { key: "todo", title: "待办", isDefault: false, isDone: false, isWip: false },
+  { key: "doing", title: "进行", isDefault: false, isDone: false, isWip: true },
+  { key: "review", title: "复核", isDefault: false, isDone: false, isWip: false },
+  { key: "done", title: "完成", isDefault: false, isDone: true, isWip: false },
+];
+
 export const MAX_ACTIVE_PROJECTS = 200;
 export const MAX_TASKS_PER_PROJECT = 2000;
 export const MAX_SUBTASKS = 20;
+export const MAX_COLUMNS = 24;
 export const STALE_DOING_MS = 7 * 86400_000;
 export const NEAR_DUE_MS = 3 * 86400_000;
 export const OVERRUN_RATIO = 1.3;
@@ -37,6 +56,34 @@ export function isTaskStatus(value: unknown): value is TaskStatus {
 
 export function isBoardColumn(value: unknown): value is BoardColumn {
   return typeof value === "string" && (BOARD_COLUMNS as readonly string[]).includes(value);
+}
+
+export function columnKeyFromTitle(title: string, existing: readonly string[]): string {
+  const base = title.trim().replace(/\s+/g, "-").slice(0, 24) || "列";
+  const taken = new Set([...existing, CANCELLED_STATUS]);
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}-${n}`)) n += 1;
+  return `${base}-${n}`;
+}
+
+export function defaultColumn(columns: readonly BoardColumnDef[]): BoardColumnDef | undefined {
+  return columns.find(c => c.isDefault) ?? columns[0];
+}
+
+export function doneColumn(columns: readonly BoardColumnDef[]): BoardColumnDef | undefined {
+  return columns.find(c => c.isDone);
+}
+
+/** 自定义列映射回健康度用的五种语义；cancelled 仍是取消。 */
+export function effectiveTaskStatus(status: string, columns: readonly BoardColumnDef[]): TaskStatus {
+  if (status === CANCELLED_STATUS) return "cancelled";
+  const col = columns.find(c => c.key === status);
+  if (!col) return "todo";
+  if (col.isDone) return "done";
+  if (col.isWip) return "doing";
+  if (col.isDefault) return "backlog";
+  return "todo";
 }
 
 export function healthBand(score: number): HealthBand {

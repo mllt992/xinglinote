@@ -2,24 +2,28 @@ import { Hono } from "hono";
 import { and, asc, count, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { z } from "zod";
 import {
-  BOARD_COLUMNS,
+  CANCELLED_STATUS,
+  DEFAULT_BOARD_COLUMNS,
   MAX_ACTIVE_PROJECTS,
+  MAX_COLUMNS,
   MAX_SUBTASKS,
   MAX_TASKS_PER_PROJECT,
   PROJECT_COLORS,
   PROJECT_STATUSES,
   PROJECT_VISIBILITIES,
-  TASK_STATUSES,
   canArchiveProject,
   canReadProject,
   canWriteProject,
+  columnKeyFromTitle,
+  defaultColumn,
+  effectiveTaskStatus,
   scoreProjectHealth,
-  type TaskStatus,
+  type BoardColumnDef,
   type WsRole,
 } from "@kb/core";
 import { fail, nextSortKey } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { auditLogs, notes, projectMilestones, projectTasks, projectTimeEntries, projects, users, workspaceMembers, workspaces } from "../db/schema.ts";
+import { auditLogs, notes, projectColumns, projectMilestones, projectTasks, projectTimeEntries, projects, users, workspaceMembers, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
@@ -43,7 +47,7 @@ const projectPatch = projectCreate.partial().extend({
 const taskCreate = z.object({
   title: z.string().trim().min(1).max(200),
   bodyMd: z.string().max(20_000).optional(),
-  status: z.enum(TASK_STATUSES).optional(),
+  status: z.string().trim().min(1).max(64).optional(),
   priority: z.number().int().min(0).max(3).optional(),
   startAt: iso,
   dueAt: iso,
@@ -54,10 +58,18 @@ const taskCreate = z.object({
 });
 const taskPatch = taskCreate.partial();
 const taskMove = z.object({
-  status: z.enum(BOARD_COLUMNS),
+  status: z.string().trim().min(1).max(64),
   beforeId: z.string().uuid().nullable().optional(),
   afterId: z.string().uuid().nullable().optional(),
 });
+const columnCreate = z.object({ title: z.string().trim().min(1).max(40) });
+const columnPatch = z.object({
+  title: z.string().trim().min(1).max(40).optional(),
+  isDefault: z.boolean().optional(),
+  isDone: z.boolean().optional(),
+  isWip: z.boolean().optional(),
+});
+const columnReorder = z.object({ ids: z.array(z.string().uuid()).min(1).max(MAX_COLUMNS) });
 const taskReschedule = z.object({
   startAt: z.string().datetime({ offset: true }).nullable(),
   dueAt: z.string().datetime({ offset: true }).nullable(),
@@ -111,6 +123,87 @@ function rangeOk(start: Date | null | undefined, due: Date | null | undefined) {
   if (start && due && due.getTime() < start.getTime()) throw fail("VALIDATION", "截止不能早于开始");
 }
 
+type ColumnRow = typeof projectColumns.$inferSelect;
+
+function asDefs(rows: readonly ColumnRow[]): BoardColumnDef[] {
+  return rows.map(row => ({ key: row.key, title: row.title, isDefault: row.isDefault, isDone: row.isDone, isWip: row.isWip }));
+}
+
+function columnDto(row: ColumnRow) {
+  return {
+    id: row.id,
+    projectId: row.projectId,
+    title: row.title,
+    key: row.key,
+    sortKey: row.sortKey,
+    isDefault: row.isDefault,
+    isDone: row.isDone,
+    isWip: row.isWip,
+  };
+}
+
+async function listColumns(projectId: string) {
+  return db.select().from(projectColumns).where(eq(projectColumns.projectId, projectId)).orderBy(asc(projectColumns.sortKey), asc(projectColumns.createdAt));
+}
+
+async function ensureColumns(projectId: string): Promise<ColumnRow[]> {
+  let rows = await listColumns(projectId);
+  if (!rows.length) {
+    await db.insert(projectColumns).values(DEFAULT_BOARD_COLUMNS.map((col, i) => ({
+      projectId,
+      title: col.title,
+      key: col.key,
+      sortKey: i,
+      isDefault: col.isDefault,
+      isDone: col.isDone,
+      isWip: col.isWip,
+    })));
+    rows = await listColumns(projectId);
+  }
+  const keys = new Set(rows.map(row => row.key));
+  const extras = await db.select({ status: projectTasks.status }).from(projectTasks).where(eq(projectTasks.projectId, projectId));
+  const missing = [...new Set(extras.map(row => row.status).filter(status => status !== CANCELLED_STATUS && !keys.has(status)))];
+  if (missing.length) {
+    const maxSort = rows.reduce((m, row) => Math.max(m, row.sortKey), -1);
+    await db.insert(projectColumns).values(missing.map((key, i) => ({
+      projectId,
+      title: key,
+      key,
+      sortKey: maxSort + 1 + i,
+      isDefault: false,
+      isDone: key === "done",
+      isWip: key === "doing",
+    })));
+    rows = await listColumns(projectId);
+  }
+  return rows;
+}
+
+async function resolveTaskStatus(projectId: string, status: string | undefined, allowCancelled = true) {
+  const cols = await ensureColumns(projectId);
+  if (status === undefined) {
+    const todo = cols.find(col => col.key === "todo");
+    const fallback = todo ?? defaultColumn(asDefs(cols));
+    if (!fallback) throw fail("VALIDATION", "项目还没有看板列");
+    return { status: fallback.key, done: fallback.isDone, cols };
+  }
+  if (status === CANCELLED_STATUS) {
+    if (!allowCancelled) throw fail("VALIDATION", "看板列不能是取消");
+    return { status, done: false, cols };
+  }
+  const col = cols.find(row => row.key === status);
+  if (!col) throw fail("VALIDATION", "看板列不存在");
+  return { status, done: col.isDone, cols };
+}
+
+function isDoneStatus(status: string, cols: readonly BoardColumnDef[]) {
+  return effectiveTaskStatus(status, cols) === "done";
+}
+
+function isWipStatus(status: string, cols: readonly BoardColumnDef[]) {
+  return effectiveTaskStatus(status, cols) === "doing";
+}
+
 async function loadProject(c: Parameters<typeof currentUser>[0], id: string, mode: "read" | "write" | "archive" = "read") {
   const [row] = await db.select().from(projects).where(eq(projects.id, id));
   if (!row) throw fail("NOT_FOUND", "项目不存在");
@@ -144,11 +237,12 @@ function secondsOf(entries: TimeRow[], taskId?: string, onlyClosed = false) {
     .reduce((sum, e) => sum + (e.endedAt ? e.seconds : 0), 0);
 }
 
-function healthOf(project: typeof projects.$inferSelect, tasks: TaskRow[], entries: TimeRow[]) {
+function healthOf(project: typeof projects.$inferSelect, tasks: TaskRow[], entries: TimeRow[], columns: readonly BoardColumnDef[] = DEFAULT_BOARD_COLUMNS) {
+  const mapped = columns.length ? columns : DEFAULT_BOARD_COLUMNS;
   return scoreProjectHealth(
     { dueAt: project.dueAt },
     tasks.map(t => ({
-      status: t.status as TaskStatus,
+      status: effectiveTaskStatus(t.status, mapped),
       dueAt: t.dueAt,
       updatedAt: t.updatedAt,
       estimateMin: t.estimateMin,
@@ -271,7 +365,7 @@ function rekey(ids: string[], beforeId?: string | null, afterId?: string | null)
   return { before: next, after: [] as string[] };
 }
 
-async function pulseOf(tasks: TaskRow[], entries: TimeRow[]) {
+async function pulseOf(tasks: TaskRow[], entries: TimeRow[], columns: readonly BoardColumnDef[] = DEFAULT_BOARD_COLUMNS) {
   const days: Array<{ day: string; completed: number; minutes: number }> = [];
   const now = new Date();
   const today = shanghaiDay(now);
@@ -282,7 +376,7 @@ async function pulseOf(tasks: TaskRow[], entries: TimeRow[]) {
   }
   const index = new Map(days.map((d, i) => [d.day, i]));
   for (const t of tasks) {
-    if (t.status !== "done" || !t.completedAt) continue;
+    if (!isDoneStatus(t.status, columns) || !t.completedAt) continue;
     const key = shanghaiDay(t.completedAt);
     const at = index.get(key);
     if (at !== undefined) days[at]!.completed += 1;
@@ -293,12 +387,13 @@ async function pulseOf(tasks: TaskRow[], entries: TimeRow[]) {
     const at = index.get(key);
     if (at !== undefined) days[at]!.minutes += Math.round(e.seconds / 60);
   }
-  const byStatus: Record<string, number> = { backlog: 0, todo: 0, doing: 0, review: 0, done: 0, cancelled: 0 };
+  const byStatus: Record<string, number> = { cancelled: 0 };
+  for (const col of columns) byStatus[col.key] = 0;
   for (const t of tasks) byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
   const estimateMin = tasks.reduce((s, t) => s + (t.estimateMin ?? 0), 0);
   const actualSeconds = secondsOf(entries, undefined, true);
-  const overdue = tasks.filter(t => t.status !== "done" && t.status !== "cancelled" && t.dueAt && t.dueAt.getTime() < now.getTime());
-  const stale = tasks.filter(t => t.status === "doing" && now.getTime() - t.updatedAt.getTime() > 7 * 86400_000);
+  const overdue = tasks.filter(t => t.status !== CANCELLED_STATUS && !isDoneStatus(t.status, columns) && t.dueAt && t.dueAt.getTime() < now.getTime());
+  const stale = tasks.filter(t => isWipStatus(t.status, columns) && now.getTime() - t.updatedAt.getTime() > 7 * 86400_000);
   return { byStatus, estimateMin, actualSeconds, days, overdue: overdue.map(t => ({ id: t.id, title: t.title, dueAt: t.dueAt })), stale: stale.map(t => ({ id: t.id, title: t.title, updatedAt: t.updatedAt })) };
 }
 
@@ -329,13 +424,19 @@ async function projectList(userId: string, spaces: ProjectWorkspace[], archived:
   const ids = listed.map(row => row.id);
   const tasks = ids.length ? await db.select().from(projectTasks).where(inArray(projectTasks.projectId, ids)) : [];
   const entries = ids.length ? await db.select().from(projectTimeEntries).where(inArray(projectTimeEntries.projectId, ids)) : [];
+  const columnRows = ids.length ? await db.select().from(projectColumns).where(inArray(projectColumns.projectId, ids)) : [];
   const tasksBy = new Map<string, TaskRow[]>();
   const entriesBy = new Map<string, TimeRow[]>();
+  const columnsBy = new Map<string, ColumnRow[]>();
   for (const task of tasks) tasksBy.set(task.projectId, [...(tasksBy.get(task.projectId) ?? []), task]);
   for (const entry of entries) entriesBy.set(entry.projectId, [...(entriesBy.get(entry.projectId) ?? []), entry]);
+  for (const col of columnRows) columnsBy.set(col.projectId, [...(columnsBy.get(col.projectId) ?? []), col]);
 
   const weekStart = shanghaiWeekStart();
-  const weekTasks = tasks.filter(task => task.status === "done" && task.completedAt && task.completedAt >= weekStart);
+  const weekTasks = tasks.filter(task => {
+    const defs = asDefs(columnsBy.get(task.projectId) ?? []);
+    return isDoneStatus(task.status, defs) && task.completedAt && task.completedAt >= weekStart;
+  });
   const weekSeconds = entries.filter(entry => entry.endedAt && entry.endedAt >= weekStart).reduce((sum, entry) => sum + entry.seconds, 0);
   const result = listed.map(row => {
     const ts = tasksBy.get(row.id) ?? [];
@@ -349,10 +450,11 @@ async function projectList(userId: string, spaces: ProjectWorkspace[], archived:
       createdBy: row.createdBy,
       status: row.status as "planning" | "active" | "paused" | "done" | "archived",
     };
+    const defs = asDefs(columnsBy.get(row.id) ?? []);
     return projectDto(row, {
-      health: healthOf(row, ts, es),
-      taskCount: ts.filter(task => task.status !== "cancelled").length,
-      doneCount: ts.filter(task => task.status === "done").length,
+      health: healthOf(row, ts, es, defs),
+      taskCount: ts.filter(task => task.status !== CANCELLED_STATUS).length,
+      doneCount: ts.filter(task => isDoneStatus(task.status, defs)).length,
       estimateMin: ts.reduce((sum, task) => sum + (task.estimateMin ?? 0), 0),
       actualSeconds: secondsOf(es, undefined, true),
       canEdit: canWriteProject(acl),
@@ -426,6 +528,7 @@ projectRoutes.post("/workspaces/:id/projects", async c => {
     updatedBy: user.id,
   }).returning();
   await audit(workspaceId, user.id, "project.create", "project", row.id, { title: row.title });
+  await ensureColumns(row.id);
   const health = scoreProjectHealth({ dueAt: row.dueAt }, []);
   return ok(c, projectDto(row, { health, taskCount: 0, doneCount: 0, estimateMin: 0, actualSeconds: 0, canEdit: true, canArchive: true }), 201);
 });
@@ -434,11 +537,13 @@ projectRoutes.post("/workspaces/:id/projects", async c => {
 
 projectRoutes.get("/projects/:id", async c => {
   const { user, role, ws, project, acl } = await loadProject(c, c.req.param("id"));
+  const columns = await ensureColumns(project.id);
+  const defs = asDefs(columns);
   const tasks = await db.select().from(projectTasks).where(eq(projectTasks.projectId, project.id)).orderBy(asc(projectTasks.sortKey), asc(projectTasks.createdAt));
   const entries = await db.select().from(projectTimeEntries).where(eq(projectTimeEntries.projectId, project.id));
   const milestones = await db.select().from(projectMilestones).where(eq(projectMilestones.projectId, project.id)).orderBy(asc(projectMilestones.sortKey), asc(projectMilestones.dueAt));
   const titles = await noteTitles(tasks.map(t => t.sourceNoteId));
-  const health = healthOf(project, tasks, entries);
+  const health = healthOf(project, tasks, entries, defs);
   const running = entries.find(e => !e.endedAt && e.userId === user.id) ?? null;
   const todayKey = shanghaiDay(new Date());
   const todaySeconds = entries.filter(e => e.userId === user.id && e.endedAt && shanghaiDay(e.endedAt) === todayKey).reduce((s, e) => s + e.seconds, 0)
@@ -448,8 +553,8 @@ projectRoutes.get("/projects/:id", async c => {
   return ok(c, {
     project: projectDto(project, {
       health,
-      taskCount: tasks.filter(t => t.status !== "cancelled").length,
-      doneCount: tasks.filter(t => t.status === "done").length,
+      taskCount: tasks.filter(t => t.status !== CANCELLED_STATUS).length,
+      doneCount: tasks.filter(t => isDoneStatus(t.status, defs)).length,
       estimateMin: tasks.reduce((s, t) => s + (t.estimateMin ?? 0), 0),
       actualSeconds: secondsOf(entries, undefined, true),
       canEdit: canWriteProject({ ...acl, status: project.status === "archived" ? "active" : acl.status }) && project.status !== "archived" && !ws.frozen && role !== "viewer",
@@ -460,11 +565,12 @@ projectRoutes.get("/projects/:id", async c => {
       sourceNoteTitle: t.sourceNoteId ? titles.get(t.sourceNoteId) ?? null : null,
       children: childrenOf(t.id),
     })),
-    cancelled: tasks.filter(t => t.status === "cancelled").map(t => taskDto(t, { actualSeconds: secondsOf(entries, t.id, true) })),
+    cancelled: tasks.filter(t => t.status === CANCELLED_STATUS).map(t => taskDto(t, { actualSeconds: secondsOf(entries, t.id, true) })),
+    columns: columns.map(columnDto),
     milestones,
     running: running ? { id: running.id, taskId: running.taskId, startedAt: running.startedAt } : null,
     todaySeconds,
-    pulse: await pulseOf(tasks, entries),
+    pulse: await pulseOf(tasks, entries, defs),
     me: user.id,
     canEdit: project.status !== "archived" && !ws.frozen && role !== "viewer",
   });
@@ -493,10 +599,11 @@ projectRoutes.patch("/projects/:id", async c => {
   await audit(project.workspaceId, user.id, "project.update", "project", project.id, { status: saved.status, visibility: saved.visibility });
   const tasks = await db.select().from(projectTasks).where(eq(projectTasks.projectId, project.id));
   const entries = await db.select().from(projectTimeEntries).where(eq(projectTimeEntries.projectId, project.id));
+  const defs = asDefs(await listColumns(project.id));
   return ok(c, projectDto(saved, {
-    health: healthOf(saved, tasks, entries),
-    taskCount: tasks.filter(t => t.status !== "cancelled").length,
-    doneCount: tasks.filter(t => t.status === "done").length,
+    health: healthOf(saved, tasks, entries, defs),
+    taskCount: tasks.filter(t => t.status !== CANCELLED_STATUS).length,
+    doneCount: tasks.filter(t => isDoneStatus(t.status, defs)).length,
     estimateMin: tasks.reduce((s, t) => s + (t.estimateMin ?? 0), 0),
     actualSeconds: secondsOf(entries, undefined, true),
     canEdit: saved.status !== "archived" && !ws.frozen && role !== "viewer",
@@ -586,6 +693,103 @@ projectRoutes.post("/projects/:id/move", async c => {
   });
 });
 
+
+// ── 看板列 ────────────────────────────────────────────────────────────
+
+projectRoutes.post("/projects/:id/columns/reorder", async c => {
+  const { user, project } = await loadProject(c, c.req.param("id"), "write");
+  const body = columnReorder.parse(await c.req.json());
+  const cols = await ensureColumns(project.id);
+  const have = new Set(cols.map(col => col.id));
+  if (body.ids.length !== cols.length || new Set(body.ids).size !== cols.length || body.ids.some(id => !have.has(id))) {
+    throw fail("VALIDATION", "列顺序必须覆盖当前全部列");
+  }
+  for (let i = 0; i < body.ids.length; i++) {
+    await db.update(projectColumns).set({ sortKey: i }).where(eq(projectColumns.id, body.ids[i]!));
+  }
+  await db.update(projects).set({ updatedAt: new Date(), updatedBy: user.id }).where(eq(projects.id, project.id));
+  await audit(project.workspaceId, user.id, "project_column.reorder", "project", project.id);
+  return ok(c, { columns: (await listColumns(project.id)).map(columnDto) });
+});
+
+projectRoutes.post("/projects/:id/columns", async c => {
+  const { user, project } = await loadProject(c, c.req.param("id"), "write");
+  const body = columnCreate.parse(await c.req.json());
+  const cols = await ensureColumns(project.id);
+  if (cols.length >= MAX_COLUMNS) throw fail("VALIDATION", `每个项目最多 ${MAX_COLUMNS} 列`);
+  const key = columnKeyFromTitle(body.title, cols.map(col => col.key));
+  const [row] = await db.insert(projectColumns).values({
+    projectId: project.id,
+    title: body.title,
+    key,
+    sortKey: nextSortKey(cols.map(col => col.sortKey)),
+    isDefault: false,
+    isDone: false,
+    isWip: false,
+  }).returning();
+  await db.update(projects).set({ updatedAt: new Date(), updatedBy: user.id }).where(eq(projects.id, project.id));
+  await audit(project.workspaceId, user.id, "project_column.create", "project", project.id, { title: row.title, key: row.key });
+  return ok(c, columnDto(row), 201);
+});
+
+projectRoutes.patch("/project-columns/:id", async c => {
+  const body = columnPatch.parse(await c.req.json());
+  const [column] = await db.select().from(projectColumns).where(eq(projectColumns.id, c.req.param("id")));
+  if (!column) throw fail("NOT_FOUND", "看板列不存在");
+  const { user, project } = await loadProject(c, column.projectId, "write");
+  if (body.isDefault === false && column.isDefault) {
+    const others = (await listColumns(project.id)).filter(col => col.id !== column.id);
+    if (!others.length) throw fail("VALIDATION", "至少保留一列作为积压列");
+  }
+  const [saved] = await db.update(projectColumns).set({
+    title: body.title ?? column.title,
+    isDefault: body.isDefault ?? column.isDefault,
+    isDone: body.isDone ?? column.isDone,
+    isWip: body.isWip ?? column.isWip,
+  }).where(eq(projectColumns.id, column.id)).returning();
+  if (saved.isDefault) {
+    await db.update(projectColumns).set({ isDefault: false }).where(and(eq(projectColumns.projectId, project.id), ne(projectColumns.id, saved.id)));
+  } else if (column.isDefault && !saved.isDefault) {
+    const fallback = (await listColumns(project.id)).find(col => col.id !== saved.id);
+    if (fallback) await db.update(projectColumns).set({ isDefault: true }).where(eq(projectColumns.id, fallback.id));
+  }
+  await db.update(projects).set({ updatedAt: new Date(), updatedBy: user.id }).where(eq(projects.id, project.id));
+  await audit(project.workspaceId, user.id, "project_column.update", "project", project.id, { columnId: saved.id, title: saved.title });
+  return ok(c, columnDto((await db.select().from(projectColumns).where(eq(projectColumns.id, saved.id)))[0]!));
+});
+
+projectRoutes.delete("/project-columns/:id", async c => {
+  const [column] = await db.select().from(projectColumns).where(eq(projectColumns.id, c.req.param("id")));
+  if (!column) throw fail("NOT_FOUND", "看板列不存在");
+  const { user, project } = await loadProject(c, column.projectId, "write");
+  const cols = await listColumns(project.id);
+  if (cols.length <= 1) throw fail("VALIDATION", "至少保留一列");
+  const dest = cols.find(col => col.id !== column.id && col.isDefault) ?? cols.find(col => col.id !== column.id)!;
+  const moved = await db.select({ id: projectTasks.id }).from(projectTasks).where(and(eq(projectTasks.projectId, project.id), eq(projectTasks.status, column.key)));
+  await db.update(projectTasks).set({
+    status: dest.key,
+    updatedAt: new Date(),
+    updatedBy: user.id,
+    ...(dest.isDone ? {} : { completedAt: null, completedBy: null }),
+  }).where(and(eq(projectTasks.projectId, project.id), eq(projectTasks.status, column.key)));
+  if (dest.isDone && moved.length) {
+    await db.update(projectTasks).set({ completedAt: new Date(), completedBy: user.id }).where(and(
+      eq(projectTasks.projectId, project.id),
+      eq(projectTasks.status, dest.key),
+      isNull(projectTasks.completedAt),
+    ));
+  }
+  if (column.isDefault) {
+    await db.update(projectColumns).set({ isDefault: true }).where(eq(projectColumns.id, dest.id));
+  }
+  await db.delete(projectColumns).where(eq(projectColumns.id, column.id));
+  await db.update(projects).set({ updatedAt: new Date(), updatedBy: user.id }).where(eq(projects.id, project.id));
+  await audit(project.workspaceId, user.id, "project_column.delete", "project", project.id, {
+    title: column.title, key: column.key, movedTo: dest.key, moved: moved.length,
+  });
+  return ok(c, { id: column.id, movedTo: dest.key, moved: moved.length, defaultTitle: dest.title });
+});
+
 // ── 任务 ──────────────────────────────────────────────────────────────
 
 projectRoutes.post("/projects/:id/tasks", async c => {
@@ -599,10 +803,11 @@ projectRoutes.post("/projects/:id/tasks", async c => {
   const startAt = parseTime(body.startAt);
   const dueAt = parseTime(body.dueAt);
   rangeOk(startAt, dueAt);
-  const status = body.status ?? "todo";
+  const resolved = await resolveTaskStatus(project.id, body.status);
+  const status = resolved.status;
   const siblings = await db.select({ sortKey: projectTasks.sortKey }).from(projectTasks)
     .where(and(eq(projectTasks.projectId, project.id), eq(projectTasks.status, status), parent ? eq(projectTasks.parentId, parent.id) : isNull(projectTasks.parentId)));
-  const done = status === "done";
+  const done = resolved.done;
   const [row] = await db.insert(projectTasks).values({
     projectId: project.id,
     workspaceId: project.workspaceId,
@@ -636,9 +841,17 @@ projectRoutes.patch("/project-tasks/:id", async c => {
   const startAt = body.startAt !== undefined ? parseTime(body.startAt) : task.startAt;
   const dueAt = body.dueAt !== undefined ? parseTime(body.dueAt) : task.dueAt;
   rangeOk(startAt, dueAt);
-  const nextStatus = body.status ?? task.status;
-  const becomingDone = nextStatus === "done" && task.status !== "done";
-  const leavingDone = nextStatus !== "done" && task.status === "done";
+  const cols = await ensureColumns(project.id);
+  const defs = asDefs(cols);
+  let nextStatus = task.status;
+  let nextDone = isDoneStatus(task.status, defs);
+  if (body.status !== undefined) {
+    const resolved = await resolveTaskStatus(project.id, body.status);
+    nextStatus = resolved.status;
+    nextDone = resolved.done;
+  }
+  const becomingDone = nextDone && !isDoneStatus(task.status, defs);
+  const leavingDone = !nextDone && isDoneStatus(task.status, defs);
   const [saved] = await db.update(projectTasks).set({
     title: body.title ?? task.title,
     bodyMd: body.bodyMd ?? task.bodyMd,
@@ -664,9 +877,11 @@ projectRoutes.patch("/project-tasks/:id", async c => {
 projectRoutes.post("/project-tasks/:id/move", async c => {
   const { user, task, project } = await loadTask(c, c.req.param("id"), "write");
   const body = taskMove.parse(await c.req.json());
+  const resolved = await resolveTaskStatus(project.id, body.status, false);
+  const defs = asDefs(resolved.cols);
   const siblings = (await db.select().from(projectTasks).where(and(
     eq(projectTasks.projectId, project.id),
-    eq(projectTasks.status, body.status),
+    eq(projectTasks.status, resolved.status),
     task.parentId ? eq(projectTasks.parentId, task.parentId) : isNull(projectTasks.parentId),
   ))).sort((a, b) => a.sortKey - b.sortKey || +a.createdAt - +b.createdAt);
   const others = siblings.filter(s => s.id !== task.id).map(s => s.id);
@@ -678,15 +893,15 @@ projectRoutes.post("/project-tasks/:id/move", async c => {
         sortKey: i, updatedAt: new Date(), updatedBy: user.id,
       };
       if (ordered[i] === task.id) {
-        patch.status = body.status;
-        if (body.status === "done" && task.status !== "done") { patch.completedAt = new Date(); patch.completedBy = user.id; }
-        if (body.status !== "done" && task.status === "done") { patch.completedAt = null; patch.completedBy = null; }
+        patch.status = resolved.status;
+        if (resolved.done && !isDoneStatus(task.status, defs)) { patch.completedAt = new Date(); patch.completedBy = user.id; }
+        if (!resolved.done && isDoneStatus(task.status, defs)) { patch.completedAt = null; patch.completedBy = null; }
       }
       await tx.update(projectTasks).set(patch).where(eq(projectTasks.id, ordered[i]!));
     }
     await tx.update(projects).set({ updatedAt: new Date(), updatedBy: user.id }).where(eq(projects.id, project.id));
   });
-  await audit(project.workspaceId, user.id, "project_task.move", "project_task", task.id, { status: body.status });
+  await audit(project.workspaceId, user.id, "project_task.move", "project_task", task.id, { status: resolved.status });
   const [saved] = await db.select().from(projectTasks).where(eq(projectTasks.id, task.id));
   return ok(c, taskDto(saved, { actualSeconds: 0 }));
 });

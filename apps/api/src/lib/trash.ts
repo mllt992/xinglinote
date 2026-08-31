@@ -6,6 +6,7 @@ import {
   aiChunks,attachments,calendarItems,calendarReminders,comments,corrections,folders,links,
   noteFavorites,notebooks,notes,noteVersions,noteVisits,posts,projectMilestones,projectTasks,projectTimeEntries,projects,
 } from "../db/schema.ts";
+import { projectColumns } from "../db/project-columns.ts";
 import { env } from "../env.ts";
 import { releaseStoredFile } from "./blobs.ts";
 export async function descendantFolderIds(rootId:string){const all=await db.select({id:folders.id,parentId:folders.parentId}).from(folders);const ids=[rootId];for(let i=0;i<ids.length;i++)for(const f of all)if(f.parentId===ids[i]&&!ids.includes(f.id))ids.push(f.id);return ids;}
@@ -63,6 +64,7 @@ export async function purgeWorkspaceProjects(workspaceId:string, tx: Pick<typeof
   const ids=rows.map(r=>r.id);
   await tx.delete(projectTimeEntries).where(inArray(projectTimeEntries.projectId,ids));
   await tx.delete(projectMilestones).where(inArray(projectMilestones.projectId,ids));
+  await tx.delete(projectColumns).where(inArray(projectColumns.projectId,ids));
   await tx.delete(projectTasks).where(eq(projectTasks.workspaceId,workspaceId));
   await tx.delete(projects).where(eq(projects.workspaceId,workspaceId));
 }
