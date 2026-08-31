@@ -27,16 +27,23 @@ const statements = [
      WHERE NOT EXISTS (SELECT 1 FROM project_columns c WHERE c.project_id = p.id)`,
 ];
 
-let todo = statements;
-while (todo.length) {
-  const failed: Array<{ sql: string; error: unknown }> = [];
-  for (const s of todo) {
-    try { await sql.unsafe(s); } catch (error) { failed.push({ sql: s, error }); }
+async function main() {
+  let todo = statements;
+  while (todo.length) {
+    const failed: Array<{ sql: string; error: unknown }> = [];
+    for (const s of todo) {
+      try { await sql.unsafe(s); } catch (error) { failed.push({ sql: s, error }); }
+    }
+    if (failed.length === todo.length) {
+      console.error(`还有 ${failed.length} 条语句无法执行，第一条：\n${failed[0]!.sql}`);
+      throw failed[0]!.error;
+    }
+    todo = failed.map((f) => f.sql);
   }
-  if (failed.length === todo.length) {
-    console.error(`还有 ${failed.length} 条语句无法执行，第一条：\n${failed[0]!.sql}`);
-    throw failed[0]!.error;
-  }
-  todo = failed.map((f) => f.sql);
+  console.log("project_columns ready");
 }
-console.log("project_columns ready");
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
