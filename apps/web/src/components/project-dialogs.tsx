@@ -3,9 +3,10 @@ import { ArrowRightLeft, X } from "lucide-react";
 import { api } from "../api";
 import { cn } from "../lib/utils";
 import {
-  type BoardCol, type Member, type Project, type Task, type Workspace,
+  type BoardCol, type Member, type Milestone, type Project, type ProjectTag, type Task, type Workspace,
   COLOR_DOT, isoDate, isDoneStatus, openCol, PRI, STATUS_LABEL, toIso,
 } from "./project-model";
+import { TaskTagFields } from "./project-tags";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
@@ -126,8 +127,9 @@ export function MoveProjectDialog({ open, project, currentWorkspaceName, targets
   </DialogContent></Dialog>;
 }
 
-export function TaskDialog({ open, task, columns, wsId, members, canEdit, onOpenChange, onSubmit, onDelete, onOpenNote, onCreateChild, onToggleChild, onDeleteChild }: {
-  open: boolean; task: Task | null; columns: BoardCol[]; wsId: string; members: Member[]; canEdit: boolean;
+export function TaskDialog({ open, task, columns, wsId, members, tags = [], milestones = [], canEdit, onOpenChange, onSubmit, onDelete, onOpenNote, onCreateChild, onToggleChild, onDeleteChild, onToggleTag, onMilestone }: {
+  open: boolean; task: Task | null; columns: BoardCol[]; wsId: string; members: Member[];
+  tags?: ProjectTag[]; milestones?: Milestone[]; canEdit: boolean;
   onOpenChange: (v: boolean) => void;
   onSubmit: (body: Record<string, unknown>) => Promise<void>;
   onDelete?: () => Promise<void>;
@@ -135,6 +137,8 @@ export function TaskDialog({ open, task, columns, wsId, members, canEdit, onOpen
   onCreateChild?: (title: string) => Promise<void>;
   onToggleChild?: (id: string, done: boolean) => Promise<void>;
   onDeleteChild?: (id: string) => Promise<void>;
+  onToggleTag?: (tagId: string, on: boolean) => Promise<void>;
+  onMilestone?: (milestoneId: string | null) => Promise<void>;
 }) {
   const [title, setTitle] = useState("");
   const [bodyMd, setBodyMd] = useState("");
@@ -149,6 +153,8 @@ export function TaskDialog({ open, task, columns, wsId, members, canEdit, onOpen
   const [sourceNoteTitle, setSourceNoteTitle] = useState<string | null>(null);
   const [noteQuery, setNoteQuery] = useState("");
   const [noteHits, setNoteHits] = useState<Array<{ id: string; title: string }>>([]);
+  const [draftTagIds, setDraftTagIds] = useState<string[]>([]);
+  const [draftMilestoneId, setDraftMilestoneId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   useEffect(() => {
@@ -161,6 +167,8 @@ export function TaskDialog({ open, task, columns, wsId, members, canEdit, onOpen
     setAssigneeUserId(task?.assigneeUserId ?? ""); setChildTitle(""); setErr("");
     setSourceNoteId(task?.sourceNoteId ?? null); setSourceNoteTitle(task?.sourceNoteTitle ?? null);
     setNoteQuery(""); setNoteHits([]);
+    setDraftTagIds(task?.tags?.map(t => t.id) ?? []);
+    setDraftMilestoneId(task?.milestoneId ?? null);
   }, [open, task?.id]);
   useEffect(() => {
     if (!open || !canEdit) return;
@@ -185,6 +193,7 @@ export function TaskDialog({ open, task, columns, wsId, members, canEdit, onOpen
         startAt: toIso(startAt), dueAt: toIso(dueAt),
         assigneeUserId: assigneeUserId || null,
         sourceNoteId,
+        ...(!task ? { tagIds: draftTagIds, milestoneId: draftMilestoneId } : {}),
       });
     } catch (x) { setErr((x as Error).message); }
     finally { setBusy(false); }
@@ -209,6 +218,21 @@ export function TaskDialog({ open, task, columns, wsId, members, canEdit, onOpen
         <Input type="date" value={startAt} disabled={!canEdit} onChange={e => setStartAt(e.target.value)} />
         <Input type="date" value={dueAt} disabled={!canEdit} onChange={e => setDueAt(e.target.value)} />
       </div>
+      <TaskTagFields
+        tags={tags}
+        selectedIds={task ? (task.tags?.map(t => t.id) ?? []) : draftTagIds}
+        milestones={milestones}
+        milestoneId={task ? (task.milestoneId ?? null) : draftMilestoneId}
+        canEdit={canEdit}
+        onToggleTag={(id, on) => {
+          if (task && onToggleTag) return onToggleTag(id, on);
+          setDraftTagIds(prev => on ? [...prev, id] : prev.filter(x => x !== id));
+        }}
+        onMilestone={id => {
+          if (task && onMilestone) return onMilestone(id);
+          setDraftMilestoneId(id);
+        }}
+      />
       {canEdit && <div className="space-y-2">
         {sourceNoteId ? <div className="flex items-center justify-between gap-2 text-xs">
           <button type="button" className="min-w-0 truncate underline" onClick={() => onOpenNote(sourceNoteId)}>挂着《{sourceNoteTitle || "笔记"}》</button>
