@@ -7,6 +7,7 @@ import {
   noteFavorites,notebooks,notes,noteVersions,noteVisits,posts,projectMilestones,projectTasks,projectTimeEntries,projects,
 } from "../db/schema.ts";
 import { projectColumns } from "../db/project-columns.ts";
+import { projectTags, projectTaskMilestones, projectTaskTags } from "../db/project-tags.ts";
 import { env } from "../env.ts";
 import { releaseStoredFile } from "./blobs.ts";
 export async function descendantFolderIds(rootId:string){const all=await db.select({id:folders.id,parentId:folders.parentId}).from(folders);const ids=[rootId];for(let i=0;i<ids.length;i++)for(const f of all)if(f.parentId===ids[i]&&!ids.includes(f.id))ids.push(f.id);return ids;}
@@ -62,6 +63,11 @@ export async function purgeWorkspaceProjects(workspaceId:string, tx: Pick<typeof
   const rows=await tx.select({id:projects.id}).from(projects).where(eq(projects.workspaceId,workspaceId));
   if(!rows.length)return;
   const ids=rows.map(r=>r.id);
+  const tagRows=await tx.select({id:projectTags.id}).from(projectTags).where(inArray(projectTags.projectId,ids));
+  if(tagRows.length) await tx.delete(projectTaskTags).where(inArray(projectTaskTags.tagId,tagRows.map(r=>r.id)));
+  await tx.delete(projectTags).where(inArray(projectTags.projectId,ids));
+  const taskRows=await tx.select({id:projectTasks.id}).from(projectTasks).where(eq(projectTasks.workspaceId,workspaceId));
+  if(taskRows.length) await tx.delete(projectTaskMilestones).where(inArray(projectTaskMilestones.taskId,taskRows.map(r=>r.id)));
   await tx.delete(projectTimeEntries).where(inArray(projectTimeEntries.projectId,ids));
   await tx.delete(projectMilestones).where(inArray(projectMilestones.projectId,ids));
   await tx.delete(projectColumns).where(inArray(projectColumns.projectId,ids));
