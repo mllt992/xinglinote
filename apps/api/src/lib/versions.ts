@@ -19,6 +19,7 @@ export async function pruneNoteVersions(now=Date.now()){
     const all=await db.select().from(noteVersions).where(eq(noteVersions.noteId,noteId)).orderBy(desc(noteVersions.version));
     const doomed:string[]=[];const keptDays=new Set<number>();
     all.forEach((v,i)=>{
+      if(v.name?.trim())return;                                 // 用户钉住的快照不裁
       if(i<KEEP_RECENT)return;                                  // 最近 100 版原样留着
       const at=new Date(v.createdAt).getTime();
       if(at<horizon)return void doomed.push(v.id);              // 90 天以前的不再留
@@ -45,7 +46,7 @@ export async function recordNoteVersion(tx: VersionDb, opts: {
   editorId: string;
   source: string;
   matchEditor?: boolean;
-  /** 强制覆盖别人那一版时不要合并，否则刚推进历史的对方快照会被改成覆盖后的正文。 */
+  /** 强制覆盖别人那一版时不要合并，否刘刚推进历史的对方快照会被改成覆盖后的正文。 */
   merge?: boolean;
 }) {
   const recent = opts.merge === false ? [] : await tx.select({
@@ -54,6 +55,7 @@ export async function recordNoteVersion(tx: VersionDb, opts: {
     source: noteVersions.source,
     editorId: noteVersions.editorId,
     createdAt: noteVersions.createdAt,
+    name: noteVersions.name,
   }).from(noteVersions).where(eq(noteVersions.noteId, opts.noteId)).orderBy(desc(noteVersions.version)).limit(5);
   const merge = mergeableNoteVersion(recent, {
     currentVersion: opts.previousVersion,
