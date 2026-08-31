@@ -287,6 +287,7 @@ export async function restoreWorkspacePackage(input: {
         ...revive(raw), id: commentMap.get(String(raw.id)), targetId: raw.targetType === "post" ? mapped(postMap, raw.targetId) : mapped(noteMap, raw.targetId),
         shareId: mapped(shareMap, raw.shareId), siteNotebookId: mapped(nbMap, raw.siteNotebookId), parentId: mapped(commentMap, raw.parentId),
         authorUserId: raw.authorUserId ? mapUser(raw.authorUserId) : null, authorAgentId: null,
+        resolvedBy: raw.resolvedBy ? mapUser(raw.resolvedBy) : null,
       })));
       await insertRows(tx, corrections, snapshot.corrections.map(raw => ({
         ...revive(raw), id: correctionMap.get(String(raw.id)), noteId: mapped(noteMap, raw.noteId), shareId: mapped(shareMap, raw.shareId),

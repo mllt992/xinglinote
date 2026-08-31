@@ -3,7 +3,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, use
 import * as Tabs from "@radix-ui/react-tabs";
 import {
   AlertCircle, Archive, Bot, CalendarDays, Check, ChevronDown, ChevronRight, Circle, FilePlus2, Folder, Inbox,
-  FolderInput, FolderPlus, Globe2, List, MessageSquare, Link2, Lock, LogOut, MoreHorizontal, Notebook, Paintbrush, PanelRight,
+  FolderInput, FolderPlus, Globe2, List, MessageCircle, MessageSquare, Link2, Lock, LogOut, MoreHorizontal, Notebook, Paintbrush, PanelRight,
   Pencil, Plus, RotateCcw, Search, Star, Settings, Share2, Sparkles, Sun, Trash2, Users, X, Copy, ExternalLink, Upload, Paperclip, Download,
   HardDrive, Kanban, Keyboard, Maximize2, Minimize2, PanelLeft, PenLine, Terminal, Type, UserRound, Workflow, FoldHorizontal, UnfoldHorizontal,
 } from "lucide-react";
@@ -76,6 +76,8 @@ import { AppNav, loadLastWorkspace, saveLastWorkspace, useSquareEnabled, type Na
 import { CircleRail, SquareRail } from "./components/feed-rail";
 import { feedUpdateTotal, formatFeedUpdateLabel, useFeedBadges } from "./components/feed-updates";
 import { SquareCatalog } from "./components/square-catalog";
+import { copyPlainText, copyRichText } from "./lib/clipboard";
+import { toSafeHtml } from "./lib/render-html";
 
 /** 字号在档位里挪一格，到头就停住。 */
 function stepScale(current: number, delta: number): number {
@@ -387,7 +389,7 @@ function AccountMenu({ me, wsId }: { me: Me | null | undefined; wsId?: string })
 
 function Workspace() {
   const askConfirm = useConfirm(); const askText = usePrompt(); const toast = useToast();
-  const me = useMe(); const nav = useNavigate(); const { wsId, noteId, savedId } = useParams();
+  const me = useMe(); const nav = useNavigate(); const { wsId, noteId, savedId } = useParams(); const [workspaceParams] = useSearchParams();
   const receivedMode = useLocation().pathname.includes("/received");
   const circleUpdates = useFeedBadges({ workspaceId: wsId }).circle;
   const circleBadge = feedUpdateTotal(circleUpdates);
@@ -492,6 +494,7 @@ function Workspace() {
   }, [noteId]);
 
   function openRail(tab: RailTab | null) { setRailState(tab); saveRailTab(tab); }
+  useEffect(() => { if (workspaceParams.get("rail") === "comments") openRail("comments"); }, [noteId, workspaceParams]);
 
   /** 大纲跳转：编辑器滚到源码行，预览滚到对应标题锚点，两边都对上。 */
   function jumpToHeading(slug: string, line: number) {
@@ -505,6 +508,12 @@ function Workspace() {
     const at = body.indexOf(excerpt);
     if (at < 0) { toast.error("定位失败", "正文里已经找不到这段原文了。"); return; }
     editorRef.current?.selectRange(at, at + excerpt.length);
+  }
+
+  /** 评论锚点已经由侧栏完成消歧；切到编辑态后再选中，否则预览态没有 CodeMirror 实例。 */
+  function locateBodyRange(from: number, to: number) {
+    setEditorTab("write");
+    window.setTimeout(() => editorRef.current?.selectRange(from, to), 0);
   }
 
   async function deleteAttachment(a: Attachment) {
@@ -877,6 +886,25 @@ function Workspace() {
     } catch (e) { toast.error("上传失败", (e as Error).message); return null; }
   }
 
+  async function copyCurrentNote(kind: "markdown" | "rich") {
+    const current = noteRef.current;
+    if (!current) return;
+    const done = kind === "markdown"
+      ? await copyPlainText(current.bodyMd)
+      : await copyRichText(toSafeHtml(current.bodyMd), plainTextOf(current.bodyMd));
+    if (done) toast.success(kind === "markdown" ? "已复制 Markdown 正文" : "已复制富文本");
+    else toast.error("复制失败", "浏览器没有授予剪贴板权限，请选中正文后手动复制。");
+  }
+
+  async function exportCurrentNote() {
+    const current = noteRef.current;
+    if (!current) return;
+    try {
+      await downloadZip(`/api/v1/notes/${current.id}/export.zip`);
+      toast.success("已导出这篇笔记", "压缩包包含 Markdown 正文和笔记附件。");
+    } catch (e) { toast.error("导出失败", (e as Error).message); }
+  }
+
   // 分栏里的预览。**不能直接吃 note.bodyMd**：那样每敲一个字都要把整篇重新
   // markdown-it 一遍、DOMPurify 一遍、再补一遍公式与图，长笔记打字会明显掉帧。
   // 停手 140ms 再渲染；「预览」独占那一屏的时候不走这条路，那里本来就没人在打字。
@@ -1057,8 +1085,12 @@ function Workspace() {
       { id: "diagram", group: "笔记", label: "AI 画图", icon: <Workflow />, run: () => openRail("diagram") },
       { id: "outline", group: "笔记", label: "大纲", icon: <List />, run: () => openRail("outline") },
       { id: "links", group: "笔记", label: "反向链接", icon: <PanelRight />, run: () => openRail("links") },
+      { id: "comments", group: "笔记", label: "协作评论", icon: <MessageCircle />, run: () => openRail("comments") },
       { id: "attachments", group: "笔记", label: "附件", icon: <Paperclip />, run: () => openRail("attachments") },
       { id: "versions", group: "笔记", label: "版本历史", icon: <RotateCcw />, run: () => openRail("versions") },
+      { id: "copy-markdown", group: "笔记", label: "复制 Markdown 正文", icon: <Copy />, run: () => void copyCurrentNote("markdown") },
+      { id: "copy-rich", group: "笔记", label: "复制为富文本", icon: <Copy />, run: () => void copyCurrentNote("rich") },
+      { id: "export-note", group: "笔记", label: "导出这篇笔记", icon: <Download />, run: () => void exportCurrentNote() },
       { id: "move-note", group: "笔记", label: "移动到目录…", icon: <FolderInput />, disabled: !note.canEdit || folders.length === 0, run: () => {
         const current = tree.find(n => n.id === note.id);
         setMovingNote(current ?? { id: note.id, title: note.title, folderId: null });
@@ -1153,7 +1185,7 @@ function Workspace() {
         <input id="note-inline-attachment-input" className="hidden" type="file" onChange={async e=>{const f=e.target.files?.[0];if(!f)return;const md=await uploadAttachment(f);if(md)editorRef.current?.insertText(md);e.target.value=''}} />
         <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-4"><div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"><span className="shrink-0">{activeNb?.title}</span>{folderAncestorIds(folders, tree.find(n => n.id === note.id)?.folderId ?? null).slice().reverse().map(id => { const f = folders.find(x => x.id === id); return f ? <span key={f.id} className="flex min-w-0 items-center gap-1.5"><ChevronRight className="size-3 shrink-0" /><span className="truncate">{f.title}</span></span> : null; })}<ChevronRight className="size-3 shrink-0" /><span className="truncate text-foreground">{note.title || "未命名"}</span>{note.moderation?.held && <Badge className={note.moderation.status === "rejected" ? "border-transparent bg-destructive/10 text-destructive" : "border-transparent bg-[color-mix(in_srgb,var(--warning)_14%,transparent)] text-[var(--warning)]"}>{note.moderation.queued ? "审核中" : note.moderation.status === "rejected" ? "未通过审核" : "待人工审核"}</Badge>}</div><div className="ml-auto flex items-center gap-1">{viewers.length > 0 && <Tooltip content={`${viewers.join("、")} 也打开着这篇`}><Badge className="mr-1 gap-1"><Users className="size-3" />{viewers.length === 1 ? `${viewers[0]} 在看` : `${viewers.length} 人在看`}</Badge></Tooltip>}
 <Tooltip content={favorited ? "取消收藏" : "收藏这篇"}><Button variant="ghost" size="icon" aria-label={favorited ? "取消收藏" : "收藏"} onClick={async () => { const next = !favorited; setFavorited(next); try { await api(`/api/v1/notes/${note.id}/favorite`, { method: next ? "PUT" : "DELETE" }); } catch (e) { setFavorited(!next); setStatus((e as Error).message); } }}><Star className={favorited ? "fill-current" : ""} /></Button></Tooltip>
-<Tooltip content="协作：谁能一起编这篇、此刻谁在"><Button variant="ghost" size="sm" onClick={() => setShowCollab(true)}><Users /> <span className="hidden sm:inline">协作</span></Button></Tooltip><Button size="sm" onClick={() => setShareTarget({ kind: "note", id: note.id, title: note.title, bodyMd: note.bodyMd })}><Share2 /> <span className="hidden sm:inline">分享</span></Button><Tooltip content={note.aiIndex ? "AI 可读取此笔记" : "AI 无法读取此笔记"}><Button variant={note.aiIndex ? "secondary" : "ghost"} size="sm" onClick={() => changeNote({ aiIndex: !note.aiIndex }, true)}><Bot /> <span className="hidden sm:inline">AI 可读</span></Button></Tooltip><Tooltip content={rail ? "收起右栏" : "展开右栏（大纲 / 反向链接 / 附件 / 版本）"}><Button variant={rail ? "secondary" : "ghost"} size="icon" aria-label="右栏" onClick={() => openRail(rail ? null : "outline")}><PanelRight /></Button></Tooltip><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => openRail("ai")}><Sparkles />AI 写作建议</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("diagram")}><Workflow />AI 画图</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("outline")}><List />大纲</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("versions")}><RotateCcw />版本历史</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("attachments")}><Paperclip />附件 {atts.length > 0 && <Badge className="ml-auto">{atts.length}</Badge>}</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("review")}><MessageSquare />评论与纠错</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("links")}><PanelRight />反向链接 <Badge className="ml-auto">{backlinks.length}</Badge></DropdownMenuItem><DropdownMenuItem onSelect={() => changeNote({ published: !note.published }, true)}><Globe2 />{note.published ? "从文档站隐藏此页" : "在文档站发布此页"}</DropdownMenuItem>{site?.canPublish && !site.published && site.pending && <DropdownMenuItem onSelect={() => void changeSite({ action: "approve" }, "已通过，文档站已上线")}><Globe2 />通过并上线文档站</DropdownMenuItem>}{site?.canPublish && !site.published && site.pending && <DropdownMenuItem onSelect={() => void changeSite({ action: "reject" }, "已驳回发布申请")}><Globe2 />驳回发布申请</DropdownMenuItem>}{site?.canPublish && <DropdownMenuItem onSelect={() => void changeSite({ published: !site.published }, site.published ? "已下线文档站" : "文档站已发布")}><Globe2 />{site.published ? "下线文档站" : "发布笔记本为文档站"}</DropdownMenuItem>}{site?.canRequest && !site.published && <DropdownMenuItem onSelect={() => void changeSite({ published: !site.pending }, site.pending ? "已撤回申请" : "已提交，等管理员审核")}><Globe2 />{site.pending ? "撤回发布申请" : "申请发布为文档站"}</DropdownMenuItem>}{site?.published && <DropdownMenuItem onSelect={() => window.open(site.slug, "_blank")}><ExternalLink />打开文档站</DropdownMenuItem>}<DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onSelect={() => void deleteCurrent()}><Trash2 />移到回收站</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div></div>
+<Tooltip content="评论选中内容或整篇笔记"><Button variant={rail === "comments" ? "secondary" : "ghost"} size="icon" aria-label="协作评论" onClick={() => openRail("comments")}><MessageCircle /></Button></Tooltip><Tooltip content="协作：谁能一起编这篇、此刻谁在"><Button variant="ghost" size="sm" onClick={() => setShowCollab(true)}><Users /> <span className="hidden sm:inline">协作</span></Button></Tooltip><Button size="sm" onClick={() => setShareTarget({ kind: "note", id: note.id, title: note.title, bodyMd: note.bodyMd })}><Share2 /> <span className="hidden sm:inline">分享</span></Button><Tooltip content={note.aiIndex ? "AI 可读取此笔记" : "AI 无法读取此笔记"}><Button variant={note.aiIndex ? "secondary" : "ghost"} size="sm" onClick={() => changeNote({ aiIndex: !note.aiIndex }, true)}><Bot /> <span className="hidden sm:inline">AI 可读</span></Button></Tooltip><Tooltip content={rail ? "收起右栏" : "展开右栏（评论 / 大纲 / 反向链接 / 附件 / 版本）"}><Button variant={rail ? "secondary" : "ghost"} size="icon" aria-label="右栏" onClick={() => openRail(rail ? null : "outline")}><PanelRight /></Button></Tooltip><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => openRail("ai")}><Sparkles />AI 写作建议</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("diagram")}><Workflow />AI 画图</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("outline")}><List />大纲</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("comments")}><MessageCircle />协作评论</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("versions")}><RotateCcw />版本历史</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("attachments")}><Paperclip />附件 {atts.length > 0 && <Badge className="ml-auto">{atts.length}</Badge>}</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("review")}><MessageSquare />公开评论与纠错</DropdownMenuItem><DropdownMenuItem onSelect={() => openRail("links")}><PanelRight />反向链接 <Badge className="ml-auto">{backlinks.length}</Badge></DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => void copyCurrentNote("markdown")}><Copy />复制 Markdown 正文</DropdownMenuItem><DropdownMenuItem onSelect={() => void copyCurrentNote("rich")}><Copy />复制为富文本</DropdownMenuItem><DropdownMenuItem onSelect={() => void exportCurrentNote()}><Download />导出这篇笔记</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeNote({ published: !note.published }, true)}><Globe2 />{note.published ? "从文档站隐藏此页" : "在文档站发布此页"}</DropdownMenuItem>{site?.canPublish && !site.published && site.pending && <DropdownMenuItem onSelect={() => void changeSite({ action: "approve" }, "已通过，文档站已上线")}><Globe2 />通过并上线文档站</DropdownMenuItem>}{site?.canPublish && !site.published && site.pending && <DropdownMenuItem onSelect={() => void changeSite({ action: "reject" }, "已驳回发布申请")}><Globe2 />驳回发布申请</DropdownMenuItem>}{site?.canPublish && <DropdownMenuItem onSelect={() => void changeSite({ published: !site.published }, site.published ? "已下线文档站" : "文档站已发布")}><Globe2 />{site.published ? "下线文档站" : "发布笔记本为文档站"}</DropdownMenuItem>}{site?.canRequest && !site.published && <DropdownMenuItem onSelect={() => void changeSite({ published: !site.pending }, site.pending ? "已撤回申请" : "已提交，等管理员审核")}><Globe2 />{site.pending ? "撤回发布申请" : "申请发布为文档站"}</DropdownMenuItem>}{site?.published && <DropdownMenuItem onSelect={() => window.open(site.slug, "_blank")}><ExternalLink />打开文档站</DropdownMenuItem>}<DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onSelect={() => void deleteCurrent()}><Trash2 />移到回收站</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div></div>
         {conflict && <NoteConflictBanner editor={conflict.updatedBy} onLoadTheirs={loadConflictTheirs} onOverwrite={overwriteConflict} />}
         <div className="relative flex min-h-0 flex-1"><div className="min-h-0 min-w-0 flex-1"><Tabs.Root value={editorTab} onValueChange={v => setEditorTab(v as "write" | "preview" | "split")} className="flex h-full flex-col"><div className="flex items-center justify-between px-4 pt-4 sm:px-6 sm:pt-6"><Tabs.List className="inline-flex rounded-lg bg-muted p-1"><Tabs.Trigger value="write" className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">编辑</Tabs.Trigger><Tabs.Trigger value="preview" className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">预览</Tabs.Trigger><Tabs.Trigger value="split" className="hidden rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm sm:block">分栏</Tabs.Trigger></Tabs.List><div className="flex items-center gap-1">{editorTab === "write" && <Tooltip content={layout.wysiwyg ? "即时渲染：开（点击显示 Markdown 标记）" : "即时渲染：关（点击隐藏标记）"}><Button variant={layout.wysiwyg ? "secondary" : "ghost"} size="icon" className="size-8" aria-label="切换单栏编辑即时渲染" onClick={() => setLayout(v => ({ ...v, wysiwyg: !v.wysiwyg }))}><Type /></Button></Tooltip>}<Tooltip content={layout.wide ? "宽栏：开（点击收回 46rem 易读行宽）" : "宽栏：关（点击让正文铺满编辑区）"}><Button variant={layout.wide ? "secondary" : "ghost"} size="icon" className="size-8" aria-label="切换宽栏" aria-pressed={layout.wide} onClick={() => setLayout(v => ({ ...v, wide: !v.wide }))}>{layout.wide ? <FoldHorizontal /> : <UnfoldHorizontal />}</Button></Tooltip><Tooltip content={reloading ? "正在刷新…" : "刷新这篇（重新从服务端读）"}><Button variant="ghost" size="icon" className="size-8" aria-label="刷新这篇笔记" disabled={reloading} onClick={() => void reloadNote()}><RotateCcw className={reloading ? "animate-spin" : undefined} /></Button></Tooltip><Tooltip content="命令面板（Ctrl+Shift+P）"><Button variant="ghost" size="icon" className="size-8" aria-label="命令面板" onClick={() => setPalette(true)}><Terminal /></Button></Tooltip><Tooltip content={zen ? "退出全屏（Esc）" : "编辑器全屏"}><Button variant="ghost" size="icon" className="size-8" aria-label={zen ? "退出全屏" : "编辑器全屏"} onClick={() => void toggleZen()}>{zen ? <Minimize2 /> : <Maximize2 />}</Button></Tooltip></div></div><div className="editor-measure mx-auto flex min-h-0 flex-1 flex-col px-4 pb-4 pt-3 sm:px-6 sm:pb-6 sm:pt-4" data-wide={layout.wide ? "1" : undefined} style={{ "--editor-font-scale": String(layout.fontScale) } as React.CSSProperties}><input className="mb-3 w-full border-0 bg-transparent font-[var(--font-title)] text-2xl font-semibold tracking-[-.045em] outline-none placeholder:text-muted-foreground/40 sm:mb-4 sm:text-3xl md:text-4xl" value={note.title} onChange={e => changeNote({ title: e.target.value })} placeholder="无标题" />{note.canEdit && editorTab !== "preview" && <EditorFormatBar onAction={action => editorRef.current?.run(action)} activeActions={editorRef.current?.activeActions()} history={editorRef.current?.historyState() ?? { canUndo: false, canRedo: false }} onUpload={() => document.getElementById("note-inline-attachment-input")?.click()} spellcheck={layout.spellcheck} onToggleSpellcheck={() => setLayout(v => ({ ...v, spellcheck: !v.spellcheck }))} />}<Tabs.Content value="write" className="min-h-0 flex-1 overflow-hidden"><MarkdownEditor ref={editorRef} className="h-full" resetKey={note.id} value={note.bodyMd} readOnly={!note.canEdit} onChange={bodyMd => changeNote({ bodyMd })} onSave={() => void save()} onWiki={openWiki} onUpload={uploadAttachment} onCursor={setCursor} typewriter={layout.typewriter} previewMode={editorPreviewMode("write", layout.wysiwyg)} vim={layout.vim} onVimMode={reportVimMode} spellcheck={layout.spellcheck} render={layout.render} collab={me && note.canEdit ? { id: me.id, name: me.displayName } : null} onCollab={onCollab} completion={{ workspaceId: wsId, excludeNoteId: note.id, notebookNames: Object.fromEntries(nbs.map(n => [n.id, n.title])) }} wikiPreview={loadWikiPreview} autoFocus placeholder="开始写作，或输入 [[笔记标题]] 建立双链…" /></Tabs.Content><Tabs.Content value="preview" className="min-h-0 flex-1 overflow-auto"><div data-note-preview className="w-full py-2"><MarkdownView source={note.bodyMd} onWiki={openWiki} onToggleTask={note.canEdit ? bodyMd => changeNote({ bodyMd }, true) : undefined} /></div></Tabs.Content><Tabs.Content value="split" className="min-h-0 flex-1"><div className="grid h-full min-h-0 grid-cols-1 divide-x divide-border overflow-hidden rounded-xl border border-border md:grid-cols-2"><MarkdownEditor ref={editorRef} className="h-full min-h-0 overflow-hidden bg-muted/25 p-5" resetKey={note.id} value={note.bodyMd} readOnly={!note.canEdit} onChange={bodyMd => changeNote({ bodyMd })} onSave={() => void save()} onWiki={openWiki} onUpload={uploadAttachment} onScrollLine={syncPreview} onCursor={setCursor} typewriter={layout.typewriter} previewMode={editorPreviewMode("split", layout.wysiwyg)} vim={layout.vim} onVimMode={reportVimMode} spellcheck={layout.spellcheck} render={layout.render} collab={me && note.canEdit ? { id: me.id, name: me.displayName } : null} onCollab={onCollab} completion={{ workspaceId: wsId, excludeNoteId: note.id, notebookNames: Object.fromEntries(nbs.map(n => [n.id, n.title])) }} wikiPreview={loadWikiPreview} placeholder="开始写作，或输入 [[笔记标题]] 建立双链…" /><ScrollArea className="h-full" viewportRef={bindPreview}><div data-note-preview className="p-6"><MarkdownView source={previewBody} sourceLines onWiki={openWiki} onToggleTask={note.canEdit ? bodyMd => changeNote({ bodyMd }, true) : undefined} /></div></ScrollArea></div></Tabs.Content></div></Tabs.Root></div>
           {rail && <NoteRail
@@ -1193,6 +1225,7 @@ ${a.mime.startsWith("image/") ? "!" : ""}[${a.filename}](${a.url})` }, true)}
             }}
             onReviewApplied={() => { void api<NoteDto>(`/api/v1/notes/${note.id}`).then(fresh => { setNote(fresh); noteRef.current = fresh; const savedAt = fresh.updatedAt ? new Date(fresh.updatedAt).getTime() : Date.now(); setLastSavedAt(Number.isFinite(savedAt) ? savedAt : Date.now()); say(`已保存 · v${fresh.version}`); }); }}
             onLocate={locateInBody}
+            onLocateRange={locateBodyRange}
           />}
         </div>
         <EditorStatusBar status={status} statusErr={statusErr} bodyMd={note.bodyMd} cursor={cursor} readOnly={!note.canEdit} vimMode={vimMode} lastSavedAt={lastSavedAt} saving={saving} onSave={() => saveActionRef.current()} right={<CollabBadge collab={collab} />} />

@@ -74,7 +74,7 @@ interactionRoutes.get("/notes/:id/interactions", async c => {
   const noteId=c.req.param("id");
   // scope=handled 取已处理的历史，审核完的东西不该就此消失（设计 09）。
   const handled=c.req.query("scope")==="handled";
-  const cs=await db.select().from(comments).where(and(eq(comments.targetId,noteId),handled?ne(comments.status,"pending"):eq(comments.status,"pending"))).orderBy(desc(comments.createdAt)).limit(handled?50:200);
+  const cs=await db.select().from(comments).where(and(eq(comments.targetType,"note"),eq(comments.targetId,noteId),handled?ne(comments.status,"pending"):eq(comments.status,"pending"))).orderBy(desc(comments.createdAt)).limit(handled?50:200);
   const fixes=await db.select().from(corrections).where(and(eq(corrections.noteId,noteId),handled?ne(corrections.status,"pending"):eq(corrections.status,"pending"))).orderBy(desc(corrections.createdAt)).limit(handled?50:200);
   return ok(c,{comments:cs,corrections:fixes});
 });

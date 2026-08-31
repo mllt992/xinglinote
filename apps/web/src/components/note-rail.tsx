@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { History, List, ListChecks, MessageSquare, Paperclip, PanelRight, Share2, Sparkles, Trash2, Upload, Workflow, X } from "lucide-react";
+import { History, List, ListChecks, MessageCircle, MessageSquare, Paperclip, PanelRight, Share2, Sparkles, Trash2, Upload, Workflow, X } from "lucide-react";
 import { outlineOf, type DiagramBlock, type OutlineItem } from "@kb/shared/markdown";
 import { useDebounced } from "../lib/use-debounced";
 import { cn } from "../lib/utils";
@@ -13,16 +13,18 @@ import { AiDiagramTab } from "./ai-diagram-tab";
 import { AiWriteTab, type Selection } from "./ai-write-tab";
 import { AiTasksTab } from "./ai-tasks-tab";
 import { ReviewTab } from "./review-tab";
+import { NoteCommentsTab } from "./note-comments-tab";
 
-export const RAIL_TABS = ["outline", "links", "attachments", "versions", "review", "ai", "diagram", "tasks"] as const;
+export const RAIL_TABS = ["outline", "comments", "links", "attachments", "versions", "review", "ai", "diagram", "tasks"] as const;
 export type RailTab = (typeof RAIL_TABS)[number];
 
 const TAB_META: Record<RailTab, { label: string; icon: ReactNode }> = {
   outline: { label: "大纲", icon: <List /> },
+  comments: { label: "协作评论", icon: <MessageCircle /> },
   links: { label: "反向链接", icon: <PanelRight /> },
   attachments: { label: "附件", icon: <Paperclip /> },
   versions: { label: "版本历史", icon: <History /> },
-  review: { label: "评论与纠错", icon: <MessageSquare /> },
+  review: { label: "公开互动", icon: <MessageSquare /> },
   ai: { label: "AI 写作", icon: <Sparkles /> },
   diagram: { label: "AI 画图", icon: <Workflow /> },
   tasks: { label: "提取待办", icon: <ListChecks /> },
@@ -310,6 +312,7 @@ export function NoteRail({
   onApplyAi,
   onReviewApplied,
   onLocate,
+  onLocateRange,
 }: {
   note: RailNote;
   tab: RailTab;
@@ -336,6 +339,8 @@ export function NoteRail({
   onApplyAi: (bodyMd: string, baseVersion: number) => Promise<void>;
   onReviewApplied: () => void;
   onLocate: (excerpt: string) => void;
+  /** 定位内部评论的稳定文本锚点。 */
+  onLocateRange: (from: number, to: number) => void;
 }) {
   const [width, setWidth] = useState(loadWidth);
   const host = useRef<HTMLElement | null>(null);
@@ -376,6 +381,7 @@ export function NoteRail({
         className="absolute inset-y-0 -left-1 z-10 w-2 cursor-col-resize hover:bg-primary/20"
       />
       <div className="flex h-14 shrink-0 items-center gap-1 border-b border-border px-2">
+        <div className="flex min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {RAIL_TABS.map(key => (
           <Tooltip key={key} content={TAB_META[key].label}>
             <Button
@@ -395,11 +401,12 @@ export function NoteRail({
             </Button>
           </Tooltip>
         ))}
-        <span className="ml-1 min-w-0 flex-1 truncate text-sm font-semibold">{TAB_META[tab].label}</span>
+        </div>
         <Button variant="ghost" size="icon" aria-label="关闭右栏" onClick={onClose}><X /></Button>
       </div>
 
       {tab === "outline" && <OutlineTab source={note.bodyMd} activeLine={activeLine} onJump={onJump} />}
+      {tab === "comments" && <NoteCommentsTab note={note} getSelection={getSelection} onLocate={onLocateRange} />}
       {tab === "links" && <LinksTab note={note} backlinks={backlinks} wsId={wsId} onSearchTag={onSearchTag} onChangeTags={onChangeTags} />}
       {tab === "attachments" && (
         <AttachmentsTab note={note} atts={atts} onUpload={onUpload} onShare={onShareAttachment} onDelete={onDeleteAttachment} onInsert={onInsertAttachment} />

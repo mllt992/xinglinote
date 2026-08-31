@@ -241,6 +241,15 @@ const statements = [
     author_user_id uuid, guest_name text, guest_email text, body text NOT NULL, status text NOT NULL DEFAULT 'pending', created_at timestamptz NOT NULL DEFAULT now(), edited_at timestamptz
   )`,
   `CREATE INDEX IF NOT EXISTS comments_target_idx ON comments(target_type,target_id,status)`,
+  `ALTER TABLE comments ADD COLUMN IF NOT EXISTS anchor_from integer`,
+  `ALTER TABLE comments ADD COLUMN IF NOT EXISTS anchor_to integer`,
+  `ALTER TABLE comments ADD COLUMN IF NOT EXISTS anchor_quote text`,
+  `ALTER TABLE comments ADD COLUMN IF NOT EXISTS anchor_prefix text`,
+  `ALTER TABLE comments ADD COLUMN IF NOT EXISTS anchor_suffix text`,
+  `ALTER TABLE comments ADD COLUMN IF NOT EXISTS anchor_version integer`,
+  `ALTER TABLE comments ADD COLUMN IF NOT EXISTS resolved_at timestamptz`,
+  `ALTER TABLE comments ADD COLUMN IF NOT EXISTS resolved_by uuid`,
+  `CREATE INDEX IF NOT EXISTS comments_parent_idx ON comments(parent_id,created_at)`,
   `CREATE TABLE IF NOT EXISTS corrections (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), note_id uuid NOT NULL REFERENCES notes(id), share_id uuid, site_notebook_id uuid,
     original_excerpt text NOT NULL, original_hash text NOT NULL, suggested text NOT NULL, comment text, author_user_id uuid, guest_name text, guest_email text,

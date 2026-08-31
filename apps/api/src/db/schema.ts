@@ -392,6 +392,10 @@ export const comments = pgTable("comments", {
   shareId: uuid("share_id"), siteNotebookId: uuid("site_notebook_id"), parentId: uuid("parent_id"),
   authorUserId: uuid("author_user_id"), authorAgentId: uuid("author_agent_id"), guestName: text("guest_name"), guestEmail: text("guest_email"),
   body: text("body").notNull(), status: text("status").notNull().default("pending"),
+  /** note_thread 根评论的文本锚点；回复行保持为空。偏移失效后用 quote + context 重新定位。 */
+  anchorFrom: integer("anchor_from"), anchorTo: integer("anchor_to"), anchorQuote: text("anchor_quote"),
+  anchorPrefix: text("anchor_prefix"), anchorSuffix: text("anchor_suffix"), anchorVersion: integer("anchor_version"),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }), resolvedBy: uuid("resolved_by"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), editedAt: timestamp("edited_at", { withTimezone: true }),
 });
 export const corrections = pgTable("corrections", {
