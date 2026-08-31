@@ -1,6 +1,6 @@
-export type EditorTab = "write" | "preview" | "split";
+export type EditorPreviewMode = "live" | "source";
 
-/** 分栏右侧已经是完整预览；左侧保持纯 Markdown，避免同一屏出现两份实时预览。 */
-export function editorWysiwyg(tab: EditorTab, enabled: boolean) {
-  return tab === "write" && enabled;
+/** 单栏编辑固定即时渲染；分栏左侧固定源码，右侧负责完整预览。 */
+export function editorWysiwyg(mode: EditorPreviewMode) {
+  return mode === "live";
 }

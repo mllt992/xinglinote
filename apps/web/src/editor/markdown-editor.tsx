@@ -26,7 +26,7 @@ import { cachedVim, loadVim, vimExtension, vimModeOf, type VimMode } from "./vim
 import { wikiCompletion, type WikiCompleteOptions } from "./wiki-complete";
 import { wikiHover, type WikiPreviewLoader } from "./wiki-hover";
 import type { RenderToggles } from "../lib/layout-prefs";
-import { editorWysiwyg } from "../lib/editor-mode";
+import { editorWysiwyg, type EditorPreviewMode } from "../lib/editor-mode";
 
 const ALL_ON: RenderToggles = { image: true, math: true, table: true, diagram: true };
 
@@ -196,7 +196,7 @@ export function MarkdownEditor({
   completion,
   wikiPreview,
   typewriter = false,
-  wysiwyg = false,
+  previewMode = "live",
   render = ALL_ON,
   vim = false,
   onVimMode,
@@ -228,8 +228,8 @@ export function MarkdownEditor({
   wikiPreview?: WikiPreviewLoader;
   /** 打字机滚动：光标行钉在视口中间。 */
   typewriter?: boolean;
-  /** 即时渲染（Typora 那套）：标记按元素显隐、表格就地渲染、正文比例字体。 */
-  wysiwyg?: boolean;
+  /** 显示口径：单栏编辑用 live；分栏左侧必须显式传 source。 */
+  previewMode?: EditorPreviewMode;
   /** 就地渲染哪些东西。默认全开；关掉的那项退回源码。 */
   render?: RenderToggles;
   /** Vim keymap。按需加载，关着的时候一个字节都不下。 */
@@ -261,8 +261,8 @@ export function MarkdownEditor({
   const collabSession = useRef<CollabSession | null>(null);
   const peers = useRef<CollabPeer[]>([]);
   const status = useRef<CollabStatus>("offline");
-  // onScrollLine 只在分栏左侧传入；右侧已有完整预览，此处必须保持纯源码。
-  const effectiveWysiwyg = editorWysiwyg(onScrollLine ? "split" : "write", wysiwyg);
+  // 不再根据滚动回调猜模式：调用方明确决定是即时渲染还是纯源码。
+  const effectiveWysiwyg = editorWysiwyg(previewMode);
 
   useImperativeHandle(ref, () => ({
     scrollToLine: line => {
