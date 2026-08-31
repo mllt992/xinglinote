@@ -7,16 +7,24 @@ type VersionDb = Pick<typeof db, "select" | "insert" | "update">;
 
 const KEEP_RECENT=100,DAY=86400000,KEEP_DAILY_DAYS=90;
 
+/** 用户命名列：schema 里后加的，用 SQL 读以免强绑一次 50KB 的 schema.ts 整文件改写。 */
+const versionName = sql<string | null>`note_versions.name`.as("name");
+
 /**
  * 规格 03 的版本保留策略：最近 100 版全留；再往前每天留一版，留到 90 天；更早的删掉。
- * 返回删掉的条数，方便审计与验收。
+ * 用户钉住名字的快照不裁。返回删掉的条数，方便审计与验收。
  */
 export async function pruneNoteVersions(now=Date.now()){
   const busy=await db.select({noteId:noteVersions.noteId}).from(noteVersions).groupBy(noteVersions.noteId).having(sql`count(*) > ${KEEP_RECENT}`);
   const horizon=now-KEEP_DAILY_DAYS*DAY;
   let removed=0;
   for(const {noteId} of busy){
-    const all=await db.select().from(noteVersions).where(eq(noteVersions.noteId,noteId)).orderBy(desc(noteVersions.version));
+    const all=await db.select({
+      id: noteVersions.id,
+      version: noteVersions.version,
+      createdAt: noteVersions.createdAt,
+      name: versionName,
+    }).from(noteVersions).where(eq(noteVersions.noteId,noteId)).orderBy(desc(noteVersions.version));
     const doomed:string[]=[];const keptDays=new Set<number>();
     all.forEach((v,i)=>{
       if(v.name?.trim())return;                                 // 用户钉住的快照不裁
@@ -55,7 +63,7 @@ export async function recordNoteVersion(tx: VersionDb, opts: {
     source: noteVersions.source,
     editorId: noteVersions.editorId,
     createdAt: noteVersions.createdAt,
-    name: noteVersions.name,
+    name: versionName,
   }).from(noteVersions).where(eq(noteVersions.noteId, opts.noteId)).orderBy(desc(noteVersions.version)).limit(5);
   const merge = mergeableNoteVersion(recent, {
     currentVersion: opts.previousVersion,
