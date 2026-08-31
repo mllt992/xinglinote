@@ -2,6 +2,7 @@ import type { Server } from "node:http";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { sql } from "drizzle-orm";
 import { ZodError } from "zod";
 import { fail } from "@kb/shared";
 import { seedBuiltin } from "./db/seed.ts";
@@ -10,6 +11,7 @@ import { onError } from "./http.ts";
 import { mountWeb } from "./lib/static-web.ts";
 import { auth } from "./routes/auth.ts";
 import { knowledge } from "./routes/notes.ts";
+import { noteVersionRoutes } from "./routes/note-versions.ts";
 import { themeRoutes } from "./routes/themes.ts";
 import { shareRoutes } from "./routes/shares.ts";
 import { adminRoutes } from "./routes/admin.ts";
@@ -101,6 +103,7 @@ app.get("/api/readyz", async (c) => {
   return c.json({ ok: true, database: true });
 });
 app.route("/api/v1", auth);
+app.route("/api/v1", noteVersionRoutes);
 app.route("/api/v1", knowledge);
 app.route("/api/v1", themeRoutes);
 app.route("/api/v1", shareRoutes);
@@ -128,6 +131,9 @@ app.route("/api/v1", navRoutes);
 
 const web = mountWeb(app);
 
+await db.execute(sql`ALTER TABLE note_versions ADD COLUMN IF NOT EXISTS name text`).catch((e) => {
+  console.warn("note_versions.name 列还没有（先跑 pnpm db:push 再建表）:", (e as Error).message);
+});
 await seedBuiltin().catch((e) => {
   console.warn("seed skipped (先跑 pnpm db:push):", (e as Error).message);
 });

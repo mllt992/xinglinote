@@ -3,12 +3,13 @@ import { test } from "node:test";
 import { mergeableNoteVersion } from "./note-version-merge.ts";
 
 const now = Date.parse("2026-03-26T10:00:00Z");
-const row = (source: string, extra: Partial<{ id: string; version: number; editorId: string; createdAt: Date }> = {}) => ({
+const row = (source: string, extra: Partial<{ id: string; version: number; editorId: string; createdAt: Date; name: string | null }> = {}) => ({
   id: extra.id ?? "v9",
   version: extra.version ?? 9,
   source,
   editorId: extra.editorId ?? "alice",
   createdAt: extra.createdAt ?? new Date(now - 60_000),
+  name: extra.name,
 });
 
 test("5 分钟内同一 source、同一人、版本对得上才合并", () => {
@@ -27,4 +28,9 @@ test("超时、换人、换 source、版本对不上，都另起一条", () => {
 test("协同不限编辑者：房间是一处落库", () => {
   assert.equal(mergeableNoteVersion([row("collab")], { currentVersion: 9, source: "collab", now }), "v9");
   assert.equal(mergeableNoteVersion([row("collab")], { currentVersion: 9, source: "collab", editorId: "bob", now }), null, "一旦传入 editorId 仍要核对");
+});
+
+test("已经起过名字的快照不合并，避免自动保存冲掉钉住的版本", () => {
+  assert.equal(mergeableNoteVersion([row("ui", { name: "交稿前" })], { currentVersion: 9, source: "ui", editorId: "alice", now }), null);
+  assert.equal(mergeableNoteVersion([row("ui", { name: "  " })], { currentVersion: 9, source: "ui", editorId: "alice", now }), "v9", "空白名字不算钉住");
 });

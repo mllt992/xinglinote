@@ -12,6 +12,8 @@ export type MergeableVersionRow = {
   source: string;
   editorId?: string;
   createdAt: Date;
+  /** 非空名字 = 用户钉住的快照，不能再被 5 分钟合并覆盖。 */
+  name?: string | null;
 };
 
 export function mergeableNoteVersion(
@@ -27,6 +29,7 @@ export function mergeableNoteVersion(
 ): string | null {
   const last = rows.find(row => row.version === opts.currentVersion);
   if (!last || last.source !== opts.source) return null;
+  if (last.name?.trim()) return null;
   if (opts.editorId !== undefined && last.editorId !== opts.editorId) return null;
   const now = opts.now ?? Date.now();
   const windowMs = opts.windowMs ?? NOTE_VERSION_MERGE_MS;
