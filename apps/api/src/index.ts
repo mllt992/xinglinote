@@ -10,6 +10,7 @@ import { onError } from "./http.ts";
 import { mountWeb } from "./lib/static-web.ts";
 import { auth } from "./routes/auth.ts";
 import { knowledge } from "./routes/notes.ts";
+import { noteVersionRoutes } from "./routes/note-versions.ts";
 import { themeRoutes } from "./routes/themes.ts";
 import { shareRoutes } from "./routes/shares.ts";
 import { adminRoutes } from "./routes/admin.ts";
@@ -101,6 +102,7 @@ app.get("/api/readyz", async (c) => {
   return c.json({ ok: true, database: true });
 });
 app.route("/api/v1", auth);
+app.route("/api/v1", noteVersionRoutes);
 app.route("/api/v1", knowledge);
 app.route("/api/v1", themeRoutes);
 app.route("/api/v1", shareRoutes);
