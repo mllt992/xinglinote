@@ -82,7 +82,7 @@ import { toSafeHtml } from "./lib/render-html";
 import type { TextSelection } from "./lib/note-comments";
 import { pulseLocatedElement } from "./lib/locate-highlight";
 import {
-  NOTE_TAB_MIME, addWorkbenchPane, closeWorkbenchTab, loadWorkbench, openWorkbenchTab, placeWorkbenchPane, readDraggedNoteTab,
+  NOTE_TAB_MIME, addWorkbenchPane, closeWorkbenchTab, closeWorkbenchTabs, loadWorkbench, openWorkbenchTab, placeWorkbenchPane, readDraggedNoteTab,
   removeWorkbenchPane, reorderWorkbenchTab, saveWorkbench, updatePaneWidths, updateWorkbenchTab,
   type NoteWorkbenchState, type WorkbenchTab,
 } from "./lib/note-workbench";
@@ -474,6 +474,17 @@ function Workspace() {
     setNoteCache(current => { const next = { ...current }; delete next[id]; return next; });
     if (id !== noteId) return;
     const next = closed.state.tabs.find(tab => tab.id === closed.nextActiveId);
+    if (next) { setNbId(next.notebookId); nav(`/w/${wsId}/n/${next.id}`); }
+    else nav(`/w/${wsId}`);
+  }
+  function closeOpenTabs(ids: string[]) {
+    if (!wsId || !ids.length) return;
+    const removed = new Set(ids);
+    const closed = closeWorkbenchTabs(workbench, removed, noteId);
+    setWorkbench(() => closed.state);
+    setNoteCache(cache => Object.fromEntries(Object.entries(cache).filter(([id]) => !removed.has(id))));
+    if (!noteId || !removed.has(noteId)) return;
+    const next = closed.state.tabs.find(tab => tab.id === closed.nextActiveId) ?? closed.state.tabs[0];
     if (next) { setNbId(next.notebookId); nav(`/w/${wsId}/n/${next.id}`); }
     else nav(`/w/${wsId}`);
   }
@@ -1348,6 +1359,7 @@ function Workspace() {
           paneIds={workbench.paneIds}
           onFocus={focusWorkbenchTab}
           onClose={closeOpenTab}
+          onCloseMany={closeOpenTabs}
           onAddPane={id => setWorkbench(current => addWorkbenchPane(current, id))}
           onRemovePane={id => setWorkbench(current => removeWorkbenchPane(current, id, noteId))}
           onReorder={(source, target) => setWorkbench(current => reorderWorkbenchTab(current, source, target))}

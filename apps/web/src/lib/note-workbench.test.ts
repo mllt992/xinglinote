@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  EMPTY_WORKBENCH, MAX_NOTE_PANES, addWorkbenchPane, closeWorkbenchTab, normalizeWorkbench,
+  EMPTY_WORKBENCH, MAX_NOTE_PANES, addWorkbenchPane, closeWorkbenchTab, closeWorkbenchTabs, normalizeWorkbench,
   openWorkbenchTab, placeWorkbenchPane, reorderWorkbenchTab, updatePaneWidths,
 } from "./note-workbench";
 
@@ -45,6 +45,21 @@ test("关闭焦点窗格优先聚焦仍在画布里的相邻窗格", () => {
   const closed = closeWorkbenchTab(state, "a", "a");
   assert.equal(closed.nextActiveId, "c");
   assert.deepEqual(closed.state.paneIds, ["c"]);
+});
+
+test("批量关闭会跳过同批待关闭项并保留正确焦点", () => {
+  const state = normalizeWorkbench({ tabs: [tab("a"), tab("b"), tab("c"), tab("d")], paneIds: ["b", "d"] });
+  const closed = closeWorkbenchTabs(state, ["b", "c", "d"], "b");
+  assert.deepEqual(closed.state.tabs.map((item) => item.id), ["a"]);
+  assert.deepEqual(closed.state.paneIds, ["a"]);
+  assert.equal(closed.nextActiveId, "a");
+});
+
+test("关闭全部标签会清空焦点与窗格", () => {
+  const state = normalizeWorkbench({ tabs: [tab("a"), tab("b")], paneIds: ["a", "b"] });
+  const closed = closeWorkbenchTabs(state, state.tabs.map((item) => item.id), "a");
+  assert.deepEqual(closed.state, EMPTY_WORKBENCH);
+  assert.equal(closed.nextActiveId, undefined);
 });
 
 test("损坏的持久化状态会去重、丢弃幽灵窗格并修正宽度", () => {

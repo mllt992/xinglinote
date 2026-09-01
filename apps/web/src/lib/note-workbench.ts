@@ -135,6 +135,20 @@ export function closeWorkbenchTab(state: NoteWorkbenchState, noteId: string, act
   return { state: next, nextActiveId: activeId === noteId ? fallback : activeId };
 }
 
+/** 批量关闭时逐次传递焦点候选，避免“关闭其他/右侧”后跳到一个也已被关闭的标签。 */
+export function closeWorkbenchTabs(state: NoteWorkbenchState, noteIds: Iterable<string>, activeId?: string): { state: NoteWorkbenchState; nextActiveId?: string } {
+  const closing = new Set(noteIds);
+  let next = state;
+  let nextActiveId = activeId;
+  for (const tab of state.tabs) {
+    if (!closing.has(tab.id)) continue;
+    const closed = closeWorkbenchTab(next, tab.id, nextActiveId);
+    next = closed.state;
+    nextActiveId = closed.nextActiveId;
+  }
+  return { state: next, nextActiveId };
+}
+
 export function updateWorkbenchTab(state: NoteWorkbenchState, tab: WorkbenchTab): NoteWorkbenchState {
   if (!state.tabs.some((item) => item.id === tab.id)) return state;
   return { ...state, tabs: state.tabs.map((item) => item.id === tab.id ? { ...item, ...tab } : item) };

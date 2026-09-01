@@ -3,18 +3,20 @@ import { MarkdownView } from "../MarkdownView";
 import { MAX_NOTE_PANES, NOTE_TAB_MIME, readDraggedNoteTab, type WorkbenchTab } from "../lib/note-workbench";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuLabel, ContextMenuSeparator, ContextMenuTrigger } from "./ui/context-menu";
 import { Tooltip } from "./ui/tooltip";
 
 function dragId(event: React.DragEvent): string {
   return readDraggedNoteTab(event.dataTransfer);
 }
 
-export function NoteTabBar({ tabs, activeId, paneIds, onFocus, onClose, onAddPane, onRemovePane, onReorder }: {
+export function NoteTabBar({ tabs, activeId, paneIds, onFocus, onClose, onCloseMany, onAddPane, onRemovePane, onReorder }: {
   tabs: WorkbenchTab[];
   activeId?: string;
   paneIds: string[];
   onFocus: (tab: WorkbenchTab) => void;
   onClose: (id: string) => void;
+  onCloseMany: (ids: string[]) => void;
   onAddPane: (id: string) => void;
   onRemovePane: (id: string) => void;
   onReorder: (sourceId: string, targetId: string) => void;
@@ -27,9 +29,13 @@ export function NoteTabBar({ tabs, activeId, paneIds, onFocus, onClose, onAddPan
         {tabs.map((tab) => {
           const active = tab.id === activeId;
           const inPane = paneIds.includes(tab.id);
+          const at = tabs.findIndex((item) => item.id === tab.id);
+          const title = tab.title || "未命名笔记";
+          const paneAction = inPane ? "移出并列" : full ? "最多并列三篇" : "加入并列查看";
           return (
-            <div
-              key={tab.id}
+            <ContextMenu key={tab.id}>
+              <ContextMenuTrigger asChild>
+                <div
               draggable
               onDragStart={(event) => {
                 event.dataTransfer.effectAllowed = "move";
@@ -49,12 +55,12 @@ export function NoteTabBar({ tabs, activeId, paneIds, onFocus, onClose, onAddPan
                 type="button"
                 role="tab"
                 aria-selected={active}
-                title={tab.title || "未命名笔记"}
+                title={title}
                 className="min-w-0 flex-1 truncate px-1.5 text-left text-xs font-medium"
                 onClick={() => onFocus(tab)}
                 onAuxClick={(event) => { if (event.button === 1) onClose(tab.id); }}
               >
-                {tab.title || "未命名笔记"}
+                {title}
               </button>
               <Tooltip content={inPane ? (active ? "当前编辑窗格" : "移出并列") : full ? "最多并列三篇" : "加入并列查看"}>
                 <span className="inline-flex">
@@ -63,7 +69,7 @@ export function NoteTabBar({ tabs, activeId, paneIds, onFocus, onClose, onAddPan
                     variant="ghost"
                     size="icon"
                     className={cn("size-7 shrink-0", inPane && "text-primary")}
-                    aria-label={`${inPane ? "移出" : "加入"}并列查看：${tab.title || "未命名笔记"}`}
+                    aria-label={`${inPane ? "移出" : "加入"}并列查看：${title}`}
                     aria-pressed={inPane}
                     disabled={active || (!inPane && full)}
                     onClick={() => inPane ? onRemovePane(tab.id) : onAddPane(tab.id)}
@@ -77,12 +83,29 @@ export function NoteTabBar({ tabs, activeId, paneIds, onFocus, onClose, onAddPan
                 variant="ghost"
                 size="icon"
                 className="mr-1 size-7 shrink-0 opacity-55 hover:opacity-100"
-                aria-label={`关闭：${tab.title || "未命名笔记"}`}
+                aria-label={`关闭：${title}`}
                 onClick={() => onClose(tab.id)}
               >
                 <X className="size-3.5" />
               </Button>
-            </div>
+                </div>
+              </ContextMenuTrigger>
+              <ContextMenuContent>
+                <ContextMenuLabel>{title}</ContextMenuLabel>
+                <ContextMenuItem onSelect={() => onFocus(tab)}>切换到此标签</ContextMenuItem>
+                <ContextMenuItem
+                  disabled={active || (!inPane && full)}
+                  onSelect={() => inPane ? onRemovePane(tab.id) : onAddPane(tab.id)}
+                >
+                  <Columns2 />{active && inPane ? "当前编辑窗格" : paneAction}
+                </ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem onSelect={() => onClose(tab.id)}><X />关闭</ContextMenuItem>
+                <ContextMenuItem disabled={tabs.length <= 1} onSelect={() => onCloseMany(tabs.filter((item) => item.id !== tab.id).map((item) => item.id))}>关闭其他标签</ContextMenuItem>
+                <ContextMenuItem disabled={at >= tabs.length - 1} onSelect={() => onCloseMany(tabs.slice(at + 1).map((item) => item.id))}>关闭右侧标签</ContextMenuItem>
+                <ContextMenuItem onSelect={() => onCloseMany(tabs.map((item) => item.id))}>关闭全部标签</ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
           );
         })}
       </div>
