@@ -35,6 +35,66 @@ export type CollabSession = {
   destroy: () => void;
 };
 
+const FAILURE_LIMIT = 3;
+const RETRY_COOLDOWN_MS = 30_000;
+
+type ReconnectActions = {
+  pause: () => void;
+  resume: () => void;
+  offline: () => void;
+  connecting: () => void;
+};
+
+/**
+ * y-websocket 会在断线后自行退避重连。连续失败太多时把它暂停一会儿，既避免无权连接
+ * 热循环打服务端，也不会像原实现那样永久离线。pause 只能翻 shouldConnect，绝不能在
+ * connection-close 回调里同步 disconnect：provider 尚未把 ws 清空，那会再次 emit 同一
+ * 个事件并无限递归。
+ */
+export function createReconnectController(actions: ReconnectActions, options: {
+  failureLimit?: number;
+  cooldownMs?: number;
+} = {}) {
+  const failureLimit = options.failureLimit ?? FAILURE_LIMIT;
+  const cooldownMs = options.cooldownMs ?? RETRY_COOLDOWN_MS;
+  let failures = 0;
+  let coolingDown = false;
+  let destroyed = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  return {
+    closed() {
+      if (destroyed || coolingDown || ++failures < failureLimit) return;
+      coolingDown = true;
+      actions.pause();
+      actions.offline();
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        if (destroyed) return;
+        failures = 0;
+        coolingDown = false;
+        actions.connecting();
+        actions.resume();
+      }, cooldownMs);
+    },
+    synced() {
+      failures = 0;
+      coolingDown = false;
+      if (retryTimer !== null) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+    },
+    isCoolingDown: () => coolingDown,
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      retryTimer = null;
+    },
+  };
+}
+
 /** 只让 y-codemirror 后续注册的本地 origin 进入历史，不跟踪补种与远端同步。 */
 export function createEditorUndoManager(text: Y.Text) {
   return new Y.UndoManager(text, { trackedOrigins: new Set() });
@@ -71,21 +131,34 @@ export function createCollab(noteId: string, user: CollabUser, on: {
 
   const pushPeers = () => on.peers(peersOf(provider, user.id));
   provider.awareness.on("change", pushPeers);
-  provider.on("status", ({ status }: { status: string }) => {
-    on.status(status === "connected" ? "connected" : "connecting");
-    pushPeers();
+  const reconnect = createReconnectController({
+    // connection-close 是在 y-websocket 清空 provider.ws 之前发出的。这里只关掉后续重连，
+    // 让当前 close 流程自然走完；同步调用 disconnect 会重入 connection-close。
+    pause: () => { provider.shouldConnect = false; },
+    resume: () => provider.connect(),
+    offline: () => { on.status("offline"); on.peers([]); },
+    connecting: () => on.status("connecting"),
   });
-  // 服务端拒了升级（404）时 y-websocket 会一直退避重连；连不上就当离线，别把编辑器吊死
-  let failures = 0;
-  provider.on("connection-close", () => { if (++failures >= 3) { provider.disconnect(); on.status("offline"); on.peers([]); } });
-  provider.on("connection-error", () => { if (++failures >= 3) { provider.disconnect(); on.status("offline"); on.peers([]); } });
+  const handleStatus = ({ status }: { status: string }) => {
+    on.status(status === "connected" ? "connected" : reconnect.isCoolingDown() ? "offline" : "connecting");
+    pushPeers();
+  };
+  const handleClose = () => reconnect.closed();
+  provider.on("status", handleStatus);
+  provider.on("connection-close", handleClose);
 
   const text = doc.getText("body");
   // 默认 trackedOrigins 含 null，而首次给空房间补种现有正文正是 null origin。
   // 从空集合起步，让 y-codemirror 挂载时只注册自己的本地编辑 origin，
   // 否则工具栏第一次点「撤销」可能把整篇初始正文清空。
   const undoManager = createEditorUndoManager(text);
-  provider.on("sync", (isSynced: boolean) => { if (isSynced) on.synced(text); });
+  const handleSync = (isSynced: boolean) => {
+    if (!isSynced) return;
+    reconnect.synced();
+    on.synced(text);
+  };
+  provider.on("sync", handleSync);
+  let destroyed = false;
   return {
     // yCollab 自带远端光标与选区的渲染，样式在 styles.css 里覆盖成我们的口径。
     //
@@ -101,7 +174,15 @@ export function createCollab(noteId: string, user: CollabUser, on: {
     canUndo: () => undoManager.undoStack.length > 0,
     canRedo: () => undoManager.redoStack.length > 0,
     destroy: () => {
+      if (destroyed) return;
+      destroyed = true;
+      reconnect.destroy();
       provider.awareness.off("change", pushPeers);
+      // provider.destroy() 会同步发 connection-close/status；必须先解绑自己的监听器，
+      // 否则卸载期间仍可能更新 React，或把正常销毁误计成一次连接失败。
+      provider.off("status", handleStatus);
+      provider.off("connection-close", handleClose);
+      provider.off("sync", handleSync);
       provider.destroy();
       undoManager.destroy();
       doc.destroy();
