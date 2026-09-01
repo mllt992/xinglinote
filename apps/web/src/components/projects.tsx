@@ -114,10 +114,11 @@ export function ProjectsPage() {
         {!showArchived && <p className="mt-3 text-sm text-muted-foreground">本周完成 {rhythm.completedThisWeek} 件 · 记下 {rhythm.minutesThisWeek} 分钟</p>}
         {error && <div className="mt-4 flex items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm"><span className="flex-1">{error}</span><Button size="sm" variant="outline" onClick={() => void load()}><RotateCcw />重试</Button></div>}
         {loading ? <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{Array.from({ length: 3 }, (_, i) => <div key={i} className="h-36 animate-pulse rounded-xl border bg-muted/50" />)}</div>
+          : error ? null
           : !filtered.length ? <div className="mt-16 text-center">
-            <p className="text-sm font-medium">{projects.length ? "没有符合筛选条件的项目" : showArchived ? "还没有归档的项目" : "项目是交付面，不是第二个待办"}</p>
+            {(projects.length > 0 || showArchived) && <p className="text-sm font-medium">{projects.length ? "没有符合筛选条件的项目" : "还没有归档的项目"}</p>}
             {projects.length > 0 && <Button className="mt-4" variant="ghost" onClick={() => { setQuery(""); setStatus("all"); }}>清除筛选</Button>}
-            {!projects.length && !showArchived && canCreate && <Button className="mt-4" onClick={() => setCreating(true)}><Plus />建第一个项目</Button>}
+            {!projects.length && !showArchived && canCreate && <Button onClick={() => setCreating(true)}><Plus />建第一个项目</Button>}
           </div>
           : allSpaces ? <div className="mt-6 space-y-7">{groups.map(group => <section key={group.space.id}>
             <div className="mb-3 flex items-center gap-2">

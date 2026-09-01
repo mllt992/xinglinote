@@ -146,7 +146,7 @@ export function ProjectPage() {
     </header>
     {p.status === "archived" && <div className="border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground">已归档，只读。创建者或管理员可以从右上角拉回。</div>}
     <div className="min-h-0 flex-1">
-      {view === "board" && <BoardView projectId={projectId} columns={boardColumns(data)} tasks={data.tasks} cancelled={data.cancelled} tags={data.tags ?? []} canEdit={!readonly} onOpen={t => setEditing(pickTask(data, t.id) ?? t)} onChanged={() => load()} onQuickCreate={async title => {
+      {view === "board" && <BoardView projectId={projectId} columns={boardColumns(data)} tasks={data.tasks} cancelled={data.cancelled} tags={data.tags ?? []} canEdit={!readonly} onOpen={t => setEditing(pickTask(data, t.id) ?? t)} onChanged={async () => { await load(); }} onQuickCreate={async title => {
         try {
           await api(`/api/v1/projects/${projectId}/tasks`, { method: "POST", body: JSON.stringify({ title }) });
           await load();
