@@ -18,7 +18,7 @@ import { hangingIndent } from "./hanging-indent";
 import { livePreview } from "./live-preview";
 import { markdownSyntaxExtensions } from "./markdown-syntax";
 import { smartPaste } from "./paste";
-import { tableTextSelection } from "./table-edit";
+import { tableCellAtSourceOffset, tableTextSelection } from "./table-edit";
 import { insertSnippet, slashCompletion } from "./slash-menu";
 import { typewriterScroll } from "./typewriter";
 import { editorHighlighting, editorTheme } from "./theme";
@@ -28,6 +28,7 @@ import { wikiCompletion, type WikiCompleteOptions } from "./wiki-complete";
 import { wikiHover, type WikiPreviewLoader } from "./wiki-hover";
 import type { RenderToggles } from "../lib/layout-prefs";
 import { editorWysiwyg, type EditorPreviewMode } from "../lib/editor-mode";
+import { pulseLocatedElement } from "../lib/locate-highlight";
 
 const ALL_ON: RenderToggles = { image: true, math: true, table: true, diagram: true };
 
@@ -172,6 +173,8 @@ export type MarkdownEditorHandle = {
   getSelection: () => { text: string; from: number; to: number } | null;
   /** 选中一段并滚过去，用来把「这条纠错说的是哪句」指出来。 */
   selectRange: (from: number, to: number) => void;
+  /** 定位评论锚点；实时渲染的表格只脉冲单元格，不用选区把表格拆回源码。 */
+  locateRange: (from: number, to: number) => void;
   /** 光标位置（字符偏移，和正文字符串同一套坐标）。编辑器没挂载时是 null。 */
   getCursorPos: () => number | null;
   /** 就地替换一段，光标落在插入内容末尾。`from === to` 就是纯插入。 */
@@ -190,6 +193,7 @@ export function MarkdownEditor({
   value,
   onChange,
   onSave,
+  onSelection,
   onWiki,
   onUpload,
   onScrollLine,
@@ -215,6 +219,8 @@ export function MarkdownEditor({
   onChange: (next: string) => void;
   /** Ctrl/⌘+S：不等 debounce，立刻存。 */
   onSave?: () => void;
+  /** 形成非空正文选区时上报；评论栏用它实现“选中即引用”。 */
+  onSelection?: (selection: { text: string; from: number; to: number }) => void;
   /** Ctrl/⌘ + 单击双链时跳转。 */
   onWiki?: (title: string, section?: string) => void;
   /** 粘贴 / 拖入文件时上传，回一段可直接落进正文的 Markdown。 */
@@ -254,8 +260,8 @@ export function MarkdownEditor({
   const host = useRef<HTMLDivElement | null>(null);
   const view = useRef<EditorView | null>(null);
   // 这些回调每次渲染都是新函数，用 ref 兜住，免得为了它们重建整个编辑器。
-  const latest = useRef({ onChange, onSave, onWiki, onUpload, onScrollLine, onCursor, onVimMode, completion, typewriter, wikiPreview });
-  latest.current = { onChange, onSave, onWiki, onUpload, onScrollLine, onCursor, onVimMode, completion, typewriter, wikiPreview };
+  const latest = useRef({ onChange, onSave, onSelection, onWiki, onUpload, onScrollLine, onCursor, onVimMode, completion, typewriter, wikiPreview });
+  latest.current = { onChange, onSave, onSelection, onWiki, onUpload, onScrollLine, onCursor, onVimMode, completion, typewriter, wikiPreview };
   const mine = useRef(value);
   const vimOn = useRef(vim);
   /** 协同接管期间，正文的事实源是 Y.Text，外面那个受控 value 不能再往回盖。 */
@@ -298,6 +304,30 @@ export function MarkdownEditor({
       const anchor = Math.min(Math.max(from, 0), max);
       const head = Math.min(Math.max(to, 0), max);
       instance.dispatch({ selection: { anchor, head }, effects: EditorView.scrollIntoView(anchor, { y: "center" }) });
+      instance.focus();
+    },
+    locateRange: (from, to) => {
+      const instance = view.current;
+      if (!instance) return;
+      const max = instance.state.doc.length;
+      const start = Math.min(Math.max(from, 0), max);
+      const end = Math.min(Math.max(to, start), max);
+      let node: SyntaxNode | null = syntaxTree(instance.state).resolveInner(start, 1);
+      while (node && node.name !== "Table") node = node.parent;
+      if (node?.name === "Table" && end <= node.to) {
+        const source = instance.state.sliceDoc(node.from, node.to);
+        const cell = tableCellAtSourceOffset(source, start - node.from);
+        for (const widget of Array.from(instance.dom.querySelectorAll<HTMLElement>(".cm-md-table"))) {
+          let widgetFrom = -1;
+          try { widgetFrom = instance.posAtDOM(widget); } catch { continue; }
+          if (widgetFrom !== node.from) continue;
+          const row = cell ? widget.querySelectorAll("tr")[cell.row] : null;
+          const target = cell ? row?.querySelectorAll<HTMLElement>(":scope > th, :scope > td")[cell.col] : null;
+          pulseLocatedElement(target ?? widget);
+          return;
+        }
+      }
+      instance.dispatch({ selection: { anchor: start, head: end }, effects: EditorView.scrollIntoView(start, { y: "center" }) });
       instance.focus();
     },
     getSelection: () => {
@@ -418,7 +448,11 @@ export function MarkdownEditor({
             }
             if (update.docChanged || update.selectionSet) {
               const { head, from, to } = update.state.selection.main;
-              if (from !== to) lastQuoteSel.current = { text: update.state.sliceDoc(from, to), from, to };
+              if (from !== to) {
+                const selection = { text: update.state.sliceDoc(from, to), from, to };
+                lastQuoteSel.current = selection;
+                latest.current.onSelection?.(selection);
+              }
               const report = latest.current.onCursor;
               if (report) {
                 const line = update.state.doc.lineAt(head);
@@ -433,6 +467,15 @@ export function MarkdownEditor({
       }),
     });
     view.current = instance;
+    // 可视化表格的 textarea 不会产生 CodeMirror 事务；在 DOM 选区形成时主动记住并上报，
+    // 这样先选中表格文字、再打开评论栏也不会因 textarea 失焦而丢掉引用。
+    const rememberTableSelection = () => {
+      const selection = tableTextSelection(instance);
+      if (!selection) return;
+      lastQuoteSel.current = selection;
+      latest.current.onSelection?.(selection);
+    };
+    instance.dom.ownerDocument.addEventListener("selectionchange", rememberTableSelection);
     // 新建的 doc 就是当前 value，记上一笔，免得下面的同步 effect 又原样重写一遍：
     // 那会白白产生一次 docChanged，把刚打开的笔记标成「未保存」并触发一次空保存。
     mine.current = value;
@@ -452,6 +495,7 @@ export function MarkdownEditor({
     instance.scrollDOM.addEventListener("scroll", report, { passive: true });
 
     return () => {
+      instance.dom.ownerDocument.removeEventListener("selectionchange", rememberTableSelection);
       instance.scrollDOM.removeEventListener("scroll", report);
       rememberSpot(resetKey ?? "", instance);
       instance.destroy();

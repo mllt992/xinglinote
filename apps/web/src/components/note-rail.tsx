@@ -14,6 +14,7 @@ import { AiWriteTab, type Selection } from "./ai-write-tab";
 import { AiTasksTab } from "./ai-tasks-tab";
 import { ReviewTab } from "./review-tab";
 import { NoteCommentsTab } from "./note-comments-tab";
+import type { TextSelection } from "../lib/note-comments";
 
 export const RAIL_TABS = ["outline", "comments", "links", "attachments", "versions", "review", "ai", "diagram", "tasks"] as const;
 export type RailTab = (typeof RAIL_TABS)[number];
@@ -307,6 +308,7 @@ export function NoteRail({
   onRestored,
   workspaceId,
   getSelection,
+  selectedQuote,
   getDiagramTarget,
   onInsertDiagram,
   onApplyAi,
@@ -333,6 +335,8 @@ export function NoteRail({
   onRestored: (note: { id: string; title: string; bodyMd: string; version: number }) => void;
   workspaceId?: string;
   getSelection: () => Selection;
+  /** 编辑器最近主动上报的选区；评论栏据此做到选中即引用。 */
+  selectedQuote: TextSelection | null;
   /** 光标所在的 mermaid 图块，供 AI 画图判断是「改图」还是「新图」。 */
   getDiagramTarget: () => DiagramBlock | null;
   onInsertDiagram: (fence: string, target: DiagramBlock | null) => void;
@@ -406,7 +410,7 @@ export function NoteRail({
       </div>
 
       {tab === "outline" && <OutlineTab source={note.bodyMd} activeLine={activeLine} onJump={onJump} />}
-      {tab === "comments" && <NoteCommentsTab note={note} getSelection={getSelection} onLocate={onLocateRange} />}
+      {tab === "comments" && <NoteCommentsTab note={note} getSelection={getSelection} selectedQuote={selectedQuote} onLocate={onLocateRange} />}
       {tab === "links" && <LinksTab note={note} backlinks={backlinks} wsId={wsId} onSearchTag={onSearchTag} onChangeTags={onChangeTags} />}
       {tab === "attachments" && (
         <AttachmentsTab note={note} atts={atts} onUpload={onUpload} onShare={onShareAttachment} onDelete={onDeleteAttachment} onInsert={onInsertAttachment} />

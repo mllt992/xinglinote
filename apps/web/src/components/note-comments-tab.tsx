@@ -46,10 +46,11 @@ function ReplyBox({ thread, onSent }: { thread: Discussion; onSent: () => void }
 }
 
 export function NoteCommentsTab({
-  note, getSelection, onLocate,
+  note, getSelection, selectedQuote, onLocate,
 }: {
   note: { id: string; bodyMd: string; version: number; canEdit: boolean };
   getSelection: () => TextSelection | null;
+  selectedQuote: TextSelection | null;
   onLocate: (from: number, to: number) => void;
 }) {
   const [resolved, setResolved] = useState(false);
@@ -82,6 +83,12 @@ export function NoteCommentsTab({
   useEffect(() => { void load(); }, [note.id, resolved]);
   // 从编辑器选中文字后第一次打开评论栏，直接带入引用，少一次点击。
   useEffect(() => { captureSelection(false); }, [note.id]);
+  // 评论栏已经打开时，正文每形成一个新选区就直接替换引用，不再让用户跨区域点按钮。
+  useEffect(() => {
+    if (!selectedQuote || selectedQuote.text.length > 2000) return;
+    const next = commentAnchorAt(note.bodyMd, note.version, selectedQuote);
+    if (next) setAnchor(next);
+  }, [selectedQuote]);
 
   async function create(event: React.FormEvent) {
     event.preventDefault();
@@ -118,7 +125,7 @@ export function NoteCommentsTab({
         </div>}
         <Textarea value={body} onChange={event => setBody(event.target.value)} maxLength={4000} placeholder={anchor ? "评论这段内容…" : "评论这篇笔记…"} className="min-h-20 text-sm" />
         <div className="flex items-center gap-1.5">
-          <Button type="button" variant="outline" size="sm" onMouseDown={event => { event.preventDefault(); captureSelection(); }} onClick={event => { if (event.detail === 0) captureSelection(); }}><Quote />{anchor ? "重新引用" : "引用选区"}</Button>
+          <span className="text-[11px] text-muted-foreground">{anchor ? "选中新内容可替换引用" : "选中正文即可引用；不选则评论整篇"}</span>
           <Button className="ml-auto" size="sm" disabled={!body.trim() || sending}><Send />发表</Button>
         </div>
       </form>

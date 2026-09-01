@@ -6,7 +6,7 @@ import { MarkdownEditor } from "./markdown-editor";
 
 type MarkdownEditorProps = ComponentProps<typeof MarkdownEditor>;
 
-type BoundaryProps = Pick<MarkdownEditorProps, "value" | "onChange" | "onSave" | "resetKey" | "readOnly" | "className"> & {
+type BoundaryProps = Pick<MarkdownEditorProps, "value" | "onChange" | "onSave" | "onSelection" | "resetKey" | "readOnly" | "className"> & {
   children: ReactNode;
 };
 
@@ -73,6 +73,10 @@ class EditorBoundary extends Component<BoundaryProps, BoundaryState> {
           value={this.props.value}
           readOnly={this.props.readOnly}
           onChange={event => this.props.onChange(event.target.value)}
+          onSelect={event => {
+            const { selectionStart: from, selectionEnd: to, value } = event.currentTarget;
+            if (from !== to) this.props.onSelection?.({ text: value.slice(from, to), from, to });
+          }}
           onKeyDown={this.saveHotkey}
           spellCheck
         />
@@ -88,6 +92,7 @@ export function ResilientMarkdownEditor(props: MarkdownEditorProps) {
       value={props.value}
       onChange={props.onChange}
       onSave={props.onSave}
+      onSelection={props.onSelection}
       resetKey={props.resetKey}
       readOnly={props.readOnly}
       className={props.className}

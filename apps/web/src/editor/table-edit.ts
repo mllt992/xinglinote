@@ -108,6 +108,19 @@ export function tableCellSourceRange(source: string, row: number, col: number): 
   return { from: line.from + contentFrom, to: line.from + contentTo };
 }
 
+/** 由表格内的源码偏移反查可视化单元格，用于定位时只高亮单元格而不拆掉整张表。 */
+export function tableCellAtSourceOffset(source: string, offset: number): { row: number; col: number } | null {
+  const parsed = parseTable(source);
+  if (!parsed || offset < 0 || offset > source.length) return null;
+  for (let row = 0; row < parsed.rows.length; row++) {
+    for (let col = 0; col < (parsed.rows[row]?.length ?? 0); col++) {
+      const range = tableCellSourceRange(source, row, col);
+      if (range && range.from <= offset && offset <= range.to) return { row, col };
+    }
+  }
+  return null;
+}
+
 /** 把当前表格 textarea 的选区换算成 CodeMirror 文档坐标。 */
 export function tableTextSelection(view: EditorView): TextSelection | null {
   const active = view.dom.ownerDocument.activeElement;

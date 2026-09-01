@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { tableCellSourceRange } from "./table-edit.js";
+import { tableCellAtSourceOffset, tableCellSourceRange } from "./table-edit.js";
 
 function cell(source: string, row: number, col: number) {
   const range = tableCellSourceRange(source, row, col);
@@ -25,4 +25,11 @@ test("表头按第零行映射，越界单元格返回 null", () => {
   assert.deepEqual(cell(source, 0, 1), { from, to: from + 2, text: "说明" });
   assert.equal(tableCellSourceRange(source, 9, 0), null);
   assert.equal(tableCellSourceRange(source, 0, 9), null);
+});
+
+test("源码偏移能反查可视化表格单元格，分隔行不冒充内容", () => {
+  const source = "| 字段 | 说明 |\n| --- | --- |\n| id | 主键 |";
+  assert.deepEqual(tableCellAtSourceOffset(source, source.indexOf("主键")), { row: 1, col: 1 });
+  assert.deepEqual(tableCellAtSourceOffset(source, source.indexOf("字段")), { row: 0, col: 0 });
+  assert.equal(tableCellAtSourceOffset(source, source.indexOf("---")), null);
 });
