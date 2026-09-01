@@ -18,6 +18,7 @@ import { hangingIndent } from "./hanging-indent";
 import { livePreview } from "./live-preview";
 import { markdownSyntaxExtensions } from "./markdown-syntax";
 import { smartPaste } from "./paste";
+import { tableTextSelection } from "./table-edit";
 import { insertSnippet, slashCompletion } from "./slash-menu";
 import { typewriterScroll } from "./typewriter";
 import { editorHighlighting, editorTheme } from "./theme";
@@ -302,6 +303,11 @@ export function MarkdownEditor({
     getSelection: () => {
       const instance = view.current;
       if (!instance) return lastQuoteSel.current;
+      const tableSelection = tableTextSelection(instance);
+      if (tableSelection) {
+        lastQuoteSel.current = tableSelection;
+        return tableSelection;
+      }
       const { from, to } = instance.state.selection.main;
       if (from !== to) {
         const live = { text: instance.state.sliceDoc(from, to), from, to };

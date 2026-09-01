@@ -67,6 +67,66 @@ export type TableEditorOptions = {
   noteId: string;
 };
 
+type TextSelection = { text: string; from: number; to: number };
+
+/**
+ * 找到可视化表格某个单元格在表格 Markdown 源码里的内容范围。
+ * textarea 里放的是 trim 后的原始单元格内容，所以两边空白不能算进范围；
+ * `\|` 则要和解析器一样视作内容，而不是列分隔符。
+ */
+export function tableCellSourceRange(source: string, row: number, col: number): { from: number; to: number } | null {
+  const lines: Array<{ text: string; from: number }> = [];
+  let from = 0;
+  for (const text of source.split("\n")) {
+    lines.push({ text, from });
+    from += text.length + 1;
+  }
+  const dataLines = lines.filter((line, index) => index !== 1 && line.text.trim());
+  const line = dataLines[row];
+  if (!line) return null;
+
+  const cells: Array<{ from: number; to: number }> = [];
+  let start = 0;
+  for (let i = 0; i < line.text.length; i++) {
+    if (line.text[i] === "\\" && line.text[i + 1] === "|") { i++; continue; }
+    if (line.text[i] !== "|") continue;
+    cells.push({ from: start, to: i });
+    start = i + 1;
+  }
+  cells.push({ from: start, to: line.text.length });
+
+  const leading = /^\s*\|/.test(line.text);
+  const trailing = /\|\s*$/.test(line.text) && !/\\\|\s*$/.test(line.text);
+  if (leading) cells.shift();
+  if (trailing) cells.pop();
+  const cell = cells[col];
+  if (!cell) return null;
+
+  let contentFrom = cell.from, contentTo = cell.to;
+  while (contentFrom < contentTo && /\s/.test(line.text[contentFrom]!)) contentFrom++;
+  while (contentTo > contentFrom && /\s/.test(line.text[contentTo - 1]!)) contentTo--;
+  return { from: line.from + contentFrom, to: line.from + contentTo };
+}
+
+/** 把当前表格 textarea 的选区换算成 CodeMirror 文档坐标。 */
+export function tableTextSelection(view: EditorView): TextSelection | null {
+  const active = view.dom.ownerDocument.activeElement;
+  if (!(active instanceof HTMLTextAreaElement) || !active.classList.contains("cm-table-cell-input") || !view.dom.contains(active)) return null;
+  const cellFrom = Number(active.dataset.tableSourceFrom);
+  const start = active.selectionStart, end = active.selectionEnd;
+  if (!Number.isSafeInteger(cellFrom) || start === end) return null;
+  const box = active.closest<HTMLElement>(".cm-md-table");
+  if (!box) return null;
+  let tableFrom: number;
+  try { tableFrom = view.posAtDOM(box); } catch { return null; }
+  const selection = {
+    text: active.value.slice(start, end),
+    from: tableFrom + cellFrom + start,
+    to: tableFrom + cellFrom + end,
+  };
+  return view.state.sliceDoc(selection.from, selection.to) === selection.text ? selection : null;
+}
+
 /**
  * 给已经渲染好的表格挂上把手。`box` 是 TableWidget 的外层容器，
  * 里面已经有渲染器吐出的 `.table-scroll > table`。
@@ -170,6 +230,10 @@ export function mountTableEditor(box: HTMLElement, opts: TableEditorOptions) {
     input.className = "cm-table-cell-input";
     input.rows = 1;
     input.value = original;
+    const sourceRange = tableCellSourceRange(opts.source, row, col);
+    if (sourceRange && opts.source.slice(sourceRange.from, sourceRange.to) === original) {
+      input.dataset.tableSourceFrom = String(sourceRange.from);
+    }
     input.setAttribute("aria-label", `${row === 0 ? "表头" : `第 ${row} 行`}第 ${col + 1} 列`);
     input.title = "Enter 保存，Esc 取消";
     input.style.minHeight = `${Math.max(32, Math.round(oldHeight - 2))}px`;
