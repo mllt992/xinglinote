@@ -17,6 +17,7 @@ import { attachNoteModeration, instanceConfig, lastReviewedAt, moderationOn, que
 import { notebookVisibleTo } from "../lib/notebook-access.ts";
 import { moveNotebook } from "../lib/notebook-move.ts";
 import { relocateNote } from "../lib/note-move.ts";
+import { nextNoteSavedAt } from "../lib/note-save.ts";
 import { recordNoteVersion } from "../lib/versions.ts";
 import { versionConflict } from "../lib/mcp-errors.ts";
 import { purgeFolder,purgeNotebook,purgeNotes,restoreFolder,restoreFolderId,restoreNotebook,restoreTitle,trashFolder,trashNotebook } from "../lib/trash.ts";
@@ -313,9 +314,18 @@ knowledge.patch("/notes/:id", async (c) => {
     && requestedTags.length === currentTags.length
     && requestedTags.every((tag, index) => tag === currentTags[index]);
   // 协同房间可能已经把同一份正文落成更高版本。旧页面随后发来的手动保存若没有
-  // 实际变化，应直接认当前版本，而不是把自己的上一轮保存误报成版本冲突。
+  // 实际变化，应直接认当前版本，而不是把自己的上一轮保存误报成版本冲突。只刷新
+  // 最后保存时间；version 与 note_versions 都不动，避免完全相同的快照重复出现。
   if (unchanged) {
-    const dto = await attachNoteModeration(note);
+    const [touched] = await db.update(notes)
+      .set({ updatedAt: nextNoteSavedAt(note.updatedAt) })
+      .where(and(eq(notes.id, note.id), eq(notes.version, note.version))).returning();
+    if (!touched) {
+      const [current] = await db.select().from(notes).where(eq(notes.id, note.id));
+      const [editor] = current ? await db.select({ displayName: users.displayName }).from(users).where(eq(users.id, current.updatedBy)) : [];
+      throw versionConflict(body.expectedVersion, current?.version ?? note.version, current ? { updatedBy: editor?.displayName ?? "其他人", title: current.title, bodyMd: current.bodyMd } : undefined);
+    }
+    const dto = await attachNoteModeration(touched);
     return ok(c, { ...dto, canEdit: true, moderation: { ...dto.moderation, submitted: false } });
   }
   if (note.version !== body.expectedVersion && !body.force) {

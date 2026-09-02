@@ -2,6 +2,7 @@ import { Hono } from "hono";import { and,eq,isNull } from "drizzle-orm";import {
 import { enqueueIndexNote } from "../lib/ai-index.ts";
 import { saveNoteAttachment } from "../lib/attachments.ts";
 import { readStoredFile } from "../lib/blobs.ts";
+import { nextNoteSavedAt } from "../lib/note-save.ts";
 import type { Context } from "hono";
 export const fileRoutes=new Hono();
 async function u(c:Context){const x=await currentUser(c);if(!x)throw fail("UNAUTHENTICATED","未登录");return x;}
@@ -36,6 +37,11 @@ fileRoutes.post("/notebooks/:id/import-markdown",async c=>{
     if(item.action==="overwrite"){
       const target=liveNotes.find(n=>(n.folderId??null)===folderId&&norm(n.title)===norm(item.title));
       if(target){
+        if(item.body===target.bodyMd){
+          const[saved]=await db.update(notes).set({updatedAt:nextNoteSavedAt(target.updatedAt)}).where(and(eq(notes.id,target.id),eq(notes.version,target.version))).returning();
+          if(saved){overwritten.push({id:saved.id,title:saved.title,path:item.sourcePath});continue;}
+          throw fail("CONFLICT_VERSION","导入期间笔记已被修改，请重新预览后再导入");
+        }
         const[saved]=await db.update(notes).set({bodyMd:item.body,version:target.version+1,updatedBy:user.id,updatedAt:new Date()}).where(eq(notes.id,target.id)).returning();
         await db.insert(noteVersions).values({noteId:saved.id,version:saved.version,title:saved.title,bodyMd:saved.bodyMd,editorId:user.id,source:"import"});
         await writeNoteFile({...saved,noteId:saved.id});await rebuildLinks(saved.id,saved.workspaceId,saved.bodyMd);

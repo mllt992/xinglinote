@@ -17,6 +17,7 @@ import { noteCollab, notes } from "../db/schema.ts";
 import { writeNoteFile } from "./files.ts";
 import { rebuildLinks } from "./links.ts";
 import { externalChange } from "./collab-text.ts";
+import { nextNoteSavedAt } from "./note-save.ts";
 import { recordNoteVersion } from "./versions.ts";
 
 const MESSAGE_SYNC = 0;
@@ -167,7 +168,8 @@ export async function persist(room: Room) {
   if (note.version !== room.lastVersion) await pullExternal(room);
 
   const text = room.text.toString();
-  const changed = room.dirty && text !== note.bodyMd;
+  const saveAttempted = room.dirty;
+  const changed = saveAttempted && text !== note.bodyMd;
   room.dirty = false;
 
   if (changed) {
@@ -193,6 +195,13 @@ export async function persist(room: Room) {
     room.lastPersisted = text;
     // 记下自己写出去的版本号，免得下一轮轮询把自己的写当成「外面有人改了」
     room.lastVersion = saved.version;
+  } else if (saveAttempted) {
+    // 输入后又撤回原文时，Y.Text 确实发生过一次保存，但正文与当前版本完全相同。
+    // 只推进最后保存时间，不制造一个内容相同的新版本。
+    const [touched] = await db.update(notes)
+      .set({ updatedAt: nextNoteSavedAt(note.updatedAt) })
+      .where(and(eq(notes.id, note.id), eq(notes.version, note.version))).returning({ id: notes.id });
+    if (!touched) { room.dirty = true; scheduleSave(room); return; }
   }
 
   // 快照按更新数压实：Y.encodeStateAsUpdate 重写一份，而不是无限追加
