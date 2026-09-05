@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  applyTableOp, canDeleteColumn, canDeleteRow, deleteColumn, deleteRow,
-  displayWidth, insertColumn, insertRow, moveColumn, parseTable, serializeTable, setAlign, setCell,
+  applyTableOp, canDeleteColumn, canDeleteRow, decodeCellBreaks, deleteColumn, deleteRow,
+  displayWidth, encodeCellBreaks, insertColumn, insertRow, moveColumn, parseTable, serializeTable, setAlign, setCell,
 } from "./table.js";
 
 const T = `| 键 | 作用 |\n|---|:---:|\n| Ctrl+S | 保存 |\n| Ctrl+B | 加粗 |`;
@@ -92,10 +92,12 @@ test("对齐：三选一都写得回去，也能清掉", () => {
   assert.match(serializeTable(setAlign(t, 1, null)), /\| -+ \|\n/);
 });
 
-test("改单元格：换行与裸竖线会撕开表格，一律转义", () => {
+test("改单元格：换行写成 <br>，裸竖线转义，避免撕开表格", () => {
   const t = setCell(parseTable(T)!, 1, 1, "先 a\n再 | b");
-  assert.equal(t.rows[1]![1], "先 a 再 \\| b");
-  assert.deepEqual(parseTable(serializeTable(t))!.rows[1], ["Ctrl+S", "先 a 再 \\| b"]);
+  assert.equal(t.rows[1]![1], "先 a<br>再 \\| b");
+  assert.deepEqual(parseTable(serializeTable(t))!.rows[1], ["Ctrl+S", "先 a<br>再 \\| b"]);
+  assert.equal(decodeCellBreaks(t.rows[1]![1]!), "先 a\n再 \\| b");
+  assert.equal(encodeCellBreaks("a\r\nb\nc"), "a<br>b<br>c");
 });
 
 test("移动列：内容与对齐一起走", () => {
