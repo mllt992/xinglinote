@@ -1,0 +1,11 @@
+/* issue #40: keep live-preview widgets from stealing caret clicks on neighbor text */
+.cm-md-fold { pointer-events: none; }
+[data-editor="markdown"]:hover .cm-md-fold { pointer-events: auto; }
+
+.cm-md-image { pointer-events: none; }
+.cm-md-image-zoom { pointer-events: auto; }
+
+.cm-md-math { overflow: hidden; max-width: 100%; }
+.cm-md-math .katex { pointer-events: none; }
+
+.cm-md-diagram svg { pointer-events: none; }
