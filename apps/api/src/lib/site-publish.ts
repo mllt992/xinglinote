@@ -6,10 +6,24 @@ import { instanceConfig, moderationOn, queueReview } from "./moderation.ts";
 /**
  * 文档站对外可见 = notes.published ∧ moderation_status=none ∧ 未进回收站。
  * 「发布为文档站」只翻 notebooks.site_published；笔记默认 published=false，
- * 站点一上线就会空壳——issue #38。首次上线时若还没有任何对外页，就把本里现有笔记一并标公开。
+ * 站点一上线就会空壳——issue #38。首次上线时若还没有任何标了 published 的笔记，
+ * 就把本里现有笔记一并标公开（开审核则进 pending_review）。
+ *
+ * 用「是否已有 published=true」而不是「是否已有对外可见页」做门槛，
+ * 避免审核挂起时每次打开站点又重复入队。
  */
-export function shouldSeedSiteNotes(publicCount: number, liveCount: number) {
-  return publicCount === 0 && liveCount > 0;
+export function shouldSeedSiteNotes(publishedIntentCount: number, liveCount: number) {
+  return publishedIntentCount === 0 && liveCount > 0;
+}
+
+/** 已对文档站表达过公开意图的篇（含审核中）。 */
+export async function countPublishedIntentNotes(notebookId: string) {
+  const [row] = await db.select({ n: count() }).from(notes).where(and(
+    eq(notes.notebookId, notebookId),
+    eq(notes.published, true),
+    isNull(notes.trashedAt),
+  ));
+  return Number(row?.n ?? 0);
 }
 
 export async function countSitePublicNotes(notebookId: string) {
@@ -39,11 +53,11 @@ export async function seedSiteNotesIfEmpty(input: {
   workspaceId: string;
   actorUserId: string;
 }): Promise<{ seeded: number; heldForModeration: number }> {
-  const [publicCount, liveCount] = await Promise.all([
-    countSitePublicNotes(input.notebookId),
+  const [publishedIntent, liveCount] = await Promise.all([
+    countPublishedIntentNotes(input.notebookId),
     countLiveNotes(input.notebookId),
   ]);
-  if (!shouldSeedSiteNotes(publicCount, liveCount)) {
+  if (!shouldSeedSiteNotes(publishedIntent, liveCount)) {
     return { seeded: 0, heldForModeration: 0 };
   }
 
@@ -58,7 +72,7 @@ export async function seedSiteNotesIfEmpty(input: {
     isNull(notes.trashedAt),
   ));
 
-  const targets = rows.filter(n => !(n.published && n.moderationStatus === "none"));
+  const targets = rows.filter(n => !n.published);
   if (!targets.length) return { seeded: 0, heldForModeration: 0 };
 
   const settings = await instanceConfig();
