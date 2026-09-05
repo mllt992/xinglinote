@@ -11,7 +11,7 @@ import DOMPurify from "dompurify";
 
 /** 行内文本里需要转义的字符。CJK 正文里过度转义很难看，所以只挑真会引起歧义的几个。 */
 function escapeInline(text: string): string {
-  return text.replace(/([\\`*_[\]])/g, "\\$1");
+  return text.replace(/([\\`*_\[\]])/g, "\\$1");
 }
 
 /** 行首才有歧义的标记：`#`、`>`、`-`、`1.`、`|`。只在一段的开头处理。 */
@@ -37,7 +37,7 @@ function safeUrl(raw: string | null): string | null {
   if (!url) return null;
   if (/^(https?|mailto|tel|data:image\/):/i.test(url)) return url;
   if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return null;
-  return url;
+  return url;                                  // 相对路径、锚点，原样留着
 }
 
 /** 链接文本里出现 `()` 会把地址括号截断，用尖括号包起来。 */
@@ -46,7 +46,9 @@ function wrapUrl(url: string): string {
 }
 
 type Ctx = {
+  /** 当前所在列表的缩进前缀，嵌套列表靠它对齐。 */
   indent: string;
+  /** 在 `<pre>` 里：空白原样保留、不转义。 */
   pre: boolean;
 };
 
@@ -58,11 +60,15 @@ function inlineOf(node: Node, ctx: Ctx): string {
   if (node.nodeType !== Node.ELEMENT_NODE) return "";
   const el = node as HTMLElement;
   if (SKIP.has(el.tagName)) return "";
+
   const inner = () => [...el.childNodes].map(child => inlineOf(child, ctx)).join("");
+
   switch (el.tagName) {
     case "BR":
+      // 渲染器开着 breaks: true，一个换行就是一次断行
       return "\n";
     case "STRONG": case "B": {
+      // Google Docs 会用 <b style="font-weight:normal"> 包整篇，照抄会把全文加粗
       if (/font-weight:\s*(normal|400)/i.test(el.getAttribute("style") ?? "")) return inner();
       const body = inner().trim();
       return body ? `**${body}**` : "";
@@ -78,6 +84,7 @@ function inlineOf(node: Node, ctx: Ctx): string {
     case "CODE": case "KBD": case "SAMP": case "TT": {
       const body = (el.textContent ?? "").replace(/\n/g, " ").trim();
       if (!body) return "";
+      // 内容里本来就有反引号时，用更长的一串围起来
       const longest = /`+/g.exec(body) ? Math.max(...(body.match(/`+/g) ?? [""]).map(s => s.length)) : 0;
       const fence = "`".repeat(longest + 1);
       return `${fence}${/^`|`$/.test(body) ? ` ${body} ` : body}${fence}`;
@@ -99,6 +106,7 @@ function inlineOf(node: Node, ctx: Ctx): string {
   }
 }
 
+/** 一个块的行内内容：两端留白收掉，中间的连续空格保留。 */
 function inlineBlock(el: HTMLElement, ctx: Ctx): string {
   return inlineOf(el, ctx).replace(/^[ \t]+|[ \t]+$/g, "").replace(/\n{3,}/g, "\n\n");
 }
@@ -108,14 +116,18 @@ function listOf(el: HTMLElement, ctx: Ctx): string[] {
   const start = ordered ? Number(el.getAttribute("start") ?? 1) || 1 : 1;
   const out: string[] = [];
   let index = start;
+
   for (const item of [...el.children]) {
     if (item.tagName !== "LI") continue;
     const li = item as HTMLElement;
     const marker = ordered ? `${index++}. ` : "- ";
     const pad = " ".repeat(marker.length);
+
+    // 任务列表：`<input type=checkbox>` 是复选框的通行写法（GitHub、飞书、Notion 都这样导出）
     const box = li.querySelector<HTMLInputElement>(":scope > input[type=checkbox], :scope > p > input[type=checkbox]");
     const task = box ? (box.checked || box.hasAttribute("checked") ? "[x] " : "[ ] ") : "";
     box?.remove();
+
     const nested: string[] = [];
     const own: Node[] = [];
     for (const child of [...li.childNodes]) {
@@ -126,6 +138,7 @@ function listOf(el: HTMLElement, ctx: Ctx): string[] {
     const holder = document.createElement("div");
     holder.append(...own);
     const body = inlineBlock(holder, ctx).replace(/\n/g, `\n${ctx.indent}${pad}`);
+
     out.push(`${ctx.indent}${marker}${task}${body}`);
     out.push(...nested);
   }
@@ -136,8 +149,10 @@ function tableOf(el: HTMLElement, ctx: Ctx): string | null {
   const rows = [...el.querySelectorAll("tr")].map(tr =>
     [...tr.children]
       .filter(cell => cell.tagName === "TD" || cell.tagName === "TH")
+      // 单元格里不能有裸竖线或真换行；断行写成 <br>（与 setCell / 设计 17 §3.5 同口径）
       .map(cell => inlineBlock(cell as HTMLElement, ctx).replace(/\n+/g, "<br>").replace(/\|/g, "\\|").trim()));
   if (!rows.length || !rows[0].length) return null;
+
   const width = Math.max(...rows.map(row => row.length));
   const align = [...(el.querySelector("tr")?.children ?? [])].map(cell => {
     const value = `${(cell as HTMLElement).style.textAlign} ${cell.getAttribute("align") ?? ""}`;
@@ -146,7 +161,9 @@ function tableOf(el: HTMLElement, ctx: Ctx): string | null {
     if (value.includes("left")) return ":---";
     return "---";
   });
+
   const line = (cells: string[]) => `| ${Array.from({ length: width }, (_, i) => cells[i] ?? "").join(" | ")} |`;
+  // Markdown 表格必须有表头。源表格没有 th 就把第一行当表头——总比整张表退化成文字强。
   const out = [line(rows[0]), line(Array.from({ length: width }, (_, i) => align[i] ?? "---"))];
   for (const row of rows.slice(1)) out.push(line(row));
   return out.join("\n");
@@ -160,7 +177,9 @@ function blocksOf(node: Node, ctx: Ctx): string[] {
   if (node.nodeType !== Node.ELEMENT_NODE) return [];
   const el = node as HTMLElement;
   if (SKIP.has(el.tagName)) return [];
+
   const children = () => [...el.childNodes].flatMap(child => blocksOf(child, ctx));
+
   switch (el.tagName) {
     case "H1": case "H2": case "H3": case "H4": case "H5": case "H6": {
       const body = inlineBlock(el, ctx).replace(/\n+/g, " ").trim();
@@ -190,9 +209,11 @@ function blocksOf(node: Node, ctx: Ctx): string[] {
       return table ? [table] : [];
     }
     case "LI":
+      // 落单的 <li>（源里结构破了）当普通段落处理
       return [inlineBlock(el, ctx)].filter(Boolean);
     default: {
       if (BLOCK.has(el.tagName) || el.tagName === "BODY" || el.tagName === "HTML") {
+        // 容器里如果混着行内内容与块级子元素，行内那部分不能丢：先看有没有块级子元素
         const hasBlock = [...el.children].some(c => BLOCK.has(c.tagName) || /^(H[1-6]|UL|OL|PRE|TABLE|BLOCKQUOTE|HR)$/.test(c.tagName));
         if (hasBlock) return children();
         const body = inlineBlock(el, ctx);
@@ -204,6 +225,12 @@ function blocksOf(node: Node, ctx: Ctx): string[] {
   }
 }
 
+/**
+ * 把剪贴板里的 `text/html` 转成闭集内的 Markdown。转不出东西就回 null，调用方退回纯文本粘贴。
+ *
+ * 先过一遍 DOMPurify：剪贴板里的 HTML 可能带脚本与事件属性，而我们要把它挂进一个真的
+ * DOM 节点里遍历，不消毒等于把别人页面上的脚本请进来。
+ */
 export function htmlToMarkdown(html: string): string | null {
   if (!html.trim()) return null;
   const root = DOMPurify.sanitize(html, { RETURN_DOM: true, FORBID_TAGS: [...SKIP].map(t => t.toLowerCase()) });
@@ -214,6 +241,7 @@ export function htmlToMarkdown(html: string): string | null {
   return out || null;
 }
 
+/** 剪贴板里那段 HTML 值不值得转：只有纯文本包装（`<meta>`、裸 `<div>`）就别折腾了。 */
 export function worthConverting(html: string): boolean {
   return /<(h[1-6]|ul|ol|li|table|thead|tbody|tr|td|th|pre|code|blockquote|strong|b|em|i|del|s|a|img|hr|p|br)\b/i.test(html);
 }
