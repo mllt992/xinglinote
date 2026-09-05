@@ -1,15 +1,20 @@
 /**
  * 表格的可视化编辑（设计 17 §3.5）。
  *
- * 唯一的原则：**改的仍然是 Markdown 源码**。每个动作都走
- * `applyTableOp` 把这一段表格重排一遍再写回去，只替换这张表占的那几行，
- * 表外一个字节都不动——否则行级 diff 会出满屏假变更。
- *
- * 列宽是个例外：Markdown 没有列宽这个概念，写进去就导不回 Obsidian 了，
- * 所以它只是本机偏好，存 localStorage，不进文档、不进备份、不进 MCP。
+ * 改的仍然是 Markdown 源码：走 `applyTableOp` 只替换这张表占的行。
+ * 列宽是本机偏好（localStorage），不进文档。
  */
 import type { EditorView } from "@codemirror/view";
-import { applyTableOp, canDeleteColumn, canDeleteRow, parseTable, type Align, type TableOp } from "@kb/shared/markdown";
+import {
+  applyTableOp, canDeleteColumn, canDeleteRow, decodeCellBreaks, parseTable,
+  type Align, type TableOp,
+} from "@kb/shared/markdown";
+import {
+  activeTableCellInput, tableCellWrappedWith, tableTextSelection, toggleTableCellWrap,
+} from "./table-cell-format";
+export {
+  activeTableCellInput, tableCellWrappedWith, tableTextSelection, toggleTableCellWrap,
+} from "./table-cell-format";
 
 const WIDTH_KEY = "kb.table-width";
 const MIN_COL = 48, MAX_COL = 720;
@@ -67,8 +72,6 @@ export type TableEditorOptions = {
   noteId: string;
 };
 
-type TextSelection = { text: string; from: number; to: number };
-
 /**
  * 找到可视化表格某个单元格在表格 Markdown 源码里的内容范围。
  * textarea 里放的是 trim 后的原始单元格内容，所以两边空白不能算进范围；
@@ -121,25 +124,6 @@ export function tableCellAtSourceOffset(source: string, offset: number): { row: 
   return null;
 }
 
-/** 把当前表格 textarea 的选区换算成 CodeMirror 文档坐标。 */
-export function tableTextSelection(view: EditorView): TextSelection | null {
-  const active = view.dom.ownerDocument.activeElement;
-  if (!(active instanceof HTMLTextAreaElement) || !active.classList.contains("cm-table-cell-input") || !view.dom.contains(active)) return null;
-  const cellFrom = Number(active.dataset.tableSourceFrom);
-  const start = active.selectionStart, end = active.selectionEnd;
-  if (!Number.isSafeInteger(cellFrom) || start === end) return null;
-  const box = active.closest<HTMLElement>(".cm-md-table");
-  if (!box) return null;
-  let tableFrom: number;
-  try { tableFrom = view.posAtDOM(box); } catch { return null; }
-  const selection = {
-    text: active.value.slice(start, end),
-    from: tableFrom + cellFrom + start,
-    to: tableFrom + cellFrom + end,
-  };
-  return view.state.sliceDoc(selection.from, selection.to) === selection.text ? selection : null;
-}
-
 /**
  * 给已经渲染好的表格挂上把手。`box` 是 TableWidget 的外层容器，
  * 里面已经有渲染器吐出的 `.table-scroll > table`。
@@ -181,7 +165,10 @@ export function mountTableEditor(box: HTMLElement, opts: TableEditorOptions) {
     if (next === null) return false;
     // 单元格 mousedown 拦了默认行为，CM 光标往往还停在文末。
     // 写回后 view.focus() 会把旧光标滚进视口，看起来像整篇跳到文末。
-    const scrollTop = view.scrollDOM.scrollTop;
+    // 仅锁 scrollTop 不够：单元格变高后表会相对视口挪位，按表的屏幕位置回锚更稳。
+    const scrollDOM = view.scrollDOM;
+    const scrollTop = scrollDOM.scrollTop;
+    const anchorTop = box.getBoundingClientRect().top;
     // 光标放在表前一个字符，避免落进块小部件范围把表拆回源码；文首的表则放在表后。
     const cursor = from > 0 ? from - 1 : from + next.length;
     view.dispatch({
@@ -190,11 +177,22 @@ export function mountTableEditor(box: HTMLElement, opts: TableEditorOptions) {
       userEvent: "input.table",
       scrollIntoView: false,
     });
-    const restore = () => { view.scrollDOM.scrollTop = scrollTop; };
+    const restore = () => {
+      for (const candidate of Array.from(view.dom.querySelectorAll<HTMLElement>(".cm-md-table"))) {
+        let candidateFrom = -1;
+        try { candidateFrom = view.posAtDOM(candidate); } catch { continue; }
+        if (candidateFrom !== from) continue;
+        scrollDOM.scrollTop = scrollTop + (candidate.getBoundingClientRect().top - anchorTop);
+        return;
+      }
+      scrollDOM.scrollTop = scrollTop;
+    };
     restore();
     if (focusEditor) view.focus();
     restore();
-    requestAnimationFrame(restore);
+    requestAnimationFrame(() => { restore(); requestAnimationFrame(restore); });
+    window.setTimeout(restore, 0);
+    window.setTimeout(restore, 48);
     return true;
   }
 
@@ -236,7 +234,8 @@ export function mountTableEditor(box: HTMLElement, opts: TableEditorOptions) {
     tools.hidden = true;
     armed = null;
 
-    const original = parsed!.rows[row]?.[col] ?? "";
+    const raw = parsed!.rows[row]?.[col] ?? "";
+    const original = decodeCellBreaks(raw);
     const oldChildren = Array.from(cell.childNodes);
     const oldHeight = cell.getBoundingClientRect().height;
     const input = document.createElement("textarea");
@@ -244,11 +243,11 @@ export function mountTableEditor(box: HTMLElement, opts: TableEditorOptions) {
     input.rows = 1;
     input.value = original;
     const sourceRange = tableCellSourceRange(opts.source, row, col);
-    if (sourceRange && opts.source.slice(sourceRange.from, sourceRange.to) === original) {
+    if (sourceRange && opts.source.slice(sourceRange.from, sourceRange.to) === raw) {
       input.dataset.tableSourceFrom = String(sourceRange.from);
     }
     input.setAttribute("aria-label", `${row === 0 ? "表头" : `第 ${row} 行`}第 ${col + 1} 列`);
-    input.title = "Enter 保存，Esc 取消";
+    input.title = "Shift+Enter 换行，Enter 保存，Esc 取消；Ctrl/⌘+B / Shift+X 加粗 / 删除线";
     input.style.minHeight = `${Math.max(32, Math.round(oldHeight - 2))}px`;
 
     let finished = false;
@@ -278,12 +277,29 @@ export function mountTableEditor(box: HTMLElement, opts: TableEditorOptions) {
     input.addEventListener("click", event => event.stopPropagation());
     input.addEventListener("keydown", event => {
       event.stopPropagation();
+      const mod = event.metaKey || event.ctrlKey;
+      if (mod && !event.altKey) {
+        const key = event.key.toLowerCase();
+        const marker = key === "b" ? "**"
+          : key === "i" ? "*"
+          : key === "e" ? "`"
+          : key === "x" && event.shiftKey ? "~~"
+          : null;
+        if (marker) {
+          event.preventDefault();
+          toggleTableCellWrap(opts.view, marker);
+          fit();
+          return;
+        }
+      }
       if (event.key === "Escape") { event.preventDefault(); finish(false); return; }
-      if (event.key === "Enter") {
+      if (event.key === "Enter" && !event.shiftKey) {
+        // Enter 保存时不要 view.focus()——那会把 CM 光标（常在表外）滚进视口。
         event.preventDefault();
-        finish(true);
+        finish(true, false);
         return;
       }
+      // Shift+Enter：放行，让 textarea 自己插入换行；input 事件会抬高高度。
       if (event.key === "Tab") {
         event.preventDefault();
         const width = parsed!.rows[0]?.length ?? 1;

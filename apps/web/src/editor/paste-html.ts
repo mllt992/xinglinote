@@ -11,7 +11,7 @@ import DOMPurify from "dompurify";
 
 /** 行内文本里需要转义的字符。CJK 正文里过度转义很难看，所以只挑真会引起歧义的几个。 */
 function escapeInline(text: string): string {
-  return text.replace(/([\\`*_[\]])/g, "\\$1");
+  return text.replace(/([\\`*_\[\]])/g, "\\$1");
 }
 
 /** 行首才有歧义的标记：`#`、`>`、`-`、`1.`、`|`。只在一段的开头处理。 */
@@ -149,8 +149,8 @@ function tableOf(el: HTMLElement, ctx: Ctx): string | null {
   const rows = [...el.querySelectorAll("tr")].map(tr =>
     [...tr.children]
       .filter(cell => cell.tagName === "TD" || cell.tagName === "TH")
-      // 单元格里不能有裸竖线或换行，否则表格结构会散
-      .map(cell => inlineBlock(cell as HTMLElement, ctx).replace(/\n+/g, " ").replace(/\|/g, "\\|").trim()));
+      // 单元格里不能有裸竖线或真换行；断行写成 <br>（与 setCell / 设计 17 §3.5 同口径）
+      .map(cell => inlineBlock(cell as HTMLElement, ctx).replace(/\n+/g, "<br>").replace(/\|/g, "\\|").trim()));
   if (!rows.length || !rows[0].length) return null;
 
   const width = Math.max(...rows.map(row => row.length));
