@@ -11,7 +11,7 @@ import {
   keymap, placeholder as placeholderExt, rectangularSelection,
 } from "@codemirror/view";
 import { fileDrop, type FileUploader } from "./attachments";
-import { insertLink, insertWikiLink, structuralTab, structuralShiftTab, toggleLinePrefix, toggleTask, toggleWrap } from "./commands";
+import { insertLink, insertWikiLink, structuralTab, structuralShiftTab, toggleLinePrefix, toggleTask } from "./commands";
 import { markdownFolding } from "./folding";
 import { hangingIndent } from "./hanging-indent";
 import { markdownSyntaxExtensions } from "./markdown-syntax";
@@ -35,6 +35,7 @@ import {
   readOnlyCompartment,
   spellcheckCompartment,
   vimCompartment,
+  wrapOrTable,
   ALL_ON,
   contentAttrs,
 } from "./markdown-editor-helpers";
@@ -122,10 +123,10 @@ export function MarkdownEditor({
         extensions: [
           Prec.highest(keymap.of([
             { key: "Mod-s", preventDefault: true, run: () => { latest.current.onSave?.(); return true; } },
-            { key: "Mod-b", run: toggleWrap("**") },
-            { key: "Mod-i", run: toggleWrap("*") },
-            { key: "Mod-e", run: toggleWrap("`") },
-            { key: "Mod-Shift-x", run: toggleWrap("~~") },
+            { key: "Mod-b", run: v => { wrapOrTable(v, "**"); return true; } },
+            { key: "Mod-i", run: v => { wrapOrTable(v, "*"); return true; } },
+            { key: "Mod-e", run: v => { wrapOrTable(v, "`"); return true; } },
+            { key: "Mod-Shift-x", run: v => { wrapOrTable(v, "~~"); return true; } },
             { key: "Mod-Shift-k", run: insertLink },
             { key: "Mod-Shift-l", run: insertWikiLink },
             { key: "Mod-Shift-o", run: toggleLinePrefix("> ", /^\s*>[ \t]?/) },
