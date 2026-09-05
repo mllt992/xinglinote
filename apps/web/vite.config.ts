@@ -1,9 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { compactNoteTitlePlugin } from "./compact-note-title-plugin";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [compactNoteTitlePlugin(), react(), tailwindcss()],
   server: {
     host: "127.0.0.1",
     port: 12098,
