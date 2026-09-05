@@ -1,4 +1,5 @@
 import MarkdownIt from "markdown-it";
+import { breakTagPlugin } from "./break-tag.js";
 import { calloutPlugin } from "./callout.js";
 import { diagramPlugin } from "./diagram.js";
 import { footnotePlugin } from "./footnote.js";
@@ -18,7 +19,10 @@ export { diagramBlockAt, diagramFence } from "./diagram.js";
 export { slugifyHeading } from "./headings.js";
 export { stripTaskAnchorSuffix, taskAnchorSuffixStart, toggleTaskAt } from "./tasklist.js";
 export type { Align, ParsedTable, TableOp } from "./table.js";
-export { applyTableOp, canDeleteColumn, canDeleteRow, parseTable, serializeTable } from "./table.js";
+export {
+  applyTableOp, canDeleteColumn, canDeleteRow, decodeCellBreaks, encodeCellBreaks,
+  parseTable, serializeTable,
+} from "./table.js";
 export { parseWikiRef, retitleWikiRaw, applyWikiRawRewrites, previousWikiTargetId } from "./wikilink.js";
 
 /** 库内（登录后）与公开页（文档站 / 分享 / 广场）的双链规则不同，其余完全一致。 */
@@ -43,10 +47,12 @@ export type MarkdownEnv = {
  * 必须都走这里，禁止任何地方再 new 一个 markdown-it，否则 wikilink 行为会漂。
  *
  * 语法闭集见规格 §9.2：CommonMark + GFM（表格 / 删除线 / 任务列表）+ `$公式$` + `[[双链]]`
- * + ```` ```mermaid ```` 图块 + Callout（`> [!NOTE]`）+ 脚注（`[^1]`）+ `==高亮==`。
- * `html: false` —— 用户 HTML 一律不解析。
+ * + ```` ```mermaid ```` 图块 + Callout（`> [!NOTE]`）+ 脚注（`[^1]`）+ `==高亮==`
+ * + 表格单元格内的字面量 `<br>`（硬换行；其它 HTML 仍不解析）。
+ * `html: false` —— 用户 HTML 一律不解析；唯一例外是上面的 `<br>`。
  */
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographer: false })
+  .use(breakTagPlugin)
   .use(wikilinkPlugin)
   .use(mathPlugin)
   .use(taskListPlugin)
@@ -106,7 +112,7 @@ export function sliceHeadingSection(source: string, slug: string): string | null
 }
 
 /** 中日韩表意文字与假名。这些按「字」算，其余按「词」算。 */
-const CJK = /[㐀-鿿豈-﫿぀-ヿ]/gu;
+const CJK = /[㐀-鿿豈-﫿ぁ-ョ]/gu;
 
 /** 字数：中日韩按字算，拉丁按词算。标记符号不计入（先过 `plainTextOf`）。 */
 export function countWords(source: string): number {
@@ -133,6 +139,7 @@ export function plainTextOf(source: string): string {
     // 日历同步写入的稳定块锚是内部标识，不进入摘要、字数或 AI 上下文。
     .replace(/[ \t]+\^tk-[0-9a-f]{8}\b/g, "")
     .replace(/^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/gm, "")
+    .replace(/<br\s*\/?>/gi, " ")
     .replace(/==/g, "")
     .replace(/[*_~]{1,3}/g, "")
     .replace(/\s+/g, " ")
