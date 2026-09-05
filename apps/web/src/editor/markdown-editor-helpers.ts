@@ -7,6 +7,7 @@ import { EditorView, highlightActiveLine } from "@codemirror/view";
 import { insertBlock, insertLink, insertWikiLink, setHeading, toggleCodeBlock, toggleLinePrefix, toggleTask, toggleWrap, wrappedWith } from "./commands";
 import { livePreview } from "./live-preview";
 import { insertSnippet } from "./slash-menu";
+import { tableCellWrappedWith, toggleTableCellWrap } from "./table-edit";
 import type { RenderToggles } from "../lib/layout-prefs";
 
 export const ALL_ON: RenderToggles = { image: true, math: true, table: true, diagram: true };
@@ -38,6 +39,12 @@ export function previewExtensions(onWiki: () => ((title: string, section?: strin
   ];
 }
 
+/** 行内包裹：单元格编辑态先改 textarea，否则走 CodeMirror 选区。 */
+export function wrapOrTable(view: EditorView, marker: string) {
+  if (toggleTableCellWrap(view, marker)) return;
+  toggleWrap(marker)(view);
+}
+
 /** 工具条动作 → 已有的那些命令。和快捷键走同一批实现，免得两处行为漂开。 */
 export const ACTIONS: Record<EditorAction, (view: EditorView) => void> = {
   undo: v => { undo(v); },
@@ -49,11 +56,11 @@ export const ACTIONS: Record<EditorAction, (view: EditorView) => void> = {
   heading4: v => { setHeading(4)(v); },
   heading5: v => { setHeading(5)(v); },
   heading6: v => { setHeading(6)(v); },
-  bold: v => { toggleWrap("**")(v); },
-  italic: v => { toggleWrap("*")(v); },
-  strike: v => { toggleWrap("~~")(v); },
-  code: v => { toggleWrap("`")(v); },
-  highlight: v => { toggleWrap("==")(v); },
+  bold: v => { wrapOrTable(v, "**"); },
+  italic: v => { wrapOrTable(v, "*"); },
+  strike: v => { wrapOrTable(v, "~~"); },
+  code: v => { wrapOrTable(v, "`"); },
+  highlight: v => { wrapOrTable(v, "=="); },
   link: v => { insertLink(v); },
   wiki: v => { insertWikiLink(v); },
   quote: v => { toggleLinePrefix("> ", /^\s*>[ \t]?/)(v); },
@@ -84,10 +91,13 @@ function markerActive(state: EditorState, marker: string): boolean {
   return true;
 }
 
-export function activeActions(state: EditorState): EditorAction[] {
+export function activeActions(viewOrState: EditorView | EditorState): EditorAction[] {
+  const state = "state" in viewOrState && "dom" in viewOrState ? viewOrState.state : viewOrState as EditorState;
+  const view = "dom" in viewOrState ? viewOrState as EditorView : null;
   const active: EditorAction[] = [];
   for (const [action, marker] of [["bold", "**"], ["italic", "*"], ["strike", "~~"], ["code", "`"], ["highlight", "=="]] as const) {
-    if (markerActive(state, marker)) active.push(action);
+    const inCell = view ? tableCellWrappedWith(view, marker) : null;
+    if (inCell === true || (inCell === null && markerActive(state, marker))) active.push(action);
   }
   const line = state.doc.lineAt(state.selection.main.head).text;
   const heading = /^\s*(#{1,6})[ \t]+/.exec(line);
