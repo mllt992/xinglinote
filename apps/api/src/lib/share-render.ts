@@ -152,18 +152,28 @@ export async function renderShare(share: typeof shareLinks.$inferSelect, noteId?
 export async function loadLiveSite(wsSlug: string, nbSlug: string) {
   const [ws] = await db.select().from(workspaces).where(eq(workspaces.slug, wsSlug));
   if (!ws) throw goneSite();
-  const [nb] = await db.select().from(notebooks).where(and(eq(notebooks.workspaceId, ws.id), eq(notebooks.slug, nbSlug)));
+  const [nb] = await db.select().from(notebooks).where(and(eq(notebooks.workspaceId, ws.id, ), eq(notebooks.slug, nbSlug)));
   if (!nb?.sitePublished || nb.trashedAt) throw goneSite();
   return { ws, nb };
 }
 
-export async function renderSite(ws: { name: string }, nb: typeof notebooks.$inferSelect) {
-  const list = await db.select().from(notes).where(and(
-    eq(notes.notebookId, nb.id),
+async function listSiteNotes(notebookId: string) {
+  return db.select().from(notes).where(and(
+    eq(notes.notebookId, notebookId),
     eq(notes.published, true),
     eq(notes.moderationStatus, "none"),
     isNull(notes.trashedAt),
   ));
+}
+
+export async function renderSite(ws: { name: string }, nb: typeof notebooks.$inferSelect) {
+  let list = await listSiteNotes(nb.id);
+  // issue #38：整本已上线但笔记仍默认 published=false → 空壳站。首次打开时补齐。
+  if (!list.length) {
+    const { seedSiteNotesIfEmpty } = await import("./site-publish.ts");
+    await seedSiteNotesIfEmpty({ notebookId: nb.id, workspaceId: nb.workspaceId, actorUserId: nb.createdBy });
+    list = await listSiteNotes(nb.id);
+  }
   return {
     workspace: ws.name,
     notebook: nb.title,
