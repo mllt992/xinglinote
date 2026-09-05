@@ -152,7 +152,7 @@ export async function renderShare(share: typeof shareLinks.$inferSelect, noteId?
 export async function loadLiveSite(wsSlug: string, nbSlug: string) {
   const [ws] = await db.select().from(workspaces).where(eq(workspaces.slug, wsSlug));
   if (!ws) throw goneSite();
-  const [nb] = await db.select().from(notebooks).where(and(eq(notebooks.workspaceId, ws.id, ), eq(notebooks.slug, nbSlug)));
+  const [nb] = await db.select().from(notebooks).where(and(eq(notebooks.workspaceId, ws.id), eq(notebooks.slug, nbSlug)));
   if (!nb?.sitePublished || nb.trashedAt) throw goneSite();
   return { ws, nb };
 }
