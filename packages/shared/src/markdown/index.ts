@@ -112,7 +112,7 @@ export function sliceHeadingSection(source: string, slug: string): string | null
 }
 
 /** 中日韩表意文字与假名。这些按「字」算，其余按「词」算。 */
-const CJK = /[㐀-鿿豈-﫿ぁ-ョ]/gu;
+const CJK = /[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff]/gu;
 
 /** 字数：中日韩按字算，拉丁按词算。标记符号不计入（先过 `plainTextOf`）。 */
 export function countWords(source: string): number {
