@@ -37,7 +37,7 @@ export function useMarkdownEditorHandle(
       else ACTIONS[action](instance);
       instance.focus();
     },
-    activeActions: () => view.current ? activeActions(view.current.state) : [],
+    activeActions: () => view.current ? activeActions(view.current) : [],
     historyState: () => {
       const instance = view.current;
       const session = collabSession.current;
