@@ -7,6 +7,7 @@ import { ErrorBoundary } from "./components/error-boundary";
 import { ConfirmProvider } from "./components/ui/confirm";
 import { ToastProvider } from "./components/ui/toast";
 import "./styles.css";
+import "./editor/editor-hit-targeting.css";
 
 // 异步里抛出来的错误进不了 ErrorBoundary（React 只接渲染期的），补一条日志，
 // 免得又变成「什么都没发生但功能不对」。不弹提示：这类事件噪音大，打扰不起。
