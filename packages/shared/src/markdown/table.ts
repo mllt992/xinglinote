@@ -157,11 +157,23 @@ export function setAlign(table: ParsedTable, at: number, align: Align): ParsedTa
   return t;
 }
 
+/**
+ * GFM 表格行不能真换行；单元格内的断行写成字面量 `<br>`（Obsidian / Typora 同口径）。
+ * 编辑器的 textarea 里仍用真实换行，进出都过这一对编解码。
+ */
+export function encodeCellBreaks(text: string): string {
+  return text.replace(/\r\n?/g, "\n").replace(/\n/g, "<br>");
+}
+
+export function decodeCellBreaks(text: string): string {
+  return text.replace(/<br\s*\/?>/gi, "\n");
+}
+
 export function setCell(table: ParsedTable, row: number, col: number, text: string): ParsedTable {
   const t = clone(table);
   const r = clampRow(t, row), c = clampCol(t, col);
-  // 单元格里的换行与竖线会把表格结构撕开，转义掉而不是拒绝输入
-  t.rows[r]![c] = text.replace(/\r?\n/g, " ").replace(/(?<!\\)\|/g, "\\|").trim();
+  // 真换行会撕开表格结构 → `<br>`；裸竖线转义，避免拆列
+  t.rows[r]![c] = encodeCellBreaks(text).replace(/(?<!\\)\|/g, "\\|").trim();
   return t;
 }
 
