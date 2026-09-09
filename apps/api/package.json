@@ -13,6 +13,7 @@
     "@kb/shared": "workspace:*",
     "drizzle-orm": "^0.41.0",
     "hono": "^4.7.5",
+    "jose": "^6.2.12",
     "lib0": "^0.2.117",
     "nodemailer": "^9.0.5",
     "pdfjs-dist": "^6.2.108",

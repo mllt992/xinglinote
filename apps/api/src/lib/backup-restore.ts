@@ -408,6 +408,7 @@ export async function restoreInstanceMetadata(input: {
         delete settings.smtpPassword;
         delete settings.moderationApiKey;
         delete settings.vapidPrivateKey;
+        delete settings.oidcClientSecret;
         await tx.insert(instanceSettings).values({ ...settings, id: 1 }).onConflictDoUpdate({ target: instanceSettings.id, set: { ...settings, id: 1, updatedAt: new Date() } });
       }
       // 用户只更新非认证资料；缺失用户用不可登录密码创建，管理员再走重置流程。

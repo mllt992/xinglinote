@@ -133,6 +133,8 @@ export async function instanceSnapshot() {
       smtpPassword: null,
       moderationApiKey: null,
       vapidPrivateKey: null,
+      oidcClientSecret: null,
+      oidcEnabled: false,
     } : null,
     users: (await db.select().from(users)).map(user => ({ ...user, passwordHash: "!restore-requires-password-reset" })),
     serviceRequests: await db.select().from(serviceRequests),

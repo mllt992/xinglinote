@@ -52,6 +52,16 @@ export const instanceSettings = pgTable("instance_settings", {
   /** 帮助入口。builtin 走站内 /help；external 在新标签页打开管理员配置的地址。 */
   helpSource: text("help_source").notNull().default("builtin"),
   helpUrl: text("help_url"),
+  /** 外部 OIDC 认证中心；客户端密钥使用 lib/secrets.ts 加密。 */
+  oidcEnabled: boolean("oidc_enabled").notNull().default(false),
+  oidcIssuerUrl: text("oidc_issuer_url"),
+  oidcClientId: text("oidc_client_id"),
+  oidcClientSecret: text("oidc_client_secret"),
+  oidcProviderName: text("oidc_provider_name").notNull().default("统一认证中心"),
+  oidcScopes: text("oidc_scopes").notNull().default("openid profile email"),
+  oidcClientAuthMethod: text("oidc_client_auth_method").notNull().default("client_secret_basic"),
+  oidcAutoProvision: boolean("oidc_auto_provision").notNull().default(true),
+  oidcRequireVerifiedEmail: boolean("oidc_require_verified_email").notNull().default(true),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -131,6 +141,20 @@ export const sessions = pgTable("sessions", {
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
+
+/** 外部 OIDC 身份与本地账号的稳定绑定；邮箱只用于首次安全关联，之后以 issuer + sub 为准。 */
+export const oidcIdentities = pgTable("oidc_identities", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  issuer: text("issuer").notNull(),
+  subject: text("subject").notNull(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  email: text("email").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, t => [
+  uniqueIndex("oidc_identities_issuer_subject_idx").on(t.issuer, t.subject),
+  index("oidc_identities_user_idx").on(t.userId),
+]);
 
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").defaultRandom().primaryKey(),

@@ -13,6 +13,7 @@ import { normalizeCategories } from "../lib/moderation-verdict.ts";
 import { userStorageMany } from "../lib/quota.ts";
 import { assignStorage, pendingOf, storageDto } from "../lib/service-requests.ts";
 import { userAvatarUrl } from "../lib/user-avatar.ts";
+import { env } from "../env.ts";
 
 function pageQuery(c: { req: { query: (k: string) => string | undefined } }) {
   const page = Math.max(1, Number(c.req.query("page") ?? 1) || 1);
@@ -34,8 +35,8 @@ const externalHelpUrl = z.string().trim().max(2048).url().refine(raw => {
 function maskSettings(s: typeof instanceSettings.$inferSelect | undefined) {
   if (!s) return s;
   // VAPID 私钥一个字节都不该出这台机器；公钥要给前端订阅用，照常回。
-  const { vapidPrivateKey, ...rest } = s;
-  return { ...rest, smtpPassword: s.smtpPassword ? "••••••••" : null, moderationApiKey: s.moderationApiKey ? "••••••••" : null, vapidConfigured: !!vapidPrivateKey, moderationCategories: normalizeCategories(s.moderationCategories) };
+  const { vapidPrivateKey, oidcClientSecret, ...rest } = s;
+  return { ...rest, smtpPassword: s.smtpPassword ? "••••••••" : null, moderationApiKey: s.moderationApiKey ? "••••••••" : null, oidcClientSecret: oidcClientSecret ? "••••••••" : null, vapidConfigured: !!vapidPrivateKey, moderationCategories: normalizeCategories(s.moderationCategories) };
 }
 
 function publicUser(row: typeof users.$inferSelect) {
@@ -84,15 +85,29 @@ adminRoutes.patch("/admin/settings", async c => {
     navEnabled: z.boolean().optional(), navPublic: z.boolean().optional(),
     navTitle: z.string().max(20).nullable().optional(), navSubtitle: z.string().max(80).nullable().optional(),
     helpSource: z.enum(["builtin", "external"]).optional(), helpUrl: externalHelpUrl.nullable().optional(),
+    oidcEnabled: z.boolean().optional(), oidcIssuerUrl: z.string().trim().url().max(2048).nullable().optional(),
+    oidcClientId: z.string().trim().max(300).nullable().optional(), oidcClientSecret: z.string().max(2000).nullable().optional(),
+    oidcProviderName: z.string().trim().min(1).max(40).optional(), oidcScopes: z.string().trim().max(500).optional(),
+    oidcClientAuthMethod: z.enum(["client_secret_basic", "client_secret_post", "none"]).optional(),
+    oidcAutoProvision: z.boolean().optional(), oidcRequireVerifiedEmail: z.boolean().optional(),
   }).parse(await c.req.json());
   // 前端回填的是掩码，别把 •••••••• 当成新密钥存进去。
-  // 两个密钥字段都要这么处理——以前只有 moderationApiKey 有这层保护。
+  // 所有密钥字段都要这么处理——掩码原样回传表示“不修改”。
   const secret = (raw: string | null | undefined) =>
     raw === undefined || raw?.startsWith("••") ? undefined : raw ? seal(raw) : null;
   const key = secret(body.moderationApiKey);
   const smtpPassword = secret(body.smtpPassword);
+  const oidcClientSecret = secret(body.oidcClientSecret);
   // 审核模型也是服务端去 fetch 的用户填地址，同样要过出站护栏
   if (body.moderationBaseUrl) await assertSafeOutboundUrl(body.moderationBaseUrl, "审核模型地址");
+  if (body.oidcIssuerUrl) {
+    const issuer = await assertSafeOutboundUrl(body.oidcIssuerUrl, "OIDC Issuer 地址");
+    const local = ["localhost", "127.0.0.1", "::1"].includes(issuer.hostname);
+    if (issuer.search || issuer.hash) throw fail("VALIDATION", "OIDC Issuer URL 不能包含查询参数或片段");
+    if (issuer.protocol !== "https:" && !(!env.isProduction && issuer.protocol === "http:" && local)) {
+      throw fail("VALIDATION", "OIDC Issuer URL 必须使用 HTTPS（仅本机开发允许 HTTP）");
+    }
+  }
   if (body.helpSource === "external") {
     const [current] = await db.select({ helpUrl: instanceSettings.helpUrl }).from(instanceSettings).where(eq(instanceSettings.id, 1));
     if (!(body.helpUrl ?? current?.helpUrl)) throw fail("VALIDATION", "选择外部帮助时必须填写帮助文档地址");
@@ -100,6 +115,22 @@ adminRoutes.patch("/admin/settings", async c => {
   const values: Record<string, unknown> = { ...body, updatedAt: new Date() };
   if (key === undefined) delete values.moderationApiKey; else values.moderationApiKey = key;
   if (smtpPassword === undefined) delete values.smtpPassword; else values.smtpPassword = smtpPassword;
+  if (oidcClientSecret === undefined) delete values.oidcClientSecret; else values.oidcClientSecret = oidcClientSecret;
+  if (body.oidcIssuerUrl !== undefined) values.oidcIssuerUrl = body.oidcIssuerUrl || null;
+  if (body.oidcClientId !== undefined) values.oidcClientId = body.oidcClientId?.trim() || null;
+  const oidcTouched = Object.keys(body).some(key => key.startsWith("oidc"));
+  if (oidcTouched) {
+    const [current] = await db.select().from(instanceSettings).where(eq(instanceSettings.id, 1));
+    const enabled = body.oidcEnabled ?? current?.oidcEnabled ?? false;
+    const issuer = body.oidcIssuerUrl === undefined ? current?.oidcIssuerUrl : body.oidcIssuerUrl;
+    const clientId = body.oidcClientId === undefined ? current?.oidcClientId : body.oidcClientId;
+    const method = body.oidcClientAuthMethod ?? current?.oidcClientAuthMethod ?? "client_secret_basic";
+    const scopes = body.oidcScopes ?? current?.oidcScopes ?? "openid profile email";
+    const hasSecret = oidcClientSecret === undefined ? !!current?.oidcClientSecret : !!oidcClientSecret;
+    if (!scopes.split(/\s+/).includes("openid")) throw fail("VALIDATION", "OIDC scope 必须包含 openid");
+    if (enabled && (!issuer || !clientId)) throw fail("VALIDATION", "启用统一认证前请填写 Issuer URL 和 Client ID");
+    if (enabled && method !== "none" && !hasSecret) throw fail("VALIDATION", "当前客户端认证方式需要填写 Client Secret");
+  }
   if (body.moderationCategories) values.moderationCategories = normalizeCategories(body.moderationCategories);
   if (body.navTitle !== undefined) values.navTitle = body.navTitle?.trim() || null;
   if (body.navSubtitle !== undefined) values.navSubtitle = body.navSubtitle?.trim() || null;

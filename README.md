@@ -51,6 +51,15 @@ pnpm db:up
 
 第一个注册的用户是实例管理员，并自动拥有个人工作区。
 
+### 对接统一认证中心（OIDC）
+
+项目支持以 OAuth 2.0 Authorization Code + PKCE 方式接入 OpenID Connect 认证中心。升级已有部署后先运行
+一次 `pnpm db:push`，再进入「实例后台 → 注册策略 → 统一认证」在线填写 Issuer URL、Client ID、Client Secret
+等参数。保存后立即生效，无需修改 `.env` 或重启服务；Client Secret 使用 `APP_SECRET` 加密入库，接口只返回掩码。
+
+在认证中心创建 Web 客户端时，将回调地址设为 `https://你的域名/api/v1/auth/oidc/callback`。首次登录按认证中心的
+`issuer + sub` 建立稳定绑定；已验证邮箱与现有账号一致时，会安全关联该账号。
+
 ## 校验
 
 ```bash

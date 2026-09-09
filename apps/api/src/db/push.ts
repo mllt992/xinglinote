@@ -65,6 +65,17 @@ const statements = [
     expires_at timestamptz NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now()
   )`,
+  `CREATE TABLE IF NOT EXISTS oidc_identities (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    issuer text NOT NULL,
+    subject text NOT NULL,
+    user_id uuid NOT NULL REFERENCES users(id),
+    email text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS oidc_identities_issuer_subject_idx ON oidc_identities(issuer, subject)`,
+  `CREATE INDEX IF NOT EXISTS oidc_identities_user_idx ON oidc_identities(user_id)`,
   `CREATE TABLE IF NOT EXISTS workspaces (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     slug text NOT NULL UNIQUE,
@@ -630,6 +641,15 @@ END $$`,
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS nav_subtitle text`,
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS help_source text NOT NULL DEFAULT 'builtin'`,
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS help_url text`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS oidc_enabled boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS oidc_issuer_url text`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS oidc_client_id text`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS oidc_client_secret text`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS oidc_provider_name text NOT NULL DEFAULT '统一认证中心'`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS oidc_scopes text NOT NULL DEFAULT 'openid profile email'`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS oidc_client_auth_method text NOT NULL DEFAULT 'client_secret_basic'`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS oidc_auto_provision boolean NOT NULL DEFAULT true`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS oidc_require_verified_email boolean NOT NULL DEFAULT true`,
   `CREATE TABLE IF NOT EXISTS nav_groups (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     title text NOT NULL,

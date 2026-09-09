@@ -20,6 +20,7 @@ import { SmtpConfig } from "./smtp-panel";
 import { NavAdmin } from "./nav-admin";
 import { BackupPanel } from "./backup-panel";
 import { AdminAiIndex } from "./admin-ai-index";
+import { OidcConfig } from "./oidc-panel";
 import { RequestRow, StorageBar, UserActions, UserDetailDialog, UserRow, type AdminRequest, type AdminUser } from "./admin-users";
 import { STORAGE_PRESETS } from "../lib/bytes";
 
@@ -441,6 +442,7 @@ export function AdminPage() {
                 ["导航", overview?.settings?.navEnabled !== false],
                 ["导航公开", overview?.settings?.navPublic !== false],
                 ["申请扩容", overview?.settings?.allowStorageRequests !== false],
+                ["统一认证", !!overview?.settings?.oidcEnabled],
               ].map(([label, on]) => <div key={String(label)} className="flex items-center justify-between bg-background px-5 py-3.5">
                 <span className="text-sm">{label}</span>
                 <Badge className={on ? statusTone("active") : undefined}>{on ? "开" : "关"}</Badge>
@@ -479,6 +481,7 @@ export function AdminPage() {
         {!error && !loading && tab === "backup" && <BackupPanel />}
 
         {!error && !loading && tab === "registration" && <div className="space-y-5">
+          <OidcConfig settings={overview?.settings ?? {}} onSaved={loadOverview} />
           {SETTING_GROUPS.map(group => <section key={group.title} className="overflow-hidden rounded-xl border bg-background">
             <h2 className="border-b bg-muted/40 px-5 py-3 text-sm font-semibold">{group.title}</h2>
             {group.items.map((item, i) => <div key={item.key} className={cn("flex items-start gap-4 px-5 py-4", i && "border-t")}>

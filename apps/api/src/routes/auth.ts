@@ -44,6 +44,9 @@ auth.get("/meta", async (c) => {
     helpUrl: settings?.helpSource === "external" ? settings.helpUrl : null,
     defaultThemeId: settings?.defaultThemeId ?? "mono-modern",
     defaultAccent: settings?.defaultAccent ?? null,
+    oidc: settings?.oidcEnabled && settings.oidcIssuerUrl && settings.oidcClientId
+      ? { enabled: true, providerName: settings.oidcProviderName }
+      : { enabled: false, providerName: null },
   });
 });
 

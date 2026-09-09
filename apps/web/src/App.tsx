@@ -152,8 +152,31 @@ function AuthShell({ children, title, subtitle }: { children: ReactNode; title: 
 
 function Login() {
   const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
-  async function submit(e: FormEvent) { e.preventDefault(); setErr(""); setBusy(true); try { await api("/api/v1/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }); const next = new URLSearchParams(location.search).get("next"); window.location.assign(next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\") ? next : "/app"); } catch (x) { setErr((x as Error).message); setBusy(false); } }
-  return <AuthShell title="欢迎回来" subtitle="登录后继续整理你的知识库。"><form className="mt-8 space-y-5" onSubmit={submit}><div className="space-y-2"><label className="text-sm font-medium">邮箱</label><Input type="email" autoFocus autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} /></div><div className="space-y-2"><label className="text-sm font-medium">密码</label><Input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} /></div><FormError className="rounded-lg bg-destructive/10 px-3 py-2">{err}</FormError><Button type="submit" className="w-full" disabled={busy}>{busy ? "正在登录…" : "登录"}</Button><p className="text-center text-sm"><Link className="text-muted-foreground underline underline-offset-4" to="/forgot-password">忘记密码？</Link></p><p className="text-center text-sm text-muted-foreground">还没有账号？ <Link className="font-medium text-foreground underline underline-offset-4" to="/register">创建账号</Link></p></form></AuthShell>;
+  const [oidc, setOidc] = useState<{ enabled: boolean; providerName: string | null }>({ enabled: false, providerName: null });
+  const params = new URLSearchParams(location.search);
+  const requestedNext = params.get("next") ?? params.get("redirect");
+  const next = requestedNext && requestedNext.startsWith("/") && !requestedNext.startsWith("//") && !requestedNext.startsWith("/\\") ? requestedNext : "/app";
+  useEffect(() => { api<{ oidc?: typeof oidc }>("/api/v1/meta").then(meta => meta.oidc && setOidc(meta.oidc)).catch(() => {}); }, []);
+  async function submit(e: FormEvent) { e.preventDefault(); setErr(""); setBusy(true); try { await api("/api/v1/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }); window.location.assign(next); } catch (x) { setErr((x as Error).message); setBusy(false); } }
+  const oidcError = params.get("oidc_error");
+  return <AuthShell title="欢迎回来" subtitle="登录后继续整理你的知识库。">
+    <div className="mt-8 space-y-5">
+      {oidc.enabled && <>
+        <Button type="button" variant="outline" className="w-full" onClick={() => window.location.assign(`/api/v1/auth/oidc/start?next=${encodeURIComponent(next)}`)}>
+          使用{oidc.providerName}登录
+        </Button>
+        <div className="flex items-center gap-3 text-xs text-muted-foreground"><Separator className="flex-1" /><span>或使用本地账号</span><Separator className="flex-1" /></div>
+      </>}
+      <form className="space-y-5" onSubmit={submit}>
+        <div className="space-y-2"><label className="text-sm font-medium">邮箱</label><Input type="email" autoFocus={!oidc.enabled} autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} /></div>
+        <div className="space-y-2"><label className="text-sm font-medium">密码</label><Input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} /></div>
+        <FormError className="rounded-lg bg-destructive/10 px-3 py-2">{err || oidcError}</FormError>
+        <Button type="submit" className="w-full" disabled={busy}>{busy ? "正在登录…" : "登录"}</Button>
+        <p className="text-center text-sm"><Link className="text-muted-foreground underline underline-offset-4" to="/forgot-password">忘记密码？</Link></p>
+        <p className="text-center text-sm text-muted-foreground">还没有账号？ <Link className="font-medium text-foreground underline underline-offset-4" to="/register">创建账号</Link></p>
+      </form>
+    </div>
+  </AuthShell>;
 }
 
 function ForgotPassword(){const[email,setEmail]=useState("");const[done,setDone]=useState(false);return <AuthShell title="找回密码" subtitle="输入邮箱，我们会发送一小时有效的重置链接。">{done?<div className="mt-8 rounded-xl border bg-muted/30 p-5 text-sm">如果邮箱存在，重置说明已经发送。<Link className="mt-4 block underline" to="/login">返回登录</Link></div>:<form className="mt-8 space-y-4" onSubmit={async e=>{e.preventDefault();await api('/api/v1/auth/forgot-password',{method:'POST',body:JSON.stringify({email})});setDone(true)}}><Input type="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="name@example.com"/><Button className="w-full">发送重置邮件</Button></form>}</AuthShell>}

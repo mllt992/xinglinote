@@ -37,6 +37,7 @@ import { pushRoutes } from "./routes/push.ts";
 import { navRoutes } from "./routes/nav.ts";
 import { attachCollab } from "./routes/collab.ts";
 import { workspaceLifecycleRoutes } from "./routes/workspace-lifecycle.ts";
+import { oidcLoginRoutes } from "./routes/oidc-login.ts";
 import { db } from "./db/client.ts";
 import { instanceSettings } from "./db/schema.ts";
 
@@ -104,6 +105,7 @@ app.get("/api/readyz", async (c) => {
   return c.json({ ok: true, database: true });
 });
 app.route("/api/v1", auth);
+app.route("/api/v1", oidcLoginRoutes);
 app.route("/api/v1", noteVersionRoutes);
 app.route("/api/v1", knowledge);
 app.route("/api/v1", themeRoutes);
