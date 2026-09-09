@@ -1,5 +1,5 @@
 import { and, eq, isNull } from "drizzle-orm";
-import { fail } from "@kb/shared";
+import { buildNoteTree, fail, type NoteTreeNode } from "@kb/shared";
 import { sliceHeadingSection, slugifyHeading } from "@kb/shared/markdown";
 import { db } from "../db/client.ts";
 import { attachments, folders, notebooks, notes, shareLinks, users, workspaces } from "../db/schema.ts";
@@ -174,12 +174,63 @@ export async function renderSite(ws: { name: string }, nb: typeof notebooks.$inf
     await seedSiteNotesIfEmpty({ notebookId: nb.id, workspaceId: nb.workspaceId, actorUserId: nb.createdBy });
     list = await listSiteNotes(nb.id);
   }
+  const allFolders = await db.select().from(folders).where(and(
+    eq(folders.notebookId, nb.id),
+    isNull(folders.trashedAt),
+  ));
+
+  // 公开站点只暴露公开页面所在的目录链，不能让空目录泄露尚未发布的内容结构。
+  const folderById = new Map(allFolders.map(folder => [folder.id, folder]));
+  const visibleFolderIds = new Set<string>();
+  for (const note of list) {
+    const trail = new Set<string>();
+    for (let folderId = note.folderId; folderId && !trail.has(folderId);) {
+      trail.add(folderId);
+      const folder = folderById.get(folderId);
+      if (!folder) break;
+      visibleFolderIds.add(folder.id);
+      folderId = folder.parentId;
+    }
+  }
+  const visibleFolders = allFolders.filter(folder => visibleFolderIds.has(folder.id));
+  const knownFolders = new Set(visibleFolders.map(folder => folder.id));
+  const publicNotes = list.map(note => ({
+    ...note,
+    folderId: note.folderId && knownFolders.has(note.folderId) ? note.folderId : null,
+  }));
+
+  // 和编辑区的“自定义顺序”使用同一棵树，并让站点首页打开树中的第一篇。
+  const tree = buildNoteTree(visibleFolders, publicNotes, "custom");
+  const orderedIds: string[] = [];
+  const collect = (nodes: NoteTreeNode[]) => {
+    for (const node of nodes) {
+      if (node.kind === "note") orderedIds.push(node.id);
+      else collect(node.children);
+    }
+  };
+  collect(tree);
+  const noteById = new Map(publicNotes.map(note => [note.id, note]));
+  const orderedNotes = orderedIds.map(id => noteById.get(id)).filter((note): note is typeof publicNotes[number] => !!note);
   return {
     workspace: ws.name,
     notebook: nb.title,
     notebookId: nb.id,
     accent: nb.siteAccent,
-    notes: list.map(n => ({ id: n.id, title: n.title, bodyMd: n.bodyMd, updatedAt: n.updatedAt })),
+    folders: visibleFolders.map(folder => ({
+      id: folder.id,
+      title: folder.title,
+      parentId: folder.parentId && knownFolders.has(folder.parentId) ? folder.parentId : null,
+      sortKey: folder.sortKey,
+    })),
+    notes: orderedNotes.map(note => ({
+      id: note.id,
+      title: note.title,
+      bodyMd: note.bodyMd,
+      updatedAt: note.updatedAt,
+      createdAt: note.createdAt,
+      folderId: note.folderId,
+      sortKey: note.sortKey,
+    })),
   };
 }
 

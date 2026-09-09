@@ -1,25 +1,28 @@
 import { cn } from "../lib/utils";
+import { compareNotes, type NoteSortMode } from "@kb/shared";
 
-export type PublicFolder = { id: string; title: string; parentId: string | null };
-export type PublicNoteItem = { id: string; title: string; folderId: string | null };
+export type PublicFolder = { id: string; title: string; parentId: string | null; sortKey?: number | null };
+export type PublicNoteItem = { id: string; title: string; folderId: string | null; sortKey?: number | null; createdAt?: string | Date | null };
 
 /** 目录 / 整本分享左侧只读树：目录分享从被分享的那一层往下，整本从本根开始。 */
 export function PublicShareTree({
-  kind, folders, notes, activeId, onPick,
+  kind, folders, notes, activeId, onPick, sortMode = "name",
 }: {
   kind: "folder" | "notebook";
   folders: PublicFolder[];
   notes: PublicNoteItem[];
   activeId?: string | null;
   onPick: (id: string) => void;
+  sortMode?: NoteSortMode;
 }) {
   const ids = new Set(folders.map(f => f.id));
   const root = folders.find(f => !f.parentId || !ids.has(f.parentId));
   const folderShareRoot = kind === "folder" ? (root?.id ?? null) : null;
 
   function Branch({ parentId, depth }: { parentId: string | null; depth: number }) {
-    const dirs = folders.filter(f => (f.parentId ?? null) === parentId).sort((a, b) => a.title.localeCompare(b.title, "zh"));
-    const items = notes.filter(n => (n.folderId ?? null) === parentId).sort((a, b) => a.title.localeCompare(b.title, "zh"));
+    const folderMode = sortMode === "created" ? "custom" : sortMode;
+    const dirs = folders.filter(f => (f.parentId ?? null) === parentId).sort((a, b) => compareNotes(a, b, folderMode));
+    const items = notes.filter(n => (n.folderId ?? null) === parentId).sort((a, b) => compareNotes(a, b, sortMode));
     return <>
       {dirs.map(f => <div key={f.id}>
         <p className="mb-1 mt-2 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground" style={{ paddingLeft: 12 + depth * 12 }}>{f.title}</p>
