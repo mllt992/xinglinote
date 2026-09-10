@@ -41,9 +41,11 @@ try {
 
   const listed = (await rpc(manage.secret, 'tools/list')).result.tools;
   const names = listed.map(t => t.name);
-  result.hasCoreTools = ['list_folder', 'create_folder', 'move_note', 'add_tags', 'replace_in_note', 'list_recent', 'today', 'list_attachments', 'upload_image', 'create_attachment_upload', 'complete_attachment_upload'].every(n => names.includes(n));
+  result.hasCoreTools = ['list_folder', 'create_folder', 'rename_folder', 'move_folder', 'reorder_notes', 'reorder_folders', 'trash_folder', 'move_note', 'add_tags', 'replace_in_note', 'list_recent', 'today', 'list_attachments', 'upload_image', 'create_attachment_upload', 'complete_attachment_upload'].every(n => names.includes(n));
   result.annotationsPresent = listed.every(t => t.annotations && typeof t.annotations.readOnlyHint === 'boolean');
   result.trashHintedDestructive = listed.find(t => t.name === 'trash_note')?.annotations?.destructiveHint === true;
+  const listFolderSchema = listed.find(t => t.name === 'list_folder')?.inputSchema?.properties?.folder_id;
+  result.folderUuidSchemaCompatible = listFolderSchema?.type === 'string' && !Array.isArray(listFolderSchema?.type);
 
   const readNames = (await rpc(read.secret, 'tools/list')).result.tools.map(t => t.name);
   result.readHidesWrite = !readNames.includes('create_note') && !readNames.includes('trash_note') && readNames.includes('search_notes');
@@ -56,13 +58,29 @@ try {
   result.getMeHasImageCap = typeof meInfo.image_max_bytes === 'number' && meInfo.image_max_bytes >= 262144;
 
   const createdFolder = await call(manage.secret, 'create_folder', { notebook_id: nb.id, title: 'MCP 新建目录验收', client_request_id: crypto.randomUUID() });
+  const secondFolder = await call(manage.secret, 'create_folder', { notebook_id: nb.id, title: 'MCP 排序目录验收', client_request_id: crypto.randomUUID() });
+  const childFolder = await call(manage.secret, 'create_folder', { notebook_id: nb.id, parent_id: createdFolder.id, title: 'MCP 移动目录验收', client_request_id: crypto.randomUUID() });
+  const renamedFolder = await call(manage.secret, 'rename_folder', { id: createdFolder.id, title: 'MCP 已重命名目录验收' });
   const created = await call(manage.secret, 'create_note', { notebook_id: nb.id, folder_id: createdFolder.id, title: 'MCP 新工具验收', content: 'alpha 第一段\nalpha 第二段', tags: ['初始'] });
+  const orderedNote = await call(manage.secret, 'create_note', { notebook_id: nb.id, folder_id: createdFolder.id, title: 'MCP 排序笔记验收', content: 'order' });
   const createdForPaging = await call(manage.secret, 'create_note', { notebook_id: nb.id, title: 'MCP 分页验收', content: 'pagination' });
   const tagged = await call(manage.secret, 'add_tags', { id: created.id, tags: ['知识', '测试'] });
   const listedFolder = await call(manage.secret, 'list_folder', { notebook_id: nb.id, folder_id: createdFolder.id });
   const note = await call(manage.secret, 'get_note', { id: created.id });
   result.created = !!created.id;
-  result.folderCreatedAndContainsNote = createdFolder.parent_id === null && listedFolder.notes.some(x => x.id === created.id);
+  result.folderCreatedAndContainsNote = createdFolder.parent_id === null && renamedFolder.title === 'MCP 已重命名目录验收' && listedFolder.notes.some(x => x.id === created.id);
+  const reorderedNotes = await call(manage.secret, 'reorder_notes', { notebook_id: nb.id, folder_id: createdFolder.id, note_ids: [orderedNote.id, created.id] });
+  const afterNoteOrder = await call(manage.secret, 'list_folder', { notebook_id: nb.id, folder_id: createdFolder.id, limit: 200 });
+  result.noteOrderWorks = reorderedNotes.note_ids.indexOf(orderedNote.id) < reorderedNotes.note_ids.indexOf(created.id)
+    && afterNoteOrder.notes.find(x => x.id === orderedNote.id).sort_key < afterNoteOrder.notes.find(x => x.id === created.id).sort_key;
+  const reorderedFolders = await call(manage.secret, 'reorder_folders', { notebook_id: nb.id, folder_ids: [secondFolder.id, createdFolder.id] });
+  result.folderOrderWorks = reorderedFolders.folder_ids.indexOf(secondFolder.id) < reorderedFolders.folder_ids.indexOf(createdFolder.id);
+  const moveFolderPreview = await call(manage.secret, 'move_folder', { id: childFolder.id, parent_id: secondFolder.id, dry_run: true });
+  await call(manage.secret, 'move_folder', { id: childFolder.id, parent_id: secondFolder.id });
+  const movedFolderList = await call(manage.secret, 'list_folder', { notebook_id: nb.id, folder_id: secondFolder.id, limit: 200 });
+  const trashFolderPreview = await call(manage.secret, 'trash_folder', { id: childFolder.id, dry_run: true });
+  result.folderMoveAndTrashPreviewWork = moveFolderPreview.dry_run === true && movedFolderList.folders.some(x => x.id === childFolder.id)
+    && trashFolderPreview.effect === 'move_subtree_to_trash' && trashFolderPreview.folder_count === 1;
   result.tagsPersisted = tagged.tags.includes('知识') && note.tags.includes('知识');
   result.folderListsNote = listedFolder.notes.some(x => x.id === created.id);
   result.getNoteHasPath = Array.isArray(note.path) && note.path.includes(note.title);

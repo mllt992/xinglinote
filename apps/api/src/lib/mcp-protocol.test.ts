@@ -19,18 +19,33 @@ test("读写钥匙有 create / replace，没有 trash 和 move", () => {
   const names = toolsFor({ rw: "write", allowDelete: false, feedPublic: false, feedWorkspace: false }).map(t => t.name);
   assert.ok(names.includes("create_note"));
   assert.ok(names.includes("create_folder"));
+  assert.ok(names.includes("rename_folder"));
   assert.ok(names.includes("replace_in_note"));
   assert.ok(names.includes("upload_image"));
   assert.equal(names.includes("trash_note"), false);
   assert.equal(names.includes("move_note"), false);
+  assert.equal(names.includes("move_folder"), false);
+  assert.equal(names.includes("reorder_notes"), false);
 });
 
 test("管理+删除+动态才挂 trash 和 post_to_feed", () => {
   const names = toolsFor({ rw: "manage", allowDelete: true, feedPublic: true, feedWorkspace: false }).map(t => t.name);
   assert.ok(names.includes("trash_note"));
   assert.ok(names.includes("move_note"));
+  assert.ok(names.includes("move_folder"));
+  assert.ok(names.includes("reorder_notes"));
+  assert.ok(names.includes("reorder_folders"));
+  assert.ok(names.includes("trash_folder"));
   assert.ok(names.includes("post_to_feed"));
-  assert.ok(toolsFor({ rw: "manage", allowDelete: false, feedPublic: false, feedWorkspace: false }).every(t => t.name !== "trash_note"));
+  assert.ok(toolsFor({ rw: "manage", allowDelete: false, feedPublic: false, feedWorkspace: false }).every(t => t.name !== "trash_note" && t.name !== "trash_folder"));
+});
+
+test("可选根目录 UUID 使用客户端兼容的单类型 schema", () => {
+  const tools = toolsFor({ rw: "manage", allowDelete: true, feedPublic: false, feedWorkspace: false });
+  for (const [name, property] of [["list_folder", "folder_id"], ["create_folder", "parent_id"], ["move_folder", "parent_id"], ["reorder_notes", "folder_id"], ["reorder_folders", "parent_id"]] as const) {
+    const schema = tools.find(tool => tool.name === name)?.inputSchema.properties[property] as { type?: unknown } | undefined;
+    assert.equal(schema?.type, "string", `${name}.${property} 不应发布 nullable union`);
+  }
 });
 
 test("get_note 带翻页参数，search_notes 默认 8 条", () => {

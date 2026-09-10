@@ -19,7 +19,9 @@ export type ToolDef = {
 };
 
 const UUID = { type: "string", format: "uuid" } as const;
-const NUL_UUID = { type: ["string", "null"], format: "uuid" } as const;
+// 这些字段都不是必填，省略就表示根目录。执行层继续接受旧客户端的 null；
+// 对外不再发布 `type: ["string", "null"] + format: uuid`，部分 MCP 客户端会把它误生成为截断 JSON。
+const OPTIONAL_ROOT_UUID = { type: "string", format: "uuid", description: "省略表示笔记本根目录；不要传空字符串" } as const;
 const TAGS = { type: "array", items: { type: "string", minLength: 1, maxLength: 50 }, maxItems: 50 } as const;
 const CLIENT_REQUEST_ID = { type: "string", format: "uuid", description: "同一次逻辑操作重试时保持不变；服务端保留首次成功结果 10 分钟" } as const;
 const NOTE_TARGET_PROPS = {
@@ -51,6 +53,7 @@ export const MCP_INSTRUCTIONS = [
   "找内容用 search_notes（默认 hybrid，默认 8 条摘要），不要用 list_folder 扫整库，也不要猜测 UUID。hybrid 连不上 Embedding 时会降级成关键词，不必当成整库挂了。",
   "读一篇用 get_note；默认最多回 6000 字，超长时 truncated=true，用 offset 翻页。改正文必须先拿到 version，再传 expected_version。撞 CONFLICT_VERSION 必须用返回的 current_version 再 get_note，禁止自己 +1 猜下一版。",
   "create_note / update_note 用 body_md 传 Markdown 正文；append_to_note 仍用 content 追加。",
+  "根目录场景省略 folder_id / parent_id（不要传空字符串）；整理目录可用 create_folder、rename_folder、move_folder，调整自定义顺序用 reorder_notes / reorder_folders。",
   "只改一段请用 replace_in_note，日记补一行用 append_to_note，不要整篇重写，也不要为了改一段把长文读完。",
   "问「今天做什么」用 today；看最近改动用 list_recent。",
   "小于 512KB 的配图可用 upload_image；更大的文件先调 create_attachment_upload，按返回信息直传二进制，再调 complete_attachment_upload。把 markdown 用 append_to_note 或 replace_in_note 插进正文。",
@@ -71,8 +74,8 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
   },
   list_folder: {
     tier: "read",
-    description: "列出某个笔记本或目录下的子目录与笔记；folder_id 省略或传 null 表示根目录。不含正文。",
-    properties: { notebook_id: UUID, folder_id: NUL_UUID, limit: { type: "integer", minimum: 1, maximum: 200, default: 50 }, cursor: { type: "string", description: "上一页返回的不透明 cursor" } },
+    description: "列出某个笔记本或目录下的子目录与笔记；folder_id 省略表示根目录，不要传空字符串。不含正文，返回 sort_key 供排序工具使用。示例：{\"notebook_id\":\"...\"}。",
+    properties: { notebook_id: UUID, folder_id: OPTIONAL_ROOT_UUID, limit: { type: "integer", minimum: 1, maximum: 200, default: 50 }, cursor: { type: "string", description: "上一页返回的不透明 cursor" } },
     required: ["notebook_id"],
     annotations: read("目录"),
   },
@@ -81,12 +84,40 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
     description: "在笔记本根目录或指定父目录下新建文件夹。重试请带同一 client_request_id。",
     properties: {
       notebook_id: UUID,
-      parent_id: NUL_UUID,
+      parent_id: OPTIONAL_ROOT_UUID,
       title: { type: "string", minLength: 1, maxLength: 100 },
       client_request_id: CLIENT_REQUEST_ID,
     },
     required: ["notebook_id", "title"],
     annotations: write("新建文件夹"),
+  },
+  rename_folder: {
+    tier: "write",
+    description: "重命名文件夹，不改变父目录和顺序。",
+    properties: { id: UUID, title: { type: "string", minLength: 1, maxLength: 100 } },
+    required: ["id", "title"],
+    annotations: write("重命名文件夹", { idempotentHint: true }),
+  },
+  move_folder: {
+    tier: "manage",
+    description: "把文件夹及其子树移到同一笔记本内的另一个文件夹；parent_id 省略表示根目录。拒绝成环和超过 8 层。dry_run=true 可先预览。",
+    properties: { id: UUID, parent_id: OPTIONAL_ROOT_UUID, dry_run: { type: "boolean", default: false, description: "仅预览影响，不修改数据" } },
+    required: ["id"],
+    annotations: write("移动文件夹", { idempotentHint: true }),
+  },
+  reorder_notes: {
+    tier: "manage",
+    description: "调整同一目录下笔记的自定义顺序。folder_id 省略表示根目录；note_ids 按目标顺序列出，可只传要互换的子集，未列出的条目保持原槽位。",
+    properties: { notebook_id: UUID, folder_id: OPTIONAL_ROOT_UUID, note_ids: { type: "array", items: UUID, minItems: 1, maxItems: 2000 } },
+    required: ["notebook_id", "note_ids"],
+    annotations: write("调整笔记顺序", { idempotentHint: true }),
+  },
+  reorder_folders: {
+    tier: "manage",
+    description: "调整同一父目录下文件夹的自定义顺序。parent_id 省略表示根目录；folder_ids 按目标顺序列出，可只传要互换的子集，未列出的条目保持原槽位。",
+    properties: { notebook_id: UUID, parent_id: OPTIONAL_ROOT_UUID, folder_ids: { type: "array", items: UUID, minItems: 1, maxItems: 2000 } },
+    required: ["notebook_id", "folder_ids"],
+    annotations: write("调整文件夹顺序", { idempotentHint: true }),
   },
   search_notes: {
     tier: "read",
@@ -220,7 +251,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
     description: "新建笔记。ai_index / published 跟随目标笔记本默认值。重试请带同一 client_request_id。",
     properties: {
       notebook_id: UUID,
-      folder_id: NUL_UUID,
+      folder_id: OPTIONAL_ROOT_UUID,
       title: { type: "string", minLength: 1, maxLength: 200 },
       body_md: { type: "string", default: "", description: "完整 Markdown 正文" },
       tags: TAGS,
@@ -286,7 +317,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
   move_note: {
     tier: "manage",
     description: "把笔记移动到另一个笔记本或目录。两端都要在钥匙范围内；必须传当前 expected_version。dry_run=true 可先预览。",
-    properties: { id: UUID, expected_version: { type: "integer", minimum: 1 }, notebook_id: UUID, folder_id: NUL_UUID, dry_run: { type: "boolean", default: false, description: "仅预览影响，不修改数据" } },
+    properties: { id: UUID, expected_version: { type: "integer", minimum: 1 }, notebook_id: UUID, folder_id: OPTIONAL_ROOT_UUID, dry_run: { type: "boolean", default: false, description: "仅预览影响，不修改数据" } },
     required: ["id", "expected_version", "notebook_id"],
     annotations: write("移动笔记", { idempotentHint: true }),
   },
@@ -303,6 +334,13 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
     properties: { id: UUID, expected_version: { type: "integer", minimum: 1 }, dry_run: { type: "boolean", default: false, description: "仅预览影响，不修改数据" } },
     required: ["id", "expected_version"],
     annotations: { title: "回收笔记", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  trash_folder: {
+    tier: "delete",
+    description: "把文件夹、全部子文件夹及其中笔记移入回收站（不是永久删除）。dry_run=true 可先查看影响数量。",
+    properties: { id: UUID, dry_run: { type: "boolean", default: false, description: "仅预览影响，不修改数据" } },
+    required: ["id"],
+    annotations: { title: "回收文件夹", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
   post_to_feed: {
     tier: "feed",

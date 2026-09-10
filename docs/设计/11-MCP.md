@@ -170,10 +170,27 @@ target notes:
 出：过范围过滤的本，按 `title ASC, id ASC` 稳定排序。
 
 **`list_folder(notebook_id, folder_id?, limit?, cursor?)`**
-出：子目录与笔记标题、id。不含正文。
+出：子目录与笔记标题、id、所在目录和 `sort_key`，不含正文。`folder_id` 省略表示根目录；
+工具 schema 不再把可选 UUID 写成 `type: ["string", "null"]`，避免部分 MCP 客户端错误生成
+`"folder_id": .` 这类不完整 JSON。执行层仍兼容旧客户端传 `null`。
 
 **`create_folder(notebook_id, parent_id?, title, client_request_id?)`**
 须 write。在笔记本根目录或指定父目录下新建文件夹；父目录必须属于同一本，沿用网页端最多 8 层的深度限制。出：id、notebook_id、parent_id、title。创建操作进入 MCP 幂等链。
+
+**`rename_folder(id, title)`**
+须 write。重命名目录，不改变父目录和顺序。出：id、notebook_id、parent_id、title、sort_key。
+
+**`move_folder(id, parent_id?, dry_run?)`**
+须 manage。把目录及整棵子树移动到同一本的根目录或另一个目录；拒绝移到自身/后代下，且移动后仍须满足 8 层上限。
+省略 `parent_id` 表示根目录。`dry_run=true` 只返回来源和目标，不修改数据；实际移动后排在新父目录末尾。
+
+**`reorder_notes(notebook_id, folder_id?, note_ids[])`** / **`reorder_folders(notebook_id, parent_id?, folder_ids[])`**
+须 manage。按数组顺序调整同一层笔记或目录的自定义顺序；省略目录参数表示根目录。允许只传需要重排的子集，
+服务端在这些条目原来占据的位置内稳定重排，未列出的同级条目保持原槽位，避免钥匙看不到的 `ai_index=false` 笔记被意外挪动。
+返回该层完整的最终 id 顺序。
+
+**`trash_folder(id, dry_run?)`**
+仅 `allow_delete`。把目录、子目录及其中笔记一起移入回收站；`dry_run=true` 返回将受影响的目录/笔记数量，不产生副作用。
 
 **`search_notes(query, notebook_id?, workspace_id?, tag?, mode=keyword|semantic|hybrid, limit?)`**  
 limit≤20，**默认 8**（不要一上来塞 20 条摘要）。出：`{ hits: [source], retrieval_metadata }`。`source` 统一为 `{ note_id, title, notebook_id, path, version, updated_at, excerpt, relevance_score? }`，excerpt≤360；`note_id` 可直接传给 `get_note` 核验，`relevance_score` 仅用于当前结果集内部排序。`retrieval_metadata` 含 mode / hit_count / truncated，不暴露向量；hybrid 的 Embedding 连不上时额外给 `degraded: true`，hits 仍是关键词结果，不要把整次调用打成 `fetch failed`。默认搜全部勾选区；传了 `workspace_id` 只搜那一区。keyword 走转义后的 ILIKE；semantic / hybrid 复用 10 的 `retrieve()`，但仍要过钥匙范围，不得绕开 `require_ai_index`。查询里的 `%` `_` 当字面量，不当通配符。标题、路径和摘录只在整条笔记通过钥匙权限检查后返回。纯 `semantic` 才把上游网络失败以 `AI_PROVIDER_ERROR` 抛给调用方。

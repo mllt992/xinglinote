@@ -412,8 +412,11 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 
 ```
 { notebook_id: string, folder_id?: string, limit?: number, cursor?: string }
-→ { items: [{type,id,title}], folders: [...], notes: [...], next_cursor, has_more }
+→ { items: [{type,id,title,sort_key}], folders: [...], notes: [...], next_cursor, has_more }
 ```
+
+`folder_id` 省略表示根目录。公开 schema 使用单一 `type: "string", format: "uuid"`，不把
+`null` 混入 UUID 类型数组；执行层仍兼容旧客户端传 `null`。
 
 ### search_notes
 
@@ -477,12 +480,27 @@ Agent 就会照着错误再建一遍，于是出现重复笔记。审计断了�
 ### create_folder
 
 ```
-{ notebook_id: string, parent_id?: string | null, title: string,
+{ notebook_id: string, parent_id?: string, title: string,
   client_request_id?: string }
 → { id, notebook_id, parent_id, title }
 ```
 
 按钥匙范围与笔记本编辑权限校验；父目录必须在同一笔记本内，目录深度最多 8 层。支持 `client_request_id` 和 HTTP `Idempotency-Key`。
+
+### rename_folder / move_folder / reorder_notes / reorder_folders / trash_folder
+
+```
+rename_folder   { id: string, title: string }
+move_folder     { id: string, parent_id?: string, dry_run?: boolean }
+reorder_notes   { notebook_id: string, folder_id?: string, note_ids: string[] }
+reorder_folders { notebook_id: string, parent_id?: string, folder_ids: string[] }
+trash_folder    { id: string, dry_run?: boolean }
+```
+
+`rename_folder` 须 write；移动和两种排序须 manage；`trash_folder` 仅在 manage + `allow_delete`
+时注册。目录移动只限同一本，拒绝成环及超过 8 层。排序数组可以是同级条目的子集：服务端只在
+这些条目的原槽位内稳定重排，再重写该层完整 `sort_key`，未列出的条目不会被挤走。
+`trash_folder` 复用网页端的子树回收逻辑，目录、子目录和其中笔记使用同一个回收批次。
 
 ### update_note
 
