@@ -58,6 +58,7 @@ import { CalendarPage, TodayPage } from "./components/calendar";
 import { ProjectPage, ProjectsPage } from "./components/projects";
 import { ReceivedShares, SavedShareChip } from "./components/received-shares";
 import { folderAncestorIds, sortNotes } from "@kb/shared";
+import { pickNotebookAfterLoad, shouldApplyNotebookTree, shouldFollowNoteNotebook } from "./lib/notebook-tree-sync";
 import { diagramBlockAt, plainTextOf } from "@kb/shared/markdown";
 import { loadNotebookNoteSort, loadWorkspaceNotebookSort, saveNotebookNoteSort, saveWorkspaceNotebookSort, type NoteSortMode } from "./lib/note-sort-pref";
 import { WorkspaceSettings } from "./components/workspace-settings";
@@ -431,6 +432,12 @@ function Workspace() {
   const focusedNoteRef = useRef<string | undefined>(noteId);
   const [noteCache, setNoteCache] = useState<Record<string, NoteDto>>({});
   const autoOpenNb = useRef<string | null>(null);
+  /** 与 nbId 同步，供异步树请求在回来时判断是否已切走。 */
+  const nbIdRef = useRef<string | undefined>(undefined);
+  function selectNbId(id: string | undefined) {
+    nbIdRef.current = id;
+    setNbId(id);
+  }
   const [folders, setFolders] = useState<FolderDto[]>([]); const [activeFolder, setActiveFolder] = useState<string | null>(null); const [tree, setTree] = useState<TreeNote[]>([]); const [movingNote, setMovingNote] = useState<TreeNote | null>(null); const [movingNoteToNb, setMovingNoteToNb] = useState<TreeNote | null>(null);
   const [noteSort, setNoteSort] = useState<NoteSortMode>("created"); const [treeCanEdit, setTreeCanEdit] = useState(false);
   /** 侧栏里笔记本怎么排。按工作区记，默认「自定义」——侧栏是人自己摆的秩序。 */
@@ -462,32 +469,76 @@ function Workspace() {
     if (workbenchStore.workspaceId === wsId) saveWorkbench(wsId, workbenchStore.state);
   }, [workbenchStore, wsId]);
   useEffect(() => { api<{ workspaces: Ws[] }>("/api/v1/workspaces").then(d => { setSpaces(d.workspaces); if (!wsId && me?.personalWorkspaceId) nav(`/w/${me.personalWorkspaceId}`, { replace: true }); }); }, [me, wsId, nav]);
-  useEffect(() => { if (!wsId) return; setNbSort(loadWorkspaceNotebookSort(wsId)); api<{ notebooks: Nb[] }>(`/api/v1/workspaces/${wsId}/notebooks`).then(d => { setNbs(d.notebooks); setNbId(d.notebooks[0]?.id); }); }, [wsId]);
-  async function refreshTree(id = nbId): Promise<TreeNote[]> { if (!id) return []; const d = await api<{ folders: FolderDto[]; notes: TreeNote[]; canEdit?: boolean }>(`/api/v1/notebooks/${id}/tree`); setFolders(d.folders); setTree(d.notes); setTreeCanEdit(!!d.canEdit); return d.notes; }
+  useEffect(() => {
+    if (!wsId) return;
+    let cancelled = false;
+    setNbSort(loadWorkspaceNotebookSort(wsId));
+    // 立刻卸掉上一工作区的树，避免侧栏短暂显示串台内容。
+    setNbs([]);
+    selectNbId(undefined);
+    setFolders([]);
+    setTree([]);
+    setTreeCanEdit(false);
+    setActiveFolder(null);
+    setSite(null);
+    api<{ notebooks: Nb[] }>(`/api/v1/workspaces/${wsId}/notebooks`).then(d => {
+      if (cancelled) return;
+      setNbs(d.notebooks);
+      setNbId(current => {
+        const next = pickNotebookAfterLoad(d.notebooks, current ?? noteRef.current?.notebookId);
+        nbIdRef.current = next;
+        return next;
+      });
+    }).catch(() => { if (!cancelled) setNbs([]); });
+    return () => { cancelled = true; };
+  }, [wsId]);
+  async function refreshTree(id = nbId): Promise<TreeNote[]> {
+    if (!id) return [];
+    const d = await api<{ folders: FolderDto[]; notes: TreeNote[]; canEdit?: boolean }>(`/api/v1/notebooks/${id}/tree`);
+    // 慢请求后若已切走，丢弃结果，否则列表会盖回旧本。
+    if (!shouldApplyNotebookTree(id, nbIdRef.current)) return d.notes;
+    setFolders(d.folders);
+    setTree(d.notes);
+    setTreeCanEdit(!!d.canEdit);
+    return d.notes;
+  }
   useEffect(() => {
     const id = nbId;
+    nbIdRef.current = id;
+    setActiveFolder(null);
+    // 切换瞬间清空，别让上一本的文件夹/笔记继续挂在侧栏。
+    setFolders([]);
+    setTree([]);
+    setTreeCanEdit(false);
     void (async () => {
       let notes: TreeNote[] = [];
       try { notes = await refreshTree(id); } catch { /* 树加载失败下面照样收尾，别把用户留在别的笔记本的笔记上 */ }
-      if (!id || !wsId || autoOpenNb.current !== id) return;
+      if (!id || !wsId || autoOpenNb.current !== id || nbIdRef.current !== id) return;
       autoOpenNb.current = null;
       const first = sortNotes(notes, loadNotebookNoteSort(id))[0];
       nav(first ? `/w/${wsId}/n/${first.id}` : `/w/${wsId}`);
     })();
-    setActiveFolder(null);
-    if (nbId) { setNoteSort(loadNotebookNoteSort(nbId)); api<{ published: boolean; slug: string; pending?: boolean; canPublish?: boolean; canRequest?: boolean }>(`/api/v1/notebooks/${nbId}/site`).then(setSite).catch(() => setSite(null)); }
+    if (id) {
+      setNoteSort(loadNotebookNoteSort(id));
+      api<{ published: boolean; slug: string; pending?: boolean; canPublish?: boolean; canRequest?: boolean }>(`/api/v1/notebooks/${id}/site`)
+        .then(s => { if (nbIdRef.current === id) setSite(s); })
+        .catch(() => { if (nbIdRef.current === id) setSite(null); });
+    } else {
+      setSite(null);
+    }
   }, [nbId]);
   /** 换笔记本默认打开新本子的第一篇笔记（空本子退回空状态）；否则编辑区还停在上一个笔记本里，面包屑会显示成「新笔记本 › 旧笔记」。 */
   function pickNotebook(id: string | undefined) {
     if (!id) return;
-    if (receivedMode) { autoOpenNb.current = id; setNbId(id); return; }
+    if (receivedMode) { autoOpenNb.current = id; selectNbId(id); return; }
     if (id === nbId) return;
-    autoOpenNb.current = id; setNbId(id);
+    autoOpenNb.current = id; selectNbId(id);
   }
   function focusWorkbenchTab(tab: WorkbenchTab) {
     if (!wsId || tab.id === noteId) return;
     // 先切侧栏再换 URL；网络慢时也不会让新笔记短暂挂在旧笔记本下面。
-    setNbId(tab.notebookId);
+    autoOpenNb.current = null;
+    selectNbId(tab.notebookId);
     nav(`/w/${wsId}/n/${tab.id}`);
   }
   function closeOpenTab(id: string) {
@@ -497,7 +548,7 @@ function Workspace() {
     setNoteCache(current => { const next = { ...current }; delete next[id]; return next; });
     if (id !== noteId) return;
     const next = closed.state.tabs.find(tab => tab.id === closed.nextActiveId);
-    if (next) { setNbId(next.notebookId); nav(`/w/${wsId}/n/${next.id}`); }
+    if (next) { selectNbId(next.notebookId); nav(`/w/${wsId}/n/${next.id}`); }
     else nav(`/w/${wsId}`);
   }
   function closeOpenTabs(ids: string[]) {
@@ -508,7 +559,7 @@ function Workspace() {
     setNoteCache(cache => Object.fromEntries(Object.entries(cache).filter(([id]) => !removed.has(id))));
     if (!noteId || !removed.has(noteId)) return;
     const next = closed.state.tabs.find(tab => tab.id === closed.nextActiveId) ?? closed.state.tabs[0];
-    if (next) { setNbId(next.notebookId); nav(`/w/${wsId}/n/${next.id}`); }
+    if (next) { selectNbId(next.notebookId); nav(`/w/${wsId}/n/${next.id}`); }
     else nav(`/w/${wsId}`);
   }
   function closeNotebookTabs(notebookId: string) {
@@ -521,7 +572,7 @@ function Workspace() {
     setNoteCache(cache => Object.fromEntries(Object.entries(cache).filter(([id]) => !removed.has(id))));
     if (!noteId || !removed.has(noteId)) return;
     const fallback = next.tabs[0];
-    if (fallback) { setNbId(fallback.notebookId); nav(`/w/${wsId}/n/${fallback.id}`); }
+    if (fallback) { selectNbId(fallback.notebookId); nav(`/w/${wsId}/n/${fallback.id}`); }
     else nav(`/w/${wsId}`);
   }
   function changeNoteSort(mode: NoteSortMode) { setNoteSort(mode); if (nbId) saveNotebookNoteSort(nbId, mode); }
@@ -597,7 +648,10 @@ function Workspace() {
   }, [noteId, noteLoadAttempt]);
   useEffect(() => { noteRef.current = note; }, [note]);
   /** 从搜索、快速打开或深链进来的笔记可能不在当前笔记本：侧栏跟着笔记走，面包屑才不会张冠李戴。 */
-  useEffect(() => { if (note?.notebookId) setNbId(note.notebookId); }, [note?.notebookId]);
+  useEffect(() => {
+    if (!shouldFollowNoteNotebook(note?.notebookId, autoOpenNb.current)) return;
+    selectNbId(note!.notebookId);
+  }, [note?.notebookId]);
   /** 当前笔记进入工作台；标题和搬本结果也同步到标签。正文只留内存，绝不写进布局偏好。 */
   useEffect(() => {
     if (!note) return;
@@ -907,7 +961,7 @@ function Workspace() {
       setNbs(remaining);
       closeNotebookTabs(nb.id);
       if (nbId === nb.id) {
-        setNbId(remaining[0]?.id);
+        selectNbId(remaining[0]?.id);
       }
       toast.success(`已将《${nb.title}》移到回收站`);
     } catch (e) { toast.error("删除笔记本失败", (e as Error).message); }
@@ -919,7 +973,7 @@ function Workspace() {
     const remaining = nbs.filter(x => x.id !== nb.id);
     setNbs(remaining);
     closeNotebookTabs(nb.id);
-    if (nbId === nb.id) setNbId(remaining[0]?.id);
+    if (nbId === nb.id) selectNbId(remaining[0]?.id);
     const notes = [`${moved.notes} 篇笔记已经在《${target.name}》里`];
     if (moved.droppedMembers) notes.push(`${moved.droppedMembers} 位白名单成员因为不在目标工作区被摘掉`);
     if (moved.slugChanged) notes.push("目标工作区已有同名地址，文档站换了新地址");
@@ -1008,7 +1062,7 @@ function Workspace() {
         const next = { ...noteRef.current, notebookId: saved.notebookId, version: saved.version };
         noteRef.current = next;
         setNote(live => live?.id === id ? { ...live, notebookId: saved.notebookId, version: saved.version } : live);
-        setNbId(saved.notebookId);
+        selectNbId(saved.notebookId);
       }
       const open = workbench.tabs.find(tab => tab.id === id);
       if (open) setWorkbench(state => updateWorkbenchTab(state, { ...open, notebookId: saved.notebookId }));
@@ -1351,7 +1405,7 @@ function Workspace() {
           <Button variant={titleOnly ? "secondary" : "ghost"} size="sm" onClick={() => { const v = !titleOnly; setTitleOnly(v); void runSearch(search, { titleOnly: v }); }}>仅标题</Button>
           <span className="ml-auto pr-1 text-[11px] text-muted-foreground">{hits.length} 条</span>
         </div>
-        {hits.length === 0 ? <p className="px-3 py-6 text-center text-xs text-muted-foreground">没有匹配的笔记。</p> : hits.map(h => <button key={`${h.kind ?? "note"}:${h.id}`} className="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left text-sm hover:bg-muted" onClick={() => { if (h.kind !== "saved_share" && h.workspaceId === wsId) { setNbId(h.notebookId); setWorkbench(current => openWorkbenchTab(current, { id: h.id, title: h.title, notebookId: h.notebookId }, noteId)); } nav(h.kind === "saved_share" ? `/w/${wsId}/received/${h.id}` : `/w/${h.workspaceId}/n/${h.id}`); setSearch(""); setHits([]); }}><Search className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1"><span className="block truncate">{h.title}</span><span className="block truncate text-[11px] text-muted-foreground">{h.kind === "saved_share" ? h.snippet : `${h.workspaceId !== wsId ? `${spaces.find(w => w.id === h.workspaceId)?.name ?? "其他工作区"} · ` : ""}${h.snippet}`}</span></span></button>)}</div>}</div>
+        {hits.length === 0 ? <p className="px-3 py-6 text-center text-xs text-muted-foreground">没有匹配的笔记。</p> : hits.map(h => <button key={`${h.kind ?? "note"}:${h.id}`} className="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left text-sm hover:bg-muted" onClick={() => { if (h.kind !== "saved_share" && h.workspaceId === wsId) { selectNbId(h.notebookId); setWorkbench(current => openWorkbenchTab(current, { id: h.id, title: h.title, notebookId: h.notebookId }, noteId)); } nav(h.kind === "saved_share" ? `/w/${wsId}/received/${h.id}` : `/w/${h.workspaceId}/n/${h.id}`); setSearch(""); setHits([]); }}><Search className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1"><span className="block truncate">{h.title}</span><span className="block truncate text-[11px] text-muted-foreground">{h.kind === "saved_share" ? h.snippet : `${h.workspaceId !== wsId ? `${spaces.find(w => w.id === h.workspaceId)?.name ?? "其他工作区"} · ` : ""}${h.snippet}`}</span></span></button>)}</div>}</div>
       <Tooltip content="用 AI 问这个工作区"><Button variant={showAsk ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" aria-pressed={showAsk} onClick={() => setShowAsk(v => !v)}><Sparkles /><span className="hidden lg:inline">问知识库</span></Button></Tooltip>
       <Tooltip content="快速打开（Ctrl+K）"><Button variant="ghost" size="icon" aria-label="快速打开" onClick={() => setQuickOpen(true)}><Search /></Button></Tooltip>
       <NotificationBell />
@@ -1490,7 +1544,7 @@ ${a.mime.startsWith("image/") ? "!" : ""}[${a.filename}](${a.url})` }, true)}
     <MoveToFolderDialog open={!!movingNote} noteTitle={movingNote?.title ?? ""} currentFolderId={movingNote?.folderId ?? null} folders={folders} onOpenChange={v => { if (!v) setMovingNote(null); }} onPick={folderId => { if (movingNote) void moveNoteToFolder(movingNote.id, folderId); }} />
     <MoveToNotebookDialog open={!!movingNoteToNb} noteTitle={movingNoteToNb?.title ?? ""} currentNotebookId={nbId} notebooks={nbs} onOpenChange={v => { if (!v) setMovingNoteToNb(null); }} onPick={(notebookId, folderId) => { if (movingNoteToNb) void moveNoteToNotebook(movingNoteToNb.id, notebookId, folderId); }} />
     <MoveNotebookDialog notebook={moveNb} spaces={spaces} currentWorkspaceId={wsId} onOpenChange={v => !v && setMoveNb(null)} onMoved={notebookMoved} />
-    <NotebookAccessDialog notebook={activeNb} workspaceId={wsId} open={showNotebookAccess} onOpenChange={setShowNotebookAccess} onSaved={()=>wsId&&api<{notebooks:Nb[]}>(`/api/v1/workspaces/${wsId}/notebooks`).then(d=>{setNbs(d.notebooks);const fresh=d.notebooks.find(n=>n.id===nbId);if(!fresh)setNbId(d.notebooks[0]?.id)})} />
+    <NotebookAccessDialog notebook={activeNb} workspaceId={wsId} open={showNotebookAccess} onOpenChange={setShowNotebookAccess} onSaved={()=>wsId&&api<{notebooks:Nb[]}>(`/api/v1/workspaces/${wsId}/notebooks`).then(d=>{setNbs(d.notebooks);const fresh=d.notebooks.find(n=>n.id===nbId);if(!fresh)selectNbId(d.notebooks[0]?.id)})} />
   </div></TooltipProvider>;
 }
 

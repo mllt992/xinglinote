@@ -183,3 +183,18 @@ export function buildNoteTree(
   }
   return root;
 }
+
+/**
+ * 目录从本根到自身的标题路径，便于复制、双链与对外引用。
+ * 缺父或成环时停在已知链上；找不到该目录则退回空串。
+ */
+export function folderTitlePath(
+  folders: readonly TreeFolder[],
+  folderId: string,
+  separator = "/",
+): string {
+  const byId = new Map(folders.map((f) => [f.id, f]));
+  if (!byId.has(folderId)) return "";
+  const chain = folderAncestorIds(folders, folderId);
+  return [...chain].reverse().map((id) => byId.get(id)?.title ?? id).join(separator);
+}
