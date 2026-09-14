@@ -13,8 +13,9 @@ fileRoutes.delete("/attachments/:id",async c=>{const user=await u(c);const [a]=a
 fileRoutes.post("/notebooks/:id/import-preview",async c=>{
   const user=await u(c);const{notebook:nb}=await notebookAccess(c.req.param("id"),user.id,"edit");
   const input=importInput.parse(await c.req.json());
-  const{items,newFolders}=await planImport(nb,input);
+  const{items,newFolders,targetFolderPath}=await planImport(nb,input);
   return ok(c,{
+    targetFolder:targetFolderPath.join("/")||null,
     newFolders:newFolders.map(f=>f.path.join("/")),
     items:items.map(({sourcePath,folderPath,title,originalTitle,action})=>({sourcePath,folder:folderPath.join("/"),title,originalTitle,action})),
     summary:{create:items.filter(i=>i.action==="create").length,rename:items.filter(i=>i.action==="rename").length,overwrite:items.filter(i=>i.action==="overwrite").length,skip:items.filter(i=>i.action==="skip").length},

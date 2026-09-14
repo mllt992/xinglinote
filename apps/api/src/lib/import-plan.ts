@@ -2,23 +2,18 @@ import { and,eq,isNull } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/client.ts";
 import { folders,notebooks,notes } from "../db/schema.ts";
+import { importFolderPath,norm,parseFront,resolveTargetFolderSegs } from "./import-plan-path.ts";
+
+export { importFolderPath,norm,parseFront,resolveTargetFolderSegs } from "./import-plan-path.ts";
 
 export const importInput=z.object({
   files:z.array(z.object({path:z.string().max(500),content:z.string().max(2000000)})).min(1).max(500),
   mode:z.enum(["skip","rename","overwrite"]).default("rename"),
   createFolders:z.boolean().default(true),
+  /** 挂到已有文件夹下；null/省略 = 笔记本根。相对路径（zip 目录）再叠在它下面。 */
+  targetFolderId:z.string().uuid().nullable().optional(),
 });
 export type ImportInput=z.infer<typeof importInput>;
-export const norm=(s:string)=>s.normalize("NFKC").trim().replace(/\s+/g," ").toLowerCase();
-
-/** 单篇 md 的 frontmatter：title 用得上，外来 id 一律丢掉，正文去掉这一段。 */
-export function parseFront(raw:string){
-  const m=raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-  if(!m)return{title:null as string|null,body:raw};
-  const line=m[1].split(/\r?\n/).map(l=>l.match(/^title:\s*(.+)$/)).find(Boolean);
-  const title=line?.[1]?.trim().replace(/^["']|["']$/g,"")||null;
-  return{title,body:raw.slice(m[0].length).replace(/^\s*\n/,"")};
-}
 
 export type PlanItem={sourcePath:string;folderPath:string[];folderKey:string;title:string;originalTitle:string;action:"create"|"rename"|"overwrite"|"skip";body:string};
 
@@ -26,6 +21,10 @@ export type PlanItem={sourcePath:string;folderPath:string[];folderKey:string;tit
 export async function planImport(nb:typeof notebooks.$inferSelect,input:ImportInput){
   const liveFolders=await db.select().from(folders).where(and(eq(folders.notebookId,nb.id),isNull(folders.trashedAt)));
   const liveNotes=await db.select().from(notes).where(and(eq(notes.notebookId,nb.id),isNull(notes.trashedAt)));
+  const targetSegs=resolveTargetFolderSegs(
+    liveFolders.map(f=>({id:f.id,title:f.title,parentId:f.parentId??null})),
+    input.targetFolderId,
+  );
   const folderKey=(segs:string[])=>segs.map(norm).join("/");
   const existingKey=new Map<string,string>();                        // 目录路径 -> 已有 folder id
   for(const f of liveFolders){
@@ -46,7 +45,7 @@ export async function planImport(nb:typeof notebooks.$inferSelect,input:ImportIn
   for(const file of input.files){
     const parts=file.path.split(/[\\/]/).filter(p=>p&&p!=="."&&p!=="..");
     const name=parts.pop()??"未命名";
-    const dirs=input.createFolders?parts.slice(0,8):[];               // 深度上限和树一致
+    const dirs=importFolderPath(file.path,targetSegs,input.createFolders);
     const front=parseFront(file.content);
     const title=(front.title??name.replace(/\.(md|markdown)$/i,"")).trim()||"未命名";
     let key="";
@@ -66,5 +65,5 @@ export async function planImport(nb:typeof notebooks.$inferSelect,input:ImportIn
     if(action==="create"||action==="rename")taken.add(norm(finalTitle));
     items.push({sourcePath:file.path,folderPath:dirs,folderKey:key,title:finalTitle,originalTitle:title,action,body:front.body});
   }
-  return{items,newFolders,existingKey};
+  return{items,newFolders,existingKey,targetFolderPath:targetSegs};
 }
