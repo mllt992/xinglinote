@@ -9,6 +9,7 @@ import {
   folderMoveExceedsDepth,
   FOLDER_DEPTH_LIMIT,
   isFolderDescendant,
+  folderTitlePath,
 } from "./note-tree.ts";
 
 const folders = [
@@ -104,4 +105,11 @@ test("folderDropZone splits a row into before / into / after", () => {
   assert.equal(folderDropZone(0.5), "into");
   assert.equal(folderDropZone(0.9), "after");
   assert.equal(folderDropZone(1), "after");
+});
+
+test("folderTitlePath joins root-to-self titles", () => {
+  assert.equal(folderTitlePath(folders, "cn"), "VPS/国内");
+  assert.equal(folderTitlePath(folders, "vps"), "VPS");
+  assert.equal(folderTitlePath(folders, "missing"), "");
+  assert.equal(folderTitlePath(folders, "cn", " › "), "VPS › 国内");
 });

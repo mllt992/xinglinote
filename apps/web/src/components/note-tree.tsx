@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { Link } from "react-router-dom";
 import {
-  ArrowDown, ArrowUp, ChevronDown, ChevronRight, FilePlus2, FileText, Folder, FolderInput, FolderOpen, FolderPlus,
+  ArrowDown, ArrowUp, ChevronDown, ChevronRight, Copy, FilePlus2, FileText, Folder, FolderInput, FolderOpen, FolderPlus,
   GripVertical, Notebook, Pencil, Share2, Trash2,
 } from "lucide-react";
 import {
-  buildNoteTree, flattenFolders, folderAncestorIds, folderDropZone, folderMoveExceedsDepth, isFolderDescendant,
+  buildNoteTree, flattenFolders, folderAncestorIds, folderDropZone, folderMoveExceedsDepth, folderTitlePath, isFolderDescendant,
   moveNoteId, placeId, sortNotes, type FolderDropZone, type NoteSortMode, type NoteTreeNode, type TreeFolder,
 } from "@kb/shared";
 import { api } from "../api";
+import { copyPlainText } from "../lib/clipboard";
 import { loadOpenFolders, saveOpenFolders } from "../lib/note-sort-pref";
 import { cn } from "../lib/utils";
 import type { TreeNote } from "./note-list";
@@ -17,6 +18,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuLabel, Con
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { FormError } from "./ui/form-error";
 import { Tooltip } from "./ui/tooltip";
+import { useToast } from "./ui/toast";
 
 export const NOTE_MIME = "application/x-kb-note";
 const FOLDER_MIME = "application/x-kb-folder";
@@ -466,6 +468,7 @@ export function NoteTree({
             key={`${node.kind}:${node.id}`}
             node={node}
             depth={0}
+            folders={folders}
             openIds={openIds}
             noteId={noteId}
             wsId={wsId}
@@ -524,6 +527,7 @@ export function NoteTree({
 function TreeRow({
   node,
   depth,
+  folders,
   openIds,
   noteId,
   wsId,
@@ -556,6 +560,7 @@ function TreeRow({
 }: {
   node: NoteTreeNode;
   depth: number;
+  folders: TreeFolder[];
   openIds: Set<string>;
   noteId?: string;
   wsId?: string;
@@ -586,7 +591,22 @@ function TreeRow({
   onShiftFolder: (folderId: string, dir: -1 | 1) => void;
   onOpenNote?: (note: TreeNote) => void;
 }) {
+  const toast = useToast();
   const pad = { paddingLeft: 8 + depth * 16 };
+
+  async function copyFolderName(folder: TreeFolder) {
+    const ok = await copyPlainText(folder.title);
+    if (ok) toast.success("已复制文件夹名称", folder.title);
+    else toast.error("复制失败", "浏览器拒绝写入剪贴板。");
+  }
+
+  async function copyFolderPath(folder: TreeFolder) {
+    const path = folderTitlePath(folders, folder.id) || folder.title;
+    const ok = await copyPlainText(path);
+    if (ok) toast.success("已复制文件夹路径", path);
+    else toast.error("复制失败", "浏览器拒绝写入剪贴板。");
+  }
+
   if (node.kind === "folder") {
     const open = openIds.has(node.id);
     const overPrefix = `folder:${node.id}:`;
@@ -643,6 +663,11 @@ function TreeRow({
                 {open ? <FolderOpen className="size-4 shrink-0" /> : <Folder className="size-4 shrink-0" />}
                 <span className="truncate">{node.folder.title}</span>
               </button>
+              <Tooltip content="复制名称">
+                <Button variant="ghost" size="icon" className="size-7 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100" aria-label="复制文件夹名称" onClick={() => void copyFolderName(node.folder)}>
+                  <Copy className="size-3.5" />
+                </Button>
+              </Tooltip>
               <Tooltip content="分享此目录">
                 <Button variant="ghost" size="icon" className="size-7 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100" onClick={() => onShareFolder(node.folder)}>
                   <Share2 className="size-3.5" />
@@ -652,6 +677,9 @@ function TreeRow({
           </ContextMenuTrigger>
           <ContextMenuContent>
             <ContextMenuLabel>{node.folder.title}</ContextMenuLabel>
+            <ContextMenuItem onSelect={() => void copyFolderName(node.folder)}><Copy />复制名称</ContextMenuItem>
+            <ContextMenuItem onSelect={() => void copyFolderPath(node.folder)}><Copy />复制路径</ContextMenuItem>
+            <ContextMenuSeparator />
             <ContextMenuItem disabled={!canEdit} onSelect={() => onCreateNote(node.id)}><FilePlus2 />在此新建笔记</ContextMenuItem>
             <ContextMenuItem disabled={!canEdit} onSelect={() => onCreateFolder(node.id)}><FolderPlus />新建子目录</ContextMenuItem>
             <ContextMenuItem disabled={!canEdit || !folderOrder} onSelect={() => onShiftFolder(node.id, -1)}><ArrowUp />上移</ContextMenuItem>
@@ -667,6 +695,7 @@ function TreeRow({
             key={`${child.kind}:${child.id}`}
             node={child}
             depth={depth + 1}
+            folders={folders}
             openIds={openIds}
             noteId={noteId}
             wsId={wsId}
