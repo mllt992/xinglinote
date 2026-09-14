@@ -1538,7 +1538,7 @@ ${a.mime.startsWith("image/") ? "!" : ""}[${a.filename}](${a.url})` }, true)}
     <ShareDialog target={shareTarget} open={!!shareTarget} onOpenChange={v => { if (!v) setShareTarget(null); }} />
     {note && <CollabDialog noteId={note.id} open={showCollab} onOpenChange={setShowCollab} collab={collab} viewers={viewers}
       onShare={() => setShareTarget({ kind: "note", id: note.id, title: note.title, bodyMd: note.bodyMd })} />}
-    <ImportDialog notebookId={nbId} notebookTitle={activeNb?.title} open={showImport} onOpenChange={setShowImport} onDone={() => void refreshTree()} />
+    <ImportDialog notebookId={nbId} notebookTitle={activeNb?.title} folders={folders} activeFolderId={activeFolder} open={showImport} onOpenChange={setShowImport} onDone={() => void refreshTree()} />
     <CommandPalette open={palette} onOpenChange={setPalette} commands={paletteCommands()} />
     <QuickOpen open={quickOpen} onOpenChange={setQuickOpen} onPick={(ws, note) => nav(`/w/${ws}/n/${note}`)} workspaceNames={Object.fromEntries(spaces.map(w => [w.id, w.name]))} />
     <MoveToFolderDialog open={!!movingNote} noteTitle={movingNote?.title ?? ""} currentFolderId={movingNote?.folderId ?? null} folders={folders} onOpenChange={v => { if (!v) setMovingNote(null); }} onPick={folderId => { if (movingNote) void moveNoteToFolder(movingNote.id, folderId); }} />
