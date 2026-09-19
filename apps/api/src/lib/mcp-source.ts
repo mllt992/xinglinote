@@ -18,7 +18,8 @@ export function mcpSourcePath(parts: string[]) {
   return `/${parts.map(part => part.replaceAll("/", "／")).join("/")}`;
 }
 
-export function toMcpSource(hit: KnowledgeSourceHit, path: string[]): McpSource {
+export function toMcpSource(hit: KnowledgeSourceHit, path: string[], excerptMax = MCP_SOURCE_EXCERPT_MAX): McpSource {
+  const cap = Math.min(2000, Math.max(40, excerptMax));
   return {
     note_id: hit.noteId,
     title: hit.title,
@@ -26,7 +27,7 @@ export function toMcpSource(hit: KnowledgeSourceHit, path: string[]): McpSource 
     path: mcpSourcePath(path),
     version: hit.version,
     updated_at: hit.updatedAt.toISOString(),
-    excerpt: hit.excerpt.slice(0, MCP_SOURCE_EXCERPT_MAX),
+    excerpt: hit.excerpt.slice(0, cap),
     relevance_score: hit.score,
   };
 }

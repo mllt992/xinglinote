@@ -52,11 +52,19 @@ test("get_note 带翻页参数，search_notes 默认 8 条", () => {
   const tools = toolsFor({ rw: "read", allowDelete: false, feedPublic: false, feedWorkspace: false });
   const get = tools.find(t => t.name === "get_note");
   const search = tools.find(t => t.name === "search_notes");
+  const ask = tools.find(t => t.name === "ask_knowledge");
   assert.ok(get?.inputSchema.properties && "offset" in get.inputSchema.properties);
   assert.ok(get?.inputSchema.properties && "max_chars" in get.inputSchema.properties);
+  assert.ok(get?.inputSchema.properties && "snippet_only" in get.inputSchema.properties);
+  const getMax = (get?.inputSchema.properties as { max_chars?: { default?: number } } | undefined)?.max_chars;
+  assert.equal(getMax?.default, 2000);
   const limit = (search?.inputSchema.properties as { limit?: { default?: number } } | undefined)?.limit;
   assert.equal(limit?.default, 8);
+  assert.ok(search?.inputSchema.properties && "max_chars" in search.inputSchema.properties);
+  assert.ok(search?.inputSchema.properties && "snippet_only" in search.inputSchema.properties);
+  assert.ok(ask?.inputSchema.properties && "max_context_chars" in ask.inputSchema.properties);
   assert.match(search?.description ?? "", /degraded/);
+  assert.match(get?.description ?? "", /2000/);
 });
 
 test("每个列出的工具都带注解", () => {
