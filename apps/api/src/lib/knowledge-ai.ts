@@ -125,7 +125,8 @@ function likeAny(needles: string[]) {
 }
 
 /** 把检索命中压进问答预算：每篇最多 2 段、合计字数封顶。 */
-export function packAskContext<T extends KnowledgeHit>(rows: T[]): T[] {
+export function packAskContext<T extends KnowledgeHit>(rows: T[], maxContextChars = ASK_MAX_CONTEXT_CHARS): T[] {
+  const budget = Math.min(8000, Math.max(400, maxContextChars));
   const kept: T[] = [];
   const perNote = new Map<string, number>();
   let used = 0;
@@ -135,7 +136,7 @@ export function packAskContext<T extends KnowledgeHit>(rows: T[]): T[] {
     if (n >= ASK_MAX_PER_NOTE) continue;
     const excerpt = row.excerpt.slice(0, ASK_MAX_EXCERPT);
     const piece = excerpt.length + row.title.length + 16;
-    if (kept.length && used + piece > ASK_MAX_CONTEXT_CHARS) break;
+    if (kept.length && used + piece > budget) break;
     kept.push({ ...row, excerpt });
     perNote.set(row.noteId, n + 1);
     used += piece;
@@ -333,6 +334,7 @@ type AskInput = {
   notebookId?: string;
   filterNoteId?: (noteId: string) => Promise<boolean>;
   history?: AskHistoryTurn[];
+  maxContextChars?: number;
 };
 
 export async function askKnowledge(input: AskInput) {
@@ -341,7 +343,7 @@ export async function askKnowledge(input: AskInput) {
   const rows = askNeedsNotes(input.question)
     ? hitsSupportQuestion(input.question, await retrieve({ ...input, query: input.question, mode: "hybrid", limit: 8 }))
     : [];
-  return answerFromHits(input.workspaceId, input.userId, input.question, rows, input.history);
+  return answerFromHits(input.workspaceId, input.userId, input.question, rows, input.history, input.maxContextChars);
 }
 
 /** 与 askKnowledge 共用检索、提示和引用校验，只把模型输出逐块交给 HTTP 层。 */
@@ -351,7 +353,7 @@ export async function streamAskKnowledge(input: AskInput, onDelta: (delta: strin
   const rows = askNeedsNotes(input.question)
     ? hitsSupportQuestion(input.question, await retrieve({ ...input, query: input.question, mode: "hybrid", limit: 8 }))
     : [];
-  return streamAnswerFromHits(input.workspaceId, input.userId, input.question, rows, input.history, onDelta);
+  return streamAnswerFromHits(input.workspaceId, input.userId, input.question, rows, input.history, onDelta, input.maxContextChars);
 }
 
 /** 多工作区问答：各区检索后合并再答，模型用第一个配好 AI 的区。 */
@@ -362,6 +364,7 @@ export async function askKnowledgeAcross(input: {
   notebookId?: string;
   filterNoteId?: (noteId: string) => Promise<boolean>;
   history?: AskHistoryTurn[];
+  maxContextChars?: number;
 }) {
   if (input.workspaceIds.length === 1) return askKnowledge({ ...input, workspaceId: input.workspaceIds[0]! });
   const hits: KnowledgeSourceHit[] = [];
@@ -375,7 +378,7 @@ export async function askKnowledgeAcross(input: {
   for (const id of input.workspaceIds) {
     if (await aiProvider(id, input.userId)) { providerWs = id; break; }
   }
-  return answerFromHits(providerWs, input.userId, input.question, rows, input.history);
+  return answerFromHits(providerWs, input.userId, input.question, rows, input.history, input.maxContextChars);
 }
 
 export function markCitationVersions(
@@ -395,8 +398,8 @@ export function markCitationVersions(
   });
 }
 
-async function answerFromHits(workspaceId: string, userId: string, question: string, rows: KnowledgeSourceHit[], history?: AskHistoryTurn[]) {
-  const packed = packAskContext(rows);
+async function answerFromHits(workspaceId: string, userId: string, question: string, rows: KnowledgeSourceHit[], history?: AskHistoryTurn[], maxContextChars?: number) {
+  const packed = packAskContext(rows, maxContextChars ?? ASK_MAX_CONTEXT_CHARS);
   const p = await aiProvider(workspaceId, userId);
   if (!p) throw fail("AI_NOT_CONFIGURED", "请先配置 AI 提供商");
   const grounded = packed.length > 0;
@@ -416,8 +419,9 @@ async function streamAnswerFromHits(
   rows: KnowledgeSourceHit[],
   history: AskHistoryTurn[] | undefined,
   onDelta: (delta: string) => void | Promise<void>,
+  maxContextChars?: number,
 ) {
-  const packed = packAskContext(rows);
+  const packed = packAskContext(rows, maxContextChars ?? ASK_MAX_CONTEXT_CHARS);
   const p = await aiProvider(workspaceId, userId);
   if (!p) throw fail("AI_NOT_CONFIGURED", "请先配置 AI 提供商");
   const grounded = packed.length > 0;

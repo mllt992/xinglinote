@@ -56,16 +56,19 @@ export async function searchNotesInScope(input: {
   tag?: string;
   mode: "keyword" | "semantic" | "hybrid";
   limit: number;
+  excerptMaxChars?: number;
+  snippetOnly?: boolean;
   accept: (noteId: string) => Promise<boolean>;
 }) {
   const hits = new Map<string, KnowledgeSourceHit>();
   if (!input.workspaceIds.length) return { hits: [], degraded: false };
+  const excerptCap = Math.min(2000, Math.max(40, input.excerptMaxChars ?? 360));
 
   const take = async (hit: KnowledgeSourceHit) => {
     if (input.notebookId && hit.notebookId !== input.notebookId) return;
     if (!(await input.accept(hit.noteId))) return;
     const old = hits.get(hit.noteId);
-    if (!old || hit.score > old.score) hits.set(hit.noteId, { ...hit, excerpt: hit.excerpt.slice(0, 360) });
+    if (!old || hit.score > old.score) hits.set(hit.noteId, { ...hit, excerpt: hit.excerpt.slice(0, excerptCap) });
   };
 
   if (input.mode !== "semantic") {
@@ -130,7 +133,14 @@ export async function searchNotesInScope(input: {
   const pathRows = sorted.map(h => ({ id: h.noteId, title: h.title, notebookId: h.notebookId, folderId: h.folderId }));
   const paths = await buildNotePaths(input.workspaceIds, pathRows);
   return {
-    hits: sorted.map(h => toMcpSource(h, paths.get(h.noteId) ?? [h.title])),
+    hits: sorted.map(h => {
+      const src = toMcpSource(h, paths.get(h.noteId) ?? [h.title], excerptCap);
+      if (input.snippetOnly) {
+        const { excerpt: _drop, ...rest } = src;
+        return rest;
+      }
+      return src;
+    }),
     degraded,
   };
 }
