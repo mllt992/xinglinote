@@ -57,6 +57,7 @@ export const MCP_INSTRUCTIONS = [
   "只改一段请用 replace_in_note，日记补一行用 append_to_note，不要整篇重写，也不要为了改一段把长文读完。",
   "问「今天做什么」用 today；看最近改动用 list_recent。",
   "小于 512KB 的配图可用 upload_image；更大的文件先调 create_attachment_upload，按返回信息直传二进制，再调 complete_attachment_upload。把 markdown 用 append_to_note 或 replace_in_note 插进正文。",
+  "项目看板用 list_projects / list_project_tasks；改任务状态或看板列用 update_project_task。日历待办仍用 list_tasks / create_task / complete_task，不要混用。",
   "被关掉 ai_index 或不在范围内的笔记对读工具等于不存在（NOT_FOUND），不要靠报错探测。",
 ].join("\n");
 
@@ -349,6 +350,41 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
     properties: { id: UUID, dry_run: { type: "boolean", default: false, description: "仅预览影响，不修改数据" } },
     required: ["id"],
     annotations: { title: "回收文件夹", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  list_projects: {
+    tier: "read",
+    description: "列出钥匙可见工作区内的项目（默认不含已归档）。返回 id、标题、状态、看板任务数等；不含任务正文。日历待办请用 list_tasks。",
+    properties: {
+      workspace_id: UUID,
+      include_archived: { type: "boolean", default: false, description: "为 true 时只列已归档项目；默认列未归档" },
+      limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
+      cursor: { type: "string", description: "上一页返回的不透明 cursor" },
+    },
+    annotations: read("项目列表"),
+  },
+  list_project_tasks: {
+    tier: "read",
+    description: "列出某个项目里的看板任务（含状态/看板列、优先级、标签）。默认不含已取消；可用 status 精确过滤某一列。与日历 list_tasks 不同。",
+    properties: {
+      project_id: UUID,
+      status: { type: "string", minLength: 1, maxLength: 64, description: "看板列 key 或 cancelled；省略则返回各列（默认不含 cancelled）" },
+      include_cancelled: { type: "boolean", default: false, description: "未指定 status 时是否包含 cancelled" },
+      limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
+      cursor: { type: "string", description: "上一页返回的不透明 cursor" },
+    },
+    required: ["project_id"],
+    annotations: read("项目任务列表"),
+  },
+  update_project_task: {
+    tier: "write",
+    description: "改项目看板任务的状态/看板列（status 为列 key，或 cancelled）。钥匙需 write；工作区只读成员与已归档项目会拒绝。重试请带同一 client_request_id。",
+    properties: {
+      id: UUID,
+      status: { type: "string", minLength: 1, maxLength: 64, description: "目标看板列 key，或 cancelled" },
+      client_request_id: CLIENT_REQUEST_ID,
+    },
+    required: ["id", "status"],
+    annotations: write("改项目任务状态", { idempotentHint: true }),
   },
   post_to_feed: {
     tier: "feed",
