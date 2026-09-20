@@ -94,7 +94,7 @@ test("高影响写工具公开版本校验、确认和预览参数", () => {
 
 test("创建类工具公开 UUID 幂等键", () => {
   const tools = toolsFor({ rw: "manage", allowDelete: true, feedPublic: true, feedWorkspace: true });
-  for (const name of ["create_note", "create_folder", "create_task", "post_to_feed", "upload_image", "create_attachment_upload", "complete_attachment_upload"]) {
+  for (const name of ["create_note", "create_folder", "create_task", "post_to_feed", "upload_image", "create_attachment_upload", "complete_attachment_upload", "update_project_task"]) {
     const tool = tools.find(t => t.name === name);
     const prop = (tool?.inputSchema.properties as { client_request_id?: { format?: string } } | undefined)?.client_request_id;
     assert.equal(prop?.format, "uuid", `${name} 缺少 client_request_id`);
@@ -120,7 +120,7 @@ test("建笔记和覆盖笔记公开 body_md，旧 content 参数仍可兼容", 
 
 test("所有列表工具使用统一 cursor 协议", () => {
   const tools=toolsFor({rw:"read",allowDelete:false,feedPublic:false,feedWorkspace:false});
-  for(const name of ["list_notebooks","list_folder","list_recent","list_tasks","list_events"]){
+  for(const name of ["list_notebooks","list_folder","list_recent","list_tasks","list_events","list_projects","list_project_tasks"]){
     const props=tools.find(t=>t.name===name)?.inputSchema.properties;
     assert.ok(props&&"limit" in props&&"cursor" in props,`${name} 缺少 limit/cursor`);
   }
@@ -149,4 +149,27 @@ test("decodeImageData 认裸 base64 和 data URL", () => {
 
 test("decodeImageData 拒空串", () => {
   assert.throws(() => decodeImageData("   "), /空/);
+});
+
+test("项目 MCP 工具命名不与日历 list_tasks 冲突，且档位正确", () => {
+  const read = toolsFor({ rw: "read", allowDelete: false, feedPublic: false, feedWorkspace: false }).map(t => t.name);
+  const write = toolsFor({ rw: "write", allowDelete: false, feedPublic: false, feedWorkspace: false }).map(t => t.name);
+  assert.ok(read.includes("list_projects"));
+  assert.ok(read.includes("list_project_tasks"));
+  assert.ok(read.includes("list_tasks"));
+  assert.equal(read.includes("update_project_task"), false);
+  assert.ok(write.includes("update_project_task"));
+  assert.equal(write.includes("list_project_tasks"), true);
+
+  const tools = toolsFor({ rw: "write", allowDelete: false, feedPublic: false, feedWorkspace: false });
+  const listProjects = tools.find(t => t.name === "list_projects");
+  const listProjectTasks = tools.find(t => t.name === "list_project_tasks");
+  const update = tools.find(t => t.name === "update_project_task");
+  assert.ok(listProjects?.inputSchema.properties && "cursor" in listProjects.inputSchema.properties);
+  assert.ok(listProjectTasks?.inputSchema.required?.includes("project_id"));
+  assert.ok(update?.inputSchema.required?.includes("id"));
+  assert.ok(update?.inputSchema.required?.includes("status"));
+  assert.equal(update?.annotations.idempotentHint, true);
+  assert.match(listProjectTasks?.description ?? "", /日历/);
+  assert.match(listProjects?.description ?? "", /list_tasks/);
 });
