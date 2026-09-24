@@ -1,4 +1,4 @@
-import type MarkdownIt from "markdown-it";
+import type { MarkdownIt, StateInline } from "markdown-it";
 
 /**
  * 即便 `html: false`，也认字面量 `<br>` / `<br/>` / `<br />` 为硬换行。
@@ -7,7 +7,7 @@ import type MarkdownIt from "markdown-it";
  *（Obsidian / Typora 同口径）。别处用户写的 HTML 仍然不解析——只有这一种标签。
  */
 export function breakTagPlugin(md: MarkdownIt) {
-  md.inline.ruler.before("html_inline", "break_tag", (state, silent) => {
+  md.inline.ruler.before("html_inline", "break_tag", (state: StateInline, silent: boolean) => {
     if (state.src.charCodeAt(state.pos) !== 0x3c /* < */) return false;
     const match = /^<br\s*\/?>/i.exec(state.src.slice(state.pos));
     if (!match) return false;
