@@ -1,4 +1,4 @@
-import{useEffect,useMemo,useState}from'react';import{FileDown,Folder,FolderTree,Upload}from'lucide-react';import{flattenFolders,folderTitlePath,type TreeFolder}from'@kb/shared';import{api}from'../api';import{Button}from'./ui/button';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{useToast}from'./ui/toast';import{FormError}from'./ui/form-error';import{cn}from'../lib/utils';import{readMarkdownZip}from'../lib/zip';
+import{useEffect,useMemo,useState}from'react';import{FileDown,Folder,FolderTree,Upload}from'lucide-react';import{flattenFolders,folderTitlePath,type TreeFolder}from'@kb/shared';import{api}from'../api';import{Button}from'./ui/button';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{useToast}from'./ui/toast';import{cn}from'../lib/utils';import{readMarkdownZip}from'../lib/zip';import{takeInputFiles}from'../lib/file-input';
 
 type Mode="skip"|"rename"|"overwrite";
 type PlanItem={sourcePath:string;folder:string;title:string;originalTitle:string;action:"create"|"rename"|"overwrite"|"skip"};
@@ -21,7 +21,7 @@ export function ImportDialog({
   const[files,setFiles]=useState<Array<{path:string;content:string}>>([]);
   const[mode,setMode]=useState<Mode>("rename");const[createFolders,setCreateFolders]=useState(true);
   const[targetFolderId,setTargetFolderId]=useState<string|null>(null);
-  const[plan,setPlan]=useState<Plan|null>(null);const[busy,setBusy]=useState(false);const[err,setErr]=useState("");
+  const[plan,setPlan]=useState<Plan|null>(null);const[busy,setBusy]=useState(false);
   const[progress,setProgress]=useState<string|null>(null);
   const folderRows=useMemo(()=>flattenFolders(folders,"name"),[folders]);
   const targetLabel=targetFolderId?folderTitlePath(folders,targetFolderId," / ")||"所选文件夹":"笔记本根目录";
@@ -31,15 +31,15 @@ export function ImportDialog({
     setTargetFolderId(activeFolderId && folders.some(f=>f.id===activeFolderId)?activeFolderId:null);
   },[open,activeFolderId,folders]);
 
-  function reset(){setFiles([]);setPlan(null);setErr("");setProgress(null);}
+  function reset(){setFiles([]);setPlan(null);setProgress(null);}
   function body(payload:Array<{path:string;content:string}>,m:Mode,foldersFlag:boolean,folderId:string|null){
     return JSON.stringify({files:payload,mode:m,createFolders:foldersFlag,targetFolderId:folderId});
   }
-  async function pick(list:FileList){
-    setBusy(true);setErr("");setProgress("正在读取文件…");
+  async function pick(all:File[]){
+    if(!notebookId){toast.error("没法导入","请先选中一个笔记本再导入。");return;}
+    setBusy(true);setProgress("正在读取文件…");
     try{
       const payload:Array<{path:string;content:string}>=[];
-      const all=Array.from(list);
       for(let i=0;i<all.length;i++){
         const file=all[i]!;
         setProgress(`读取文件 ${i+1}/${all.length}：${file.name}`);
@@ -48,13 +48,13 @@ export function ImportDialog({
       if(!payload.length)throw new Error("没找到 .md 文件");
       if(payload.length>500)throw new Error(`一次最多 500 篇，这次有 ${payload.length} 篇`);
       setFiles(payload);await preview(payload,mode,createFolders,targetFolderId);
-    }catch(e){setErr((e as Error).message)}finally{setBusy(false);setProgress(null)}
+    }catch(e){setPlan(null);toast.error("读取文件失败",(e as Error).message||"文件读不出来，请换个文件再试。")}finally{setBusy(false);setProgress(null)}
   }
   async function preview(payload=files,m=mode,foldersFlag=createFolders,folderId=targetFolderId){
     if(!notebookId||!payload.length)return;
-    setBusy(true);setErr("");setProgress("正在计算导入计划…");
+    setBusy(true);setProgress("正在计算导入计划…");
     try{setPlan(await api<Plan>(`/api/v1/notebooks/${notebookId}/import-preview`,{method:"POST",body:body(payload,m,foldersFlag,folderId)}));}
-    catch(e){setErr((e as Error).message);setPlan(null)}finally{setBusy(false);setProgress(null)}
+    catch(e){setPlan(null);toast.error("导入预览失败",(e as Error).message||"服务器没有返回导入计划，请稍后再试。")}finally{setBusy(false);setProgress(null)}
   }
   function pickFolder(id:string|null){
     setTargetFolderId(id);
@@ -65,7 +65,7 @@ export function ImportDialog({
     if(!notebookId||!files.length)return;
     const payload=files;const m=mode;const foldersFlag=createFolders;const folderId=targetFolderId;
     const n=payload.length;
-    setErr("");reset();onOpenChange(false);
+    reset();onOpenChange(false);
     toast.toast({title:"正在导入…",description:`共 ${n} 篇 → ${targetLabel}。完成后会通知你。`});
     try{
       const d=await api<{created:Array<{title:string}>;overwritten:Array<{title:string}>;skipped:Array<{title:string}>;foldersCreated:string[]}>(`/api/v1/notebooks/${notebookId}/import-markdown`,{method:"POST",body:body(payload,m,foldersFlag,folderId)});
@@ -78,7 +78,7 @@ export function ImportDialog({
       if(d.overwritten.length && d.overwritten.length<=5)detail.push(`覆盖：${d.overwritten.map(x=>x.title).join("、")}`);
       toast.success("导入完成", [parts.join("，"), ...detail].filter(Boolean).join("。"));
       onDone();
-    }catch(e){toast.error("导入失败",(e as Error).message)}
+    }catch(e){toast.error("导入失败",(e as Error).message||"服务器出错，请稍后再试。")}
   }
 
   return <Dialog open={open} onOpenChange={v=>{if(!v)reset();onOpenChange(v)}}><DialogContent className="max-h-[86vh] max-w-2xl overflow-auto">
@@ -104,7 +104,7 @@ export function ImportDialog({
 
       <div className="flex flex-wrap items-center gap-3">
         <Button variant="outline" disabled={busy} onClick={()=>document.getElementById("import-wizard-input")?.click()}><FileDown/>选择文件</Button>
-        <input id="import-wizard-input" type="file" multiple accept=".md,.markdown,.zip,text/markdown,application/zip" className="hidden" onChange={e=>{const list=e.target.files;e.target.value="";if(list?.length)void pick(list)}}/>
+        <input id="import-wizard-input" type="file" multiple accept=".md,.markdown,.zip,text/markdown,application/zip" className="hidden" onChange={e=>{const list=takeInputFiles(e.target);if(list.length)void pick(list)}}/>
         {files.length>0&&<span className="text-sm text-muted-foreground">已选 {files.length} 篇</span>}
         <label className="ml-auto flex cursor-pointer items-center gap-2 text-xs"><input type="checkbox" className="size-3.5 accent-current" checked={createFolders} onChange={e=>{setCreateFolders(e.target.checked);void preview(files,mode,e.target.checked,targetFolderId)}}/><FolderTree className="size-3.5"/>按 zip 里的目录建文件夹</label>
       </div>
@@ -112,7 +112,6 @@ export function ImportDialog({
       <div><p className="mb-1.5 text-xs font-medium text-muted-foreground">同名笔记怎么处理</p>
         <div className="grid gap-2 md:grid-cols-3">{MODES.map(o=><button key={o.v} type="button" onClick={()=>{setMode(o.v);void preview(files,o.v,createFolders,targetFolderId)}} className={`rounded-lg border p-3 text-left transition ${mode===o.v?"border-foreground bg-muted":"hover:bg-muted/50"}`}><span className="text-sm font-medium">{o.title}</span><span className="mt-1 block text-xs text-muted-foreground">{o.desc}</span></button>)}</div></div>
 
-      <FormError>{err}</FormError>
       {progress&&<p className="text-xs text-muted-foreground">{progress}</p>}
 
       {plan&&<div className="rounded-xl border">
