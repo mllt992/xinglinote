@@ -4,6 +4,7 @@ import { api } from "../api";
 import { cn } from "../lib/utils";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
+import { useToast } from "./ui/toast";
 
 export type PickedNote = { id: string; title: string; workspaceId: string; notebookId: string };
 
@@ -21,6 +22,7 @@ export function NotePickerDialog({ open, onOpenChange, workspaceId, title = "关
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState(0);
   const seq = useRef(0);
+  const toast = useToast();
 
   useEffect(() => { if (open) { setQ(""); setActive(0); } }, [open]);
   useEffect(() => {
@@ -33,11 +35,11 @@ export function NotePickerDialog({ open, onOpenChange, workspaceId, title = "关
         ? api<{ hits: PickedNote[] }>(`/api/v1/search?q=${encodeURIComponent(query)}&workspaceId=${workspaceId}&titleOnly=1&limit=20`).then(d => d.hits)
         : api<{ notes: PickedNote[] }>("/api/v1/me/recent").then(d => d.notes.filter(n => n.workspaceId === workspaceId));
       load.then(list => { if (my === seq.current) { setItems(list); setActive(0); } })
-        .catch(() => { if (my === seq.current) setItems([]); })
+        .catch(e => { if (my === seq.current) { setItems([]); toast.error("没能读取笔记列表", (e as Error).message); } })
         .finally(() => { if (my === seq.current) setBusy(false); });
     }, query ? 200 : 0);
     return () => window.clearTimeout(timer);
-  }, [q, open, workspaceId]);
+  }, [q, open, workspaceId, toast]);
 
   const pick = (note: PickedNote | undefined) => { if (note) { onPick(note); onOpenChange(false); } };
 
