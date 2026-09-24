@@ -48,6 +48,9 @@ const workspacePackage = base.extend({
   projectTags: rows.default([]),
   projectTaskTags: rows.default([]),
   projectTaskMilestones: rows.default([]),
+  // 思维导图（设计 25）。老包没有这两项，按空处理。
+  mindMaps: rows.default([]),
+  mindMapNoteLinks: rows.default([]),
   attachmentFiles: z.array(z.object({
     attachmentId: uuid,
     bytes: z.number().int().nonnegative(),
@@ -254,6 +257,12 @@ export function validateWorkspaceGraph(snapshot: WorkspaceBackupPackage) {
   for (const item of snapshot.projectMilestones) assertRef(item.projectId, projectIds, "projectMilestones.projectId");
   const tagIds = idsOf(snapshot.projectTags ?? [], "projectTags");
   for (const item of snapshot.projectTags ?? []) assertRef(item.projectId, projectIds, "projectTags.projectId");
+  const mindMapIds = idsOf(snapshot.mindMaps ?? [], "mindMaps");
+  for (const item of snapshot.mindMaps ?? []) assertRef(item.notebookId, nbIds, "mindMaps.notebookId");
+  for (const item of snapshot.mindMapNoteLinks ?? []) {
+    assertRef(item.mindMapId, mindMapIds, "mindMapNoteLinks.mindMapId");
+    assertRef(item.noteId, noteIds, "mindMapNoteLinks.noteId");
+  }
   for (const item of snapshot.projectTaskTags ?? []) {
     assertRef(item.taskId, taskIds, "projectTaskTags.taskId");
     assertRef(item.tagId, tagIds, "projectTaskTags.tagId");

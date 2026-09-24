@@ -3,7 +3,7 @@ import { db } from "../db/client.ts";
 import {
   agentReplies, agents, aiChunks, attachments, authTokens, calendarFeedTokens, calendarItems,
   calendarOverrides, calendarReminders, calendarSubscriptions, calendarTemplates,
-  comments, contentReports, corrections, folders, instanceSettings, links, mcpAttachmentUploads, mcpTokens,
+  comments, contentReports, corrections, folders, instanceSettings, links, mcpAttachmentUploads, mcpTokens, mindMapNoteLinks, mindMaps,
   moderationReviews, navGroups, navLinks, notebookMembers, notebooks, noteCollab,
   notes, noteFavorites, noteVersions, noteVisits, postAssets, postFavorites, postReactions, posts, projectColumns, projectMilestones, projectTasks, projectTimeEntries, projects,
   registrationCodes, registrationCodeUsages, savedShares, serviceRequests, sessions,
@@ -17,6 +17,7 @@ import { purgeWorkspaceProjects } from "./trash.ts";
 import { noteCandidates, rebuildLinks } from "./links.ts";
 import { seal } from "./secrets.ts";
 import { secureToken } from "./tokens.ts";
+import { emptyMindMap, extractMindMapNoteLinks, remapMindMapNotes } from "@kb/shared";
 
 type Row = Record<string, unknown>;
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -209,6 +210,7 @@ export async function restoreWorkspacePackage(input: {
   const taskMap = idMap(snapshot.projectTasks);
   const timeMap = idMap(snapshot.projectTimeEntries);
   const milestoneMap = idMap(snapshot.projectMilestones);
+  const mindMapMap = idMap(snapshot.mindMaps ?? []);
   const staged = await stageFiles(snapshot);
   let oldFiles: Array<typeof attachments.$inferSelect> = [];
   let oldPostFiles: Array<typeof postAssets.$inferSelect> = [];
@@ -223,6 +225,7 @@ export async function restoreWorkspacePackage(input: {
     posts: snapshot.posts.length,
     calendarItems: snapshot.calendarItems.length,
     projects: snapshot.projects.length,
+    mindMaps: (snapshot.mindMaps ?? []).length,
   };
   if (snapshot.version === 3 && snapshot.attachments.length) warnings.push(`已跳过 ${snapshot.attachments.length} 个无二进制文件的 v3 附件元数据`);
   try {
@@ -351,6 +354,19 @@ export async function restoreWorkspacePackage(input: {
       await insertRows(tx, projectMilestones, snapshot.projectMilestones.map(raw => ({
         ...revive(raw), id: milestoneMap.get(String(raw.id)), projectId: mapped(projectMap, raw.projectId),
       })));
+
+      // 思维导图：节点里关联的笔记 id 跟着笔记换新；关联表是派生物，按换好的数据重建。
+      const restoredNoteIds = new Set<string>(noteMap.values());
+      const mindMapValues = (snapshot.mindMaps ?? []).map(raw => {
+        let data;
+        try { data = remapMindMapNotes(raw.data, id => mapped(noteMap, id)); }
+        catch { data = emptyMindMap(String(raw.title ?? "")); warnings.push(`思维导图「${String(raw.title ?? raw.id)}」数据损坏，已恢复为空白导图`); }
+        return { ...revive(raw), id: mindMapMap.get(String(raw.id)), notebookId: mapped(nbMap, raw.notebookId), data, createdBy: mapUser(raw.createdBy), updatedBy: mapUser(raw.updatedBy) };
+      });
+      await insertRows(tx, mindMaps, mindMapValues);
+      await insertRows(tx, mindMapNoteLinks, mindMapValues.flatMap(m => extractMindMapNoteLinks(m.data)
+        .filter(link => restoredNoteIds.has(link.noteId))
+        .map(link => ({ mindMapId: m.id, noteId: link.noteId, nodeId: link.nodeId }))));
 
       const [verify] = await tx.select({ notebooks: sql<number>`count(distinct ${notebooks.id})`, notes: sql<number>`count(distinct ${notes.id})` })
         .from(notebooks).leftJoin(notes, eq(notes.workspaceId, notebooks.workspaceId)).where(eq(notebooks.workspaceId, targetWorkspaceId));

@@ -5,6 +5,7 @@ export * from "./note-tree.js";
 export * from "./diff.js";
 export * from "./mentions.js";
 export * from "./hashtags.js";
+export * from "./mindmap.js";
 
 export const HANDLE_RE = /^[a-z][a-z0-9_]{2,31}$/;
 

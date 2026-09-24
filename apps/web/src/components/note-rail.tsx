@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { History, List, ListChecks, MessageCircle, MessageSquare, Paperclip, PanelRight, Share2, Sparkles, Trash2, Upload, Workflow, X } from "lucide-react";
+import { History, List, ListChecks, MessageCircle, MessageSquare, Network, Paperclip, PanelRight, Share2, Sparkles, Trash2, Upload, Workflow, X } from "lucide-react";
 import { outlineOf, type DiagramBlock, type OutlineItem } from "@kb/shared/markdown";
 import { useDebounced } from "../lib/use-debounced";
 import { cn } from "../lib/utils";
@@ -14,15 +14,17 @@ import { AiWriteTab, type Selection } from "./ai-write-tab";
 import { AiTasksTab } from "./ai-tasks-tab";
 import { ReviewTab } from "./review-tab";
 import { NoteCommentsTab } from "./note-comments-tab";
+import { MindMapRailTab } from "./mind-map-rail-tab";
 import type { TextSelection } from "../lib/note-comments";
 
-export const RAIL_TABS = ["outline", "comments", "links", "attachments", "versions", "review", "ai", "diagram", "tasks"] as const;
+export const RAIL_TABS = ["outline", "comments", "links", "mindmaps", "attachments", "versions", "review", "ai", "diagram", "tasks"] as const;
 export type RailTab = (typeof RAIL_TABS)[number];
 
 const TAB_META: Record<RailTab, { label: string; icon: ReactNode }> = {
   outline: { label: "大纲", icon: <List /> },
   comments: { label: "协作评论", icon: <MessageCircle /> },
   links: { label: "反向链接", icon: <PanelRight /> },
+  mindmaps: { label: "思维导图", icon: <Network /> },
   attachments: { label: "附件", icon: <Paperclip /> },
   versions: { label: "版本历史", icon: <History /> },
   review: { label: "公开互动", icon: <MessageSquare /> },
@@ -412,6 +414,7 @@ export function NoteRail({
       {tab === "outline" && <OutlineTab source={note.bodyMd} activeLine={activeLine} onJump={onJump} />}
       {tab === "comments" && <NoteCommentsTab note={note} getSelection={getSelection} selectedQuote={selectedQuote} onLocate={onLocateRange} />}
       {tab === "links" && <LinksTab note={note} backlinks={backlinks} wsId={wsId} onSearchTag={onSearchTag} onChangeTags={onChangeTags} />}
+      {tab === "mindmaps" && <MindMapRailTab note={note} workspaceId={workspaceId ?? wsId} />}
       {tab === "attachments" && (
         <AttachmentsTab note={note} atts={atts} onUpload={onUpload} onShare={onShareAttachment} onDelete={onDeleteAttachment} onInsert={onInsertAttachment} />
       )}
