@@ -800,3 +800,29 @@ export const noteCollab = pgTable("note_collab", {
   bodyMd: text("body_md").notNull().default(""),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
+
+/**
+ * 思维导图（设计 25）。挂在笔记本下，权限完全跟笔记本走；笔记本彻底删除时级联删掉。
+ * data 是清洗过的 mind-elixir 结构 `{ nodeData, direction }`，见 @kb/shared 的 sanitizeMindMap。
+ */
+export const mindMaps = pgTable("mind_maps", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  notebookId: uuid("notebook_id").notNull().references(() => notebooks.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  data: jsonb("data").notNull(),
+  version: integer("version").notNull().default(1),
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  updatedBy: uuid("updated_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, t => [index("mind_maps_notebook_idx").on(t.notebookId, t.updatedAt)]);
+
+/** 导图节点 → 笔记的关联，保存导图时从 data 里重建。派生表，丢了可以从 data 重算。 */
+export const mindMapNoteLinks = pgTable("mind_map_note_links", {
+  mindMapId: uuid("mind_map_id").notNull().references(() => mindMaps.id, { onDelete: "cascade" }),
+  noteId: uuid("note_id").notNull().references(() => notes.id, { onDelete: "cascade" }),
+  nodeId: text("node_id").notNull(),
+}, t => [
+  uniqueIndex("mind_map_note_links_pair_idx").on(t.mindMapId, t.noteId),
+  index("mind_map_note_links_note_idx").on(t.noteId),
+]);

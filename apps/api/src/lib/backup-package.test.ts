@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertBackupObjectName, checksum, encryptPackage, estimatedRestoreBytes, inspectBackupPackage } from "./backup-package.ts";
+import { assertBackupObjectName, checksum, encryptPackage, estimatedRestoreBytes, inspectBackupPackage, type WorkspaceBackupPackage } from "./backup-package.ts";
 
 const ws = "11111111-1111-4111-8111-111111111111";
 const nb = "22222222-2222-4222-8222-222222222222";
@@ -84,4 +84,17 @@ test("实例包严格校验 UUID 与包内引用", () => {
   const broken = instancePackage();
   broken.navLinks[0]!.groupId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   assert.throws(() => inspectBackupPackage(Buffer.from(JSON.stringify(broken))), /不存在的资源/);
+});
+
+test("思维导图随工作区包校验：老包没有也能过，悬空引用拒绝", () => {
+  const map = "88888888-8888-4888-8888-888888888888";
+  const withMap = { ...workspacePackage(), mindMaps: [{ id: map, notebookId: nb, title: "导图", data: { nodeData: { id: "root", topic: "导图" } } }], mindMapNoteLinks: [{ mindMapId: map, noteId: note, nodeId: "root" }] };
+  const raw = Buffer.from(JSON.stringify(withMap));
+  assert.equal((inspectBackupPackage(raw).snapshot as WorkspaceBackupPackage).mindMaps.length, 1);
+  const legacy = inspectBackupPackage(Buffer.from(JSON.stringify(workspacePackage())));
+  assert.deepEqual((legacy.snapshot as WorkspaceBackupPackage).mindMaps, []);
+  const dangling = { ...withMap, mindMapNoteLinks: [{ mindMapId: map, noteId: "99999999-9999-4999-8999-999999999999", nodeId: "root" }] };
+  assert.throws(() => inspectBackupPackage(Buffer.from(JSON.stringify(dangling))), /mindMapNoteLinks\.noteId/);
+  const orphan = { ...withMap, mindMaps: [{ ...withMap.mindMaps[0], notebookId: "99999999-9999-4999-8999-999999999999" }] };
+  assert.throws(() => inspectBackupPackage(Buffer.from(JSON.stringify(orphan))), /mindMaps\.notebookId/);
 });

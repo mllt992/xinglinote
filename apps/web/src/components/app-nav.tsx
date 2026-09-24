@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { BookOpen, Compass, Kanban, LayoutGrid, Users } from "lucide-react";
+import { BookOpen, Compass, Kanban, LayoutGrid, Network, Users } from "lucide-react";
 import { api } from "../api";
 import { cn } from "../lib/utils";
 import { askFeedRefresh, feedUpdateTotal, formatFeedUpdateLabel, useFeedBadges } from "./feed-updates";
 
 /** 顶栏认的几个「地方」。问知识库不在其中：它是一个动作（开右侧问答栏），不是一个能停留的页面。 */
-export type NavPlace = "notes" | "projects" | "circle" | "square" | "nav";
+export type NavPlace = "notes" | "projects" | "mindmaps" | "circle" | "square" | "nav";
 
 const LAST_WS_KEY = "kb.last-workspace";
 /** 广场没有 wsId。记下最后待过的工作区，从广场点「笔记 / 项目 / 圈子」才回得去原来那个库，而不是被扔回个人库。 */
@@ -50,6 +50,7 @@ export function AppNav({ wsId, active, className }: { wsId?: string; active: Nav
   if (home) {
     items.push({ id: "notes", label: "笔记", icon: BookOpen, to: `/w/${home}`, count: 0 });
     items.push({ id: "projects", label: "项目", icon: Kanban, to: `/w/${home}/projects`, count: 0 });
+    items.push({ id: "mindmaps", label: "导图", icon: Network, to: `/w/${home}/mindmaps`, count: 0 });
   }
   if (squareOn) items.push({ id: "square", label: "广场", icon: LayoutGrid, to: "/", count: feedUpdateTotal(badges.square), hint: formatFeedUpdateLabel(badges.square) });
   if (home) items.push({ id: "circle", label: "圈子", icon: Users, to: `/w/${home}/feed`, count: feedUpdateTotal(badges.circle), hint: formatFeedUpdateLabel(badges.circle) });

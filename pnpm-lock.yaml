@@ -186,6 +186,9 @@ importers:
       mermaid:
         specifier: ^11.16.1
         version: 11.16.1
+      mind-elixir:
+        specifier: 5.15.1
+        version: 5.15.1
       react:
         specifier: ^19.0.0
         version: 19.2.8
@@ -2648,6 +2651,9 @@ packages:
 
   mermaid@11.16.1:
     resolution: {integrity: sha512-TQsq6u22fAn3rek5VOubrhKPo1g5hwC3FXUN9hiyupTckcYiGuuKGkNQrKYwGJkXUxZdojwRG46gsSCFZMDp4g==}
+
+  mind-elixir@5.15.1:
+    resolution: {integrity: sha512-Lm/IfNC3jnxqcchKsjkaX/arXDvgPvpPT+BLfTH2Kl1taO9+RPtv/jrCevn1LqPzHoWL2Yl4QeP/xFpjZuZFHw==}
 
   minimatch@10.2.6:
     resolution: {integrity: sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A==}
@@ -5376,6 +5382,8 @@ snapshots:
       stylis: 4.4.0
       ts-dedent: 2.3.0
       uuid: 14.0.1
+
+  mind-elixir@5.15.1: {}
 
   minimatch@10.2.6:
     dependencies:

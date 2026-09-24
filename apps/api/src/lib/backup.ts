@@ -3,7 +3,7 @@ import { db } from "../db/client.ts";
 import {
   agents, attachments, backupRuns, backupTargets, calendarFeedTokens, calendarItems,
   calendarOverrides, calendarReminders, calendarSubscriptions, calendarTemplates,
-  comments, contentReports, corrections, folders, instanceSettings, moderationReviews, projectColumns, projectMilestones, projectTasks, projectTimeEntries, projects,
+  comments, contentReports, corrections, folders, instanceSettings, mindMapNoteLinks, mindMaps, moderationReviews, projectColumns, projectMilestones, projectTasks, projectTimeEntries, projects,
   navGroups, navLinks, notebookMembers, notebooks, notes, noteVersions, notifications,
   posts, postAssets, postReactions, registrationCodes, registrationCodeUsages,
   savedShares, serviceRequests, shareLinks, themes, users, workspaceMembers, workspaces,
@@ -43,6 +43,7 @@ export async function workspaceSnapshot(id: string) {
   const itemIds = items.map(i => i.id);
   const projectRows = await db.select().from(projects).where(eq(projects.workspaceId, id));
   const projectIds = projectRows.map(p => p.id);
+  const mindMapRows = await byIds(nbIds, ids => db.select().from(mindMaps).where(inArray(mindMaps.notebookId, ids)));
 
   const attachmentRows = await db.select().from(attachments).where(eq(attachments.workspaceId, id));
   const attachmentFiles: Array<{ attachmentId: string; bytes: number; sha256: string; dataBase64: string }> = [];
@@ -100,6 +101,8 @@ export async function workspaceSnapshot(id: string) {
       (await byIds(projectIds, ids => db.select({ id: projectTasks.id }).from(projectTasks).where(inArray(projectTasks.projectId, ids)))).map(t => t.id),
       ids => db.select().from(projectTaskTags).where(inArray(projectTaskTags.taskId, ids)),
     ),
+    mindMaps: mindMapRows,
+    mindMapNoteLinks: await byIds(mindMapRows.map(m => m.id), ids => db.select().from(mindMapNoteLinks).where(inArray(mindMapNoteLinks.mindMapId, ids))),
     projectTaskMilestones: await byIds(
       (await byIds(projectIds, ids => db.select({ id: projectTasks.id }).from(projectTasks).where(inArray(projectTasks.projectId, ids)))).map(t => t.id),
       ids => db.select().from(projectTaskMilestones).where(inArray(projectTaskMilestones.taskId, ids)),

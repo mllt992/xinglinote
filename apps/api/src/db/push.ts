@@ -790,6 +790,26 @@ END $$`,
     sort_key integer NOT NULL DEFAULT 0
   )`,
   `CREATE INDEX IF NOT EXISTS project_milestones_project_idx ON project_milestones(project_id, sort_key)`,
+  // 思维导图（设计 25）。笔记本 / 笔记彻底删除时级联，回收站里的笔记本靠 notebookAccess 挡住。
+  `CREATE TABLE IF NOT EXISTS mind_maps (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    notebook_id uuid NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+    title text NOT NULL,
+    data jsonb NOT NULL,
+    version integer NOT NULL DEFAULT 1,
+    created_by uuid NOT NULL REFERENCES users(id),
+    updated_by uuid NOT NULL REFERENCES users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS mind_maps_notebook_idx ON mind_maps(notebook_id, updated_at)`,
+  `CREATE TABLE IF NOT EXISTS mind_map_note_links (
+    mind_map_id uuid NOT NULL REFERENCES mind_maps(id) ON DELETE CASCADE,
+    note_id uuid NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    node_id text NOT NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS mind_map_note_links_pair_idx ON mind_map_note_links(mind_map_id, note_id)`,
+  `CREATE INDEX IF NOT EXISTS mind_map_note_links_note_idx ON mind_map_note_links(note_id)`,
 ];
 
 async function main() {

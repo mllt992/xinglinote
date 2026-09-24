@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "db:push": "tsx src/db/push.ts && tsx src/db/push-project-columns.ts && tsx src/db/push-project-tags.ts",
-    "test": "tsx --test src/**/*.test.ts"
+    "test": "tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "@hono/node-server": "^1.14.1",
