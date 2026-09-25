@@ -175,7 +175,7 @@ export function TaskDialog({ open, task, columns, wsId, members, tags = [], mile
     const q = noteQuery.trim();
     if (q.length < 1) { setNoteHits([]); return; }
     const t = window.setTimeout(() => {
-      const params = new URLSearchParams({ q, workspaceId: wsId, titleOnly: "1", limit: "8" });
+      const params = new URLSearchParams({ q, workspaceId: wsId, titleOnly: "1", limit: "8", boards: "0" });
       api<{ hits: Array<{ id: string; title: string }> }>(`/api/v1/search?${params}`)
         .then(d => setNoteHits(d.hits.filter(h => h.id !== sourceNoteId)))
         .catch(() => setNoteHits([]));

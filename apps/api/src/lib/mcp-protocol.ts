@@ -58,6 +58,7 @@ export const MCP_INSTRUCTIONS = [
   "问「今天做什么」用 today；看最近改动用 list_recent。",
   "小于 512KB 的配图可用 upload_image；更大的文件先调 create_attachment_upload，按返回信息直传二进制，再调 complete_attachment_upload。把 markdown 用 append_to_note 或 replace_in_note 插进正文。",
   "项目看板用 list_projects / list_project_tasks；改任务状态或看板列用 update_project_task。日历待办仍用 list_tasks / create_task / complete_task，不要混用。",
+  "思维导图 / 画板用 list_mind_maps 找、get_mind_map 读（默认回 Markdown 大纲，省 token；要样式细节才用 format=json）。改导图用 update_mind_map 传整份 outline_md，同名节点会保留原样式；画板传 xml。都要带 expected_version。",
   "被关掉 ai_index 或不在范围内的笔记对读工具等于不存在（NOT_FOUND），不要靠报错探测。",
 ].join("\n");
 
@@ -336,6 +337,63 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
     properties: { id: UUID, tags: TAGS },
     required: ["id", "tags"],
     annotations: write("打标签", { idempotentHint: true }),
+  },
+  list_mind_maps: {
+    tier: "read",
+    description: "列出或搜索思维导图与画板（draw.io）。传 query 时按标题、节点文字、备注搜索；不传按最近修改排序。只返回元数据和一行摘要，用 id 调 get_mind_map 读内容。",
+    properties: {
+      query: { type: "string", maxLength: 200 },
+      workspace_id: UUID,
+      notebook_id: UUID,
+      kind: { type: "string", enum: ["mindmap", "drawio"] },
+      limit: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+    },
+    annotations: read("导图列表"),
+  },
+  get_mind_map: {
+    tier: "read",
+    description: "读一张思维导图或画板。思维导图默认 format=outline：返回 Markdown 大纲（根节点是 # 标题，子节点是缩进列表，关联笔记写成 [[note:<uuid>]]，节点备注是下一行的 > ）；format=json 返回完整结构（含样式，较长）。画板返回 draw.io XML。超过 max_chars 时 truncated=true。",
+    properties: {
+      id: UUID,
+      format: { type: "string", enum: ["outline", "json"], default: "outline" },
+      max_chars: { type: "integer", minimum: 200, maximum: 100000, default: 8000 },
+    },
+    required: ["id"],
+    annotations: read("读导图"),
+  },
+  create_mind_map: {
+    tier: "write",
+    description: "在笔记本里新建思维导图（传 outline_md，格式同 get_mind_map 的大纲；省略则只有中心主题）或画板（kind=drawio，可传 xml）。重试请带同一 client_request_id。",
+    properties: {
+      notebook_id: UUID,
+      title: { type: "string", minLength: 1, maxLength: 200 },
+      kind: { type: "string", enum: ["mindmap", "drawio"], default: "mindmap" },
+      outline_md: { type: "string", maxLength: 200000 },
+      xml: { type: "string", maxLength: 2000000 },
+      client_request_id: CLIENT_REQUEST_ID,
+    },
+    required: ["notebook_id", "title"],
+    annotations: write("新建导图"),
+  },
+  update_mind_map: {
+    tier: "write",
+    description: "修改思维导图或画板。思维导图传完整 outline_md 替换结构（同一父节点下文字相同的节点会保留原来的样式、图片、关联线）；画板传完整 xml。只改标题可以只传 title。必须带 expected_version。",
+    properties: {
+      id: UUID,
+      expected_version: { type: "integer", minimum: 1 },
+      title: { type: "string", minLength: 1, maxLength: 200 },
+      outline_md: { type: "string", maxLength: 200000 },
+      xml: { type: "string", maxLength: 2000000 },
+    },
+    required: ["id", "expected_version"],
+    annotations: write("修改导图"),
+  },
+  trash_mind_map: {
+    tier: "delete",
+    description: "把思维导图或画板移入回收站（30 天内可在网页端恢复）。必须传当前 expected_version。",
+    properties: { id: UUID, expected_version: { type: "integer", minimum: 1 } },
+    required: ["id", "expected_version"],
+    annotations: { title: "回收导图", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
   trash_note: {
     tier: "delete",

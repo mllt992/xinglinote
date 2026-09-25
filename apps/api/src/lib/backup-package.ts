@@ -48,9 +48,10 @@ const workspacePackage = base.extend({
   projectTags: rows.default([]),
   projectTaskTags: rows.default([]),
   projectTaskMilestones: rows.default([]),
-  // 思维导图（设计 25）。老包没有这两项，按空处理。
+  // 思维导图 / 画板（设计 25）。老包没有这几项，按空处理。
   mindMaps: rows.default([]),
   mindMapNoteLinks: rows.default([]),
+  mindMapVersions: rows.default([]),
   attachmentFiles: z.array(z.object({
     attachmentId: uuid,
     bytes: z.number().int().nonnegative(),
@@ -263,6 +264,7 @@ export function validateWorkspaceGraph(snapshot: WorkspaceBackupPackage) {
     assertRef(item.mindMapId, mindMapIds, "mindMapNoteLinks.mindMapId");
     assertRef(item.noteId, noteIds, "mindMapNoteLinks.noteId");
   }
+  for (const item of snapshot.mindMapVersions ?? []) assertRef(item.mindMapId, mindMapIds, "mindMapVersions.mindMapId");
   for (const item of snapshot.projectTaskTags ?? []) {
     assertRef(item.taskId, taskIds, "projectTaskTags.taskId");
     assertRef(item.tagId, tagIds, "projectTaskTags.tagId");

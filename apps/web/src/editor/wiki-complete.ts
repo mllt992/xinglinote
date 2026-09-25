@@ -52,7 +52,7 @@ export function wikiCompletion(read: () => WikiCompleteOptions): CompletionSourc
       if (!query) {
         notes = (await api<{ notes: Brief[] }>("/api/v1/me/recent")).notes;
       } else {
-        const params = new URLSearchParams({ q: query, limit: "12", titleOnly: "1" });
+        const params = new URLSearchParams({ q: query, limit: "12", titleOnly: "1", boards: "0" });
         if (opts.workspaceId) params.set("workspaceId", opts.workspaceId);
         notes = (await api<{ hits: Brief[] }>(`/api/v1/search?${params}`)).hits;
       }

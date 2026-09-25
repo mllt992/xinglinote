@@ -3,7 +3,7 @@ import { db } from "../db/client.ts";
 import {
   agents, attachments, backupRuns, backupTargets, calendarFeedTokens, calendarItems,
   calendarOverrides, calendarReminders, calendarSubscriptions, calendarTemplates,
-  comments, contentReports, corrections, folders, instanceSettings, mindMapNoteLinks, mindMaps, moderationReviews, projectColumns, projectMilestones, projectTasks, projectTimeEntries, projects,
+  comments, contentReports, corrections, folders, instanceSettings, mindMapNoteLinks, mindMaps, mindMapVersions, moderationReviews, projectColumns, projectMilestones, projectTasks, projectTimeEntries, projects,
   navGroups, navLinks, notebookMembers, notebooks, notes, noteVersions, notifications,
   posts, postAssets, postReactions, registrationCodes, registrationCodeUsages,
   savedShares, serviceRequests, shareLinks, themes, users, workspaceMembers, workspaces,
@@ -103,6 +103,7 @@ export async function workspaceSnapshot(id: string) {
     ),
     mindMaps: mindMapRows,
     mindMapNoteLinks: await byIds(mindMapRows.map(m => m.id), ids => db.select().from(mindMapNoteLinks).where(inArray(mindMapNoteLinks.mindMapId, ids))),
+    mindMapVersions: await byIds(mindMapRows.map(m => m.id), ids => db.select().from(mindMapVersions).where(inArray(mindMapVersions.mindMapId, ids))),
     projectTaskMilestones: await byIds(
       (await byIds(projectIds, ids => db.select({ id: projectTasks.id }).from(projectTasks).where(inArray(projectTasks.projectId, ids)))).map(t => t.id),
       ids => db.select().from(projectTaskMilestones).where(inArray(projectTaskMilestones.taskId, ids)),

@@ -52,6 +52,7 @@ const app = new Hono();
  * - style-src 允许 inline：mermaid 的 SVG 和 KaTeX 都会写行内样式，去不掉。
  * - connect-src 'self'：CSP3 里 'self' 同时覆盖同源的 ws:／wss:，协同编辑走的就是它。
  * - frame-ancestors 'none'：全站不打算被别人嵌，顺手把点击劫持堵上。
+ * - frame-src：只放行 draw.io 画板编辑器所在的源（DRAWIO_URL，默认 embed.diagrams.net）。
  */
 const CSP = [
   "default-src 'self'",
@@ -65,6 +66,7 @@ const CSP = [
   "script-src 'self'",
   "connect-src 'self'",
   "worker-src 'self' blob:",
+  `frame-src 'self'${env.drawioUrl ? ` ${new URL(env.drawioUrl).origin}` : ""}`,
 ].join("; ");
 
 app.use("*", async (c, next) => {

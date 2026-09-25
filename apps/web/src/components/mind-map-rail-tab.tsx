@@ -2,13 +2,13 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ListTree, Network, Plus, Sparkles } from "lucide-react";
 import { api } from "../api";
-import { mindMapPath } from "./mindmaps";
+import { BOARD_KIND_LABEL, BoardIcon, mindMapPath } from "./mindmaps";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
 import { useToast } from "./ui/toast";
 import type { RailNote } from "./note-rail";
 
-type Ref = { id: string; title: string; updatedAt: string; nodeId: string; workspaceId: string };
+type Ref = { id: string; kind?: "mindmap" | "drawio"; title: string; updatedAt: string; nodeId: string; workspaceId: string };
 
 /** 笔记右侧栏「思维导图」：哪些导图引用了这篇，以及从这篇一键生成。 */
 export function MindMapRailTab({ note, workspaceId }: { note: RailNote; workspaceId?: string }) {
@@ -48,17 +48,17 @@ export function MindMapRailTab({ note, workspaceId }: { note: RailNote; workspac
           <Button size="sm" variant="outline" disabled={!!busy} onClick={() => void generate("ai")}><Sparkles />{busy === "ai" ? "AI 正在提炼…" : "用 AI 提炼"}</Button>
         </div>
       </div>}
-      <p className="px-1 text-[11px] text-muted-foreground">{refs ? `${refs.length} 张思维导图关联了这篇笔记` : "正在读取…"}</p>
+      <p className="px-1 text-[11px] text-muted-foreground">{refs ? `${refs.length} 张导图或画板关联了这篇笔记` : "正在读取…"}</p>
       {refs && !refs.length && <div className="px-1 py-6 text-center">
         <Network className="mx-auto size-6 text-muted-foreground" />
-        <p className="mt-2 text-sm font-medium">还没有导图关联这篇笔记</p>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">在思维导图里选中节点、点「关联笔记」选这篇，就会出现在这里。</p>
+        <p className="mt-2 text-sm font-medium">还没有导图或画板关联这篇笔记</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">在思维导图里选中节点点「关联笔记」，或在画板的「关联笔记」面板里选这篇，就会出现在这里。</p>
         {workspaceId && <Button className="mt-3" size="sm" variant="ghost" onClick={() => nav(mindMapPath(workspaceId))}><Plus />去思维导图</Button>}
       </div>}
-      {refs?.map(m => <Link key={m.id} to={mindMapPath(m.workspaceId, m.id, m.nodeId)} className="flex items-center gap-2.5 rounded-xl border border-border p-3 hover:bg-muted">
-        <Network className="size-4 shrink-0 text-muted-foreground" />
+      {refs?.map(m => <Link key={m.id} to={mindMapPath(m.workspaceId, m.id, m.nodeId || undefined)} className="flex items-center gap-2.5 rounded-xl border border-border p-3 hover:bg-muted">
+        <BoardIcon kind={m.kind ?? "mindmap"} className="size-4 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{m.title}</span>
-          <span className="block text-[11px] text-muted-foreground">{new Date(m.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} 更新</span></span>
+          <span className="block text-[11px] text-muted-foreground">{BOARD_KIND_LABEL[m.kind ?? "mindmap"]} · {new Date(m.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} 更新</span></span>
       </Link>)}
     </div>
   </ScrollArea>;

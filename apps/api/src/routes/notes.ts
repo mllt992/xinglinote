@@ -4,7 +4,8 @@ import { z } from "zod";
 import { canEditNote, canReadNote, recencyBoost, scoreNote, tokenize, type WsRole } from "@kb/core";
 import { fail, FOLDER_DEPTH_LIMIT, folderMoveExceedsDepth, nextSortKey } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { attachments, auditLogs, folders, notebookMembers, notebooks, notes, noteVersions, users, workspaceMembers, workspaces } from "../db/schema.ts";
+import { attachments, auditLogs, folders, mindMaps, notebookMembers, notebooks, notes, noteVersions, users, workspaceMembers, workspaces } from "../db/schema.ts";
+import { searchBoards } from "../lib/mindmaps.ts";
 import { ok } from "../http.ts";
 import { writeNoteFile } from "../lib/files.ts";
 import { currentUser } from "../lib/session.ts";
@@ -641,7 +642,11 @@ knowledge.get("/search", async (c) => {
       id: r.id, title: r.title, snippet: r.snippet, notebookId: "", workspaceId: "", kind: "saved_share" as const,
     })));
   }
-  return ok(c, { hits: [...page, ...received], total: allowed + received.length, hasMore: more });
+  // 思维导图 / 画板单独成组，不混进 hits（hits 的调用方都把它当笔记用）。只在第一页、没按标签 / AI 状态筛选时给。
+  const boards = offset === 0 && !tag && aiIndex == null && c.req.query("boards") !== "0"
+    ? await searchBoards(user.id, ids, q, { notebookId: notebookId || undefined, titleOnly, limit: 8 })
+    : [];
+  return ok(c, { hits: [...page, ...received], total: allowed + received.length, hasMore: more, mindMaps: boards });
 });
 
 /**
@@ -680,7 +685,10 @@ knowledge.get("/workspaces/:id/trash", async (c) => {
   const visibleFolders = mineOnly(allFolders).filter(f => visibleNotebook(f.notebookId));
   const visibleNotebooks = mineOnly(allNotebooks.filter(n => n.trashedAt)).filter(n => visibleNotebook(n.id));
 
-  const actorIds = [...new Set([...visibleNotes, ...visibleFolders, ...visibleNotebooks].map(x => x.trashedBy).filter((x): x is string => !!x))];
+  // 思维导图 / 画板（设计 25）：同样只看得到自己删的（管理员看全部），并过笔记本可见性。
+  const boardRows = allNotebooks.length ? await db.select().from(mindMaps).where(and(inArray(mindMaps.notebookId, allNotebooks.map(n => n.id)), isNotNull(mindMaps.trashedAt))) : [];
+  const visibleBoards = mineOnly(boardRows).filter(m => visibleNotebook(m.notebookId));
+  const actorIds = [...new Set([...visibleNotes, ...visibleFolders, ...visibleNotebooks, ...visibleBoards].map(x => x.trashedBy).filter((x): x is string => !!x))];
   const people = actorIds.length ? await db.select({ id: users.id, displayName: users.displayName }).from(users).where(inArray(users.id, actorIds)) : [];
   const who = (id: string | null) => people.find(p => p.id === id)?.displayName ?? "已注销用户";
   const nbTitle = (id: string) => allNotebooks.find(x => x.id === id)?.title ?? "已销毁的笔记本";
@@ -705,6 +713,7 @@ knowledge.get("/workspaces/:id/trash", async (c) => {
     notes: visibleNotes.map(n => ({ id: n.id, title: n.title, path: path(n), ...meta(n) })),
     folders: visibleFolders.map(f => ({ id: f.id, title: f.title, path: nbTitle(f.notebookId), ...meta(f) })),
     notebooks: visibleNotebooks.map(n => ({ id: n.id, title: n.title, path: "整本", ...meta(n) })),
+    mindMaps: visibleBoards.map(m => ({ id: m.id, title: m.title, kind: m.kind === "drawio" ? "drawio" : "mindmap", path: nbTitle(m.notebookId), notebookTrashed: !!allNotebooks.find(n => n.id === m.notebookId)?.trashedAt, ...meta(m) })),
   });
 });
 

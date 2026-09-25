@@ -13,6 +13,7 @@ import { upload,remove } from "../../api/src/lib/backup-transfer.ts";
 import { open } from "../../api/src/lib/secrets.ts";
 import { pruneNoteVersions } from "../../api/src/lib/versions.ts";
 import { purgeNotes, purgeWorkspaceProjects } from "../../api/src/lib/trash.ts";
+import { pruneBoardVersions, purgeTrashedBoards } from "../../api/src/lib/mindmaps.ts";
 import { dropWorkspaceFromMcpTokens } from "../../api/src/lib/mcp-workspaces.ts";
 import { dropWorkspaceFromAiProviders } from "../../api/src/lib/ai-provider-workspaces.ts";
 import { enqueueIndexNote, shouldRunIndexNoteJob } from "../../api/src/lib/ai-index.ts";
@@ -40,7 +41,7 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
    if(text)await enqueueIndexNote(db,a.noteId);}
   catch{await db.update(attachments).set({extractStatus:"failed"}).where(eq(attachments.id,a.id));}   // 抽不出来就只留文件
   return;}
- if(job.type==="prune_versions"){await pruneNoteVersions();return;}
+ if(job.type==="prune_versions"){await pruneNoteVersions();await pruneBoardVersions();return;}
  if(job.type==="purge_trash"){
    const cutoff=new Date(Date.now()-30*86400000);
    // 单独被删掉的附件（笔记还在）
@@ -49,6 +50,8 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
    // 笔记走 purgeNotes 这唯一一个入口，别在这儿再抄一份删表清单
    const oldNotes=await db.select({id:notes.id}).from(notes).where(lt(notes.trashedAt,cutoff));
    await purgeNotes(oldNotes.map(n=>n.id));
+   // 思维导图 / 画板（设计 25）：版本与关联随外键级联
+   await purgeTrashedBoards(cutoff);
    return;}
  if(job.type==="cleanup_tokens"){await db.delete(authTokens).where(lt(authTokens.expiresAt,new Date(Date.now()-86400000)));return;}
  if(job.type==="cleanup_mcp_uploads"){await cleanupExpiredMcpUploads();await db.insert(backgroundJobs).values({type:"cleanup_mcp_uploads",payload:{},runAfter:new Date(Date.now()+15*60000)});return;}
