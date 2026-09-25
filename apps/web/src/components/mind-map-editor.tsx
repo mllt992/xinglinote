@@ -1012,7 +1012,7 @@ function AiExpandDialog({ open, mapId, onOpenChange, getTarget, onInsert }: {
       setItems(d.items);
     } catch (e) {
       const code = (e as { code?: string }).code;
-      toast.error("AI 没能扩展", code === "AI_NOT_CONFIGURED" ? "这个工作区还没配置 AI 提供商。" : (e as Error).message);
+      toast.error("AI 没能扩展", code === "AI_NOT_CONFIGURED" ? "还没有可用的 AI，可以在「AI 与自动化」里设置。" : (e as Error).message);
     } finally { setBusy(false); }
   };
   const list = (nodes: OutlineNode[], depth = 0): React.ReactNode => nodes.map((i, k) => <div key={`${depth}-${k}`} style={{ paddingLeft: depth * 14 }} className="text-sm leading-6">· {i.text}{i.children.length > 0 && list(i.children, depth + 1)}</div>);

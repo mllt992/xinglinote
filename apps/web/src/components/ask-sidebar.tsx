@@ -5,7 +5,6 @@ import { MarkdownView } from "../MarkdownView";
 import { api, apiJsonLines } from "../api";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
-import { FormError } from "./ui/form-error";
 import { ScrollArea } from "./ui/scroll-area";
 import { Textarea } from "./ui/textarea";
 import { Tooltip } from "./ui/tooltip";
@@ -66,7 +65,6 @@ export function AskSidebar({
   const [width, setWidth] = useState(loadWidth);
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   const [scope, setScope] = useState<"workspace" | "notebook">("workspace");
   const [turns, setTurns] = useState<Turn[]>(() => workspaceId ? loadTurns(workspaceId) : []);
   const [configured, setConfigured] = useState<boolean | null>(null);
@@ -117,12 +115,11 @@ export function AskSidebar({
   async function ask() {
     if (!workspaceId || !q.trim() || busy) return;
     if (scope === "notebook" && !notebookId) {
-      setError("先在左侧选一个笔记本，才能只问当前本。");
+      toast.error("还不能提问", "先在左侧选一个笔记本，才能只问当前本。");
       return;
     }
     const question = q.trim();
     setBusy(true);
-    setError("");
     setQ("");
     const id = crypto.randomUUID();
     setStreamingId(id);
@@ -164,7 +161,7 @@ export function AskSidebar({
       saveTurns(workspaceId, next);
     } catch (e) {
       const err = e as Error & { code?: string };
-      setError(err.message);
+      toast.error(err.code === "AI_QUOTA_EXCEEDED" ? "今天的平台 AI 次数用完了" : "没能回答", err.message);
       if (err.code === "AI_NOT_CONFIGURED") setConfigured(false);
       setQ(question);
       setTurns(current => current.filter(turn => turn.id !== id));
@@ -182,11 +179,10 @@ export function AskSidebar({
 
   async function saveAsNote(turn: Turn) {
     if (!notebookId || !workspaceId) {
-      setError("先选一个笔记本，才能把回答沉淀成笔记。");
+      toast.error("还不能保存", "先选一个笔记本，才能把回答沉淀成笔记。");
       return;
     }
     setSavingId(turn.id);
-    setError("");
     try {
       const created = await api<{ id: string; version: number; title: string }>("/api/v1/notes", {
         method: "POST",
@@ -203,7 +199,7 @@ export function AskSidebar({
       toast.success("已沉淀为笔记");
       onOpenNote(created.id);
     } catch (e) {
-      setError((e as Error).message);
+      toast.error("保存失败", (e as Error).message);
     } finally {
       setSavingId(null);
     }
@@ -328,7 +324,6 @@ export function AskSidebar({
         className="shrink-0 space-y-2 border-t border-border p-3"
         onSubmit={e => { e.preventDefault(); void ask(); }}
       >
-        <FormError>{error}</FormError>
         <Textarea
           ref={box}
           value={q}
@@ -341,7 +336,7 @@ export function AskSidebar({
               void ask();
             }
           }}
-          placeholder={configured === false ? "先配置 AI 提供商" : "提问，例如：这个项目的发布流程是什么？"}
+          placeholder={configured === false ? "还没有可用的 AI，请先在「AI 与自动化」里设置" : "提问，例如：这个项目的发布流程是什么？"}
           className="min-h-[4.5rem] resize-none"
         />
         <div className="flex items-center justify-between gap-2">

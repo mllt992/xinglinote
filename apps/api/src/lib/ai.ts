@@ -1,8 +1,9 @@
 import { and, desc, eq } from "drizzle-orm";
 import { AppError, fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { aiProviders, workspaceAiSettings } from "../db/schema.ts";
-import { aiProviderCoversWorkspace } from "./ai-provider-workspaces.ts";
+import { aiProviders, instanceSettings, workspaceAiSettings } from "../db/schema.ts";
+import { aiProviderBoundToWorkspace, aiProviderCoversWorkspace } from "./ai-provider-workspaces.ts";
+import { assertPlatformAiQuota } from "./ai-quota.ts";
 import { extractChatContent, providerErrorHint } from "./ai-chat.ts";
 import { cacheGet, cacheSet, embedCacheKey, embedMediaCacheKey, EMBED_CACHE_TTL_SEC } from "./cache.ts";
 import { classifyOutboundFailure, OutboundFetchError, safeFetch } from "./net-guard.ts";
@@ -35,24 +36,43 @@ function isMediaInput(input: EmbedInput): input is { text?: string; image?: stri
   return typeof input !== "string" && !!(input.image || input.video);
 }
 
-/** 旧数据没有工作区模型分配时的兼容路径：本人私有配置优先，其次才是公用渠道。 */
-async function legacyProvider(wsId: string, userId?: string) {
+/** 渠道的默认对话模型：旧数据的 chat_model 优先，否则取目录里的第一个。 */
+export function channelDefaultModel(p: Pick<Provider, "chatModel" | "chatModels">) {
+  const models = Array.isArray(p.chatModels) ? p.chatModels.filter((m): m is string => typeof m === "string" && !!m) : [];
+  return p.chatModel?.trim() || models[0] || "";
+}
+
+/**
+ * 「自动」对话渠道（工作区没选或选的是自动时）：
+ * 本人的个人渠道 → 工作区自己的公用渠道（最新的一条）→ 平台默认渠道。
+ * 前两步就是以前的兼容路径，保证老数据行为不变；平台默认是新增的最后一级兜底。
+ */
+async function autoChatProvider(wsId: string, userId?: string) {
   const rows = await db
     .select()
     .from(aiProviders)
-    .where(and(aiProviderCoversWorkspace(wsId), eq(aiProviders.enabled, true)))
+    .where(and(aiProviderBoundToWorkspace(wsId), eq(aiProviders.enabled, true)))
     .orderBy(desc(aiProviders.createdAt));
-  return rows.find(p => p.ownerUserId === userId) ?? rows.find(p => !p.ownerUserId);
+  const own = rows.find(p => p.ownerUserId && p.ownerUserId === userId && channelDefaultModel(p))
+    ?? rows.find(p => !p.ownerUserId && channelDefaultModel(p));
+  if (own) return { ...own, chatModel: channelDefaultModel(own) };
+  const platform = await platformDefaultChannel();
+  return platform ? { ...platform, chatModel: channelDefaultModel(platform) } : undefined;
 }
 
-/** 旧库没有显式分配时，Embedding 也只能回退到共享渠道，不能采用成员私有配置。 */
+async function platformDefaultChannel() {
+  const [row] = await db.select().from(aiProviders).where(and(eq(aiProviders.platform, true), eq(aiProviders.platformDefault, true), eq(aiProviders.enabled, true)));
+  return row && channelDefaultModel(row) ? row : undefined;
+}
+
+/** 旧库没有显式分配时，Embedding 只能回退到共享渠道，不能采用成员私有配置。 */
 async function legacyEmbeddingProvider(wsId: string) {
   const rows = await db
     .select()
     .from(aiProviders)
-    .where(and(aiProviderCoversWorkspace(wsId), eq(aiProviders.enabled, true)))
+    .where(and(aiProviderBoundToWorkspace(wsId), eq(aiProviders.enabled, true)))
     .orderBy(desc(aiProviders.createdAt));
-  return rows.find(p => !p.ownerUserId);
+  return rows.find(p => !p.ownerUserId && p.embeddingModel);
 }
 
 async function assignedChannel(wsId: string, providerId: string) {
@@ -64,22 +84,40 @@ async function assignedChannel(wsId: string, providerId: string) {
   return row;
 }
 
-/** 工作区明确选择的对话渠道与模型；没有新配置时兼容旧 Provider 行。 */
-export async function aiProvider(wsId: string, userId?: string) {
+export type ResolvedChatProvider = Provider & { chatModel: string };
+
+/**
+ * 工作区的对话渠道与模型。选了具体渠道就用它（渠道被停用 / 删除时返回空，让用户看到「未配置」而不是悄悄换人付费）；
+ * 没选（或选的是「自动」）走 autoChatProvider。
+ */
+export async function aiProvider(wsId: string, userId?: string): Promise<ResolvedChatProvider | undefined> {
   const [settings] = await db.select().from(workspaceAiSettings).where(eq(workspaceAiSettings.workspaceId, wsId));
-  if (settings) {
-    if (!settings.chatProviderId || !settings.chatModel) return undefined;
+  if (settings?.chatProviderId && settings.chatModel) {
     const p = await assignedChannel(wsId, settings.chatProviderId);
     return p ? { ...p, chatModel: settings.chatModel } : undefined;
   }
-  return legacyProvider(wsId, userId);
+  return autoChatProvider(wsId, userId);
 }
 
-/** Worker 与语义检索使用工作区明确选择的 Embedding 渠道。 */
+/**
+ * 真正要调模型前用这个：解析渠道，并在用到平台渠道时检查这个人今天的额度。
+ * 只查不扣；成功后由调用方写 ai_usage（带上 usageMeta），失败的请求不算次数。
+ */
+export async function aiChatProvider(wsId: string, userId: string) {
+  const p = await aiProvider(wsId, userId);
+  if (p?.platform) await assertPlatformAiQuota(userId);
+  return p;
+}
+
+/** 写 ai_usage 时附带的渠道信息，额度按 platform=true 的行计数。 */
+export function usageMeta(p: { id?: string; platform?: boolean }) {
+  return { providerId: p.id ?? null, platform: !!p.platform };
+}
+
+/** Worker 与语义检索使用的 Embedding 渠道：工作区单独配置 → 旧兼容路径 → 量化管理里的全站默认。 */
 export async function aiEmbeddingProvider(wsId: string, _userId?: string) {
   const [settings] = await db.select().from(workspaceAiSettings).where(eq(workspaceAiSettings.workspaceId, wsId));
-  if (settings) {
-    if (!settings.embeddingProviderId || !settings.embeddingModel) return undefined;
+  if (settings?.embeddingProviderId && settings.embeddingModel) {
     const p = await assignedChannel(wsId, settings.embeddingProviderId);
     return p ? {
       ...p,
@@ -89,7 +127,14 @@ export async function aiEmbeddingProvider(wsId: string, _userId?: string) {
       autoEmbed: settings.autoEmbed,
     } : undefined;
   }
-  return legacyEmbeddingProvider(wsId);
+  if (!settings) {
+    const legacy = await legacyEmbeddingProvider(wsId);
+    if (legacy) return legacy;
+  }
+  const [inst] = await db.select({ providerId: instanceSettings.embeddingProviderId, model: instanceSettings.embeddingModel, autoEmbed: instanceSettings.embeddingAutoEmbed }).from(instanceSettings);
+  if (!inst?.providerId || !inst.model) return undefined;
+  const p = await assignedChannel(wsId, inst.providerId);
+  return p ? { ...p, embeddingModel: inst.model, embeddingBaseUrl: null, embeddingApiKey: null, autoEmbed: inst.autoEmbed } : undefined;
 }
 
 /** 新配置总是直接使用所选渠道；旧行仍可通过 embeddingBaseUrl 兼容。 */

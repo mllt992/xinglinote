@@ -13,7 +13,8 @@ async function isInstanceAdmin(userId: string) {
 }
 
 /** Provider 绑定的工作区。旧行只有 workspace_id 时回退成单元素数组。 */
-export function providerWorkspaceIds(p: { workspaceId: string; workspaceIds?: unknown }): string[] {
+export function providerWorkspaceIds(p: { workspaceId: string | null; workspaceIds?: unknown; platform?: boolean }): string[] {
+  if (p.platform) return [];
   const raw = Array.isArray(p.workspaceIds)
     ? p.workspaceIds.filter((id): id is string => typeof id === "string" && !!id)
     : [];
@@ -28,11 +29,20 @@ export function resolveProviderWorkspaceIds(input: { workspaceIds?: string[] | n
   return ids;
 }
 
+/** 明确绑定到这个工作区的渠道（工作区公用 + 个人），不含平台渠道。 */
+export function aiProviderBoundToWorkspace(wsId: string) {
+  return and(
+    eq(aiProviders.platform, false),
+    or(
+      eq(aiProviders.workspaceId, wsId),
+      sql`${aiProviders.workspaceIds} @> ${JSON.stringify([wsId])}::jsonb`,
+    ),
+  )!;
+}
+
+/** 这个工作区能用的渠道：绑定到它的，加上全站可用的平台渠道。 */
 export function aiProviderCoversWorkspace(wsId: string) {
-  return or(
-    eq(aiProviders.workspaceId, wsId),
-    sql`${aiProviders.workspaceIds} @> ${JSON.stringify([wsId])}::jsonb`,
-  );
+  return or(aiProviderBoundToWorkspace(wsId), eq(aiProviders.platform, true))!;
 }
 
 /** 公用配置会影响所有成员，每个绑定区都要是管理员；私人配置只要仍是成员。 */
@@ -52,9 +62,12 @@ export async function assertProviderWorkspaces(userId: string, workspaceIds: str
   }
 }
 
-export async function canManageProvider(userId: string, p: { ownerUserId: string | null; workspaceId: string; workspaceIds?: unknown }) {
+export async function canManageProvider(userId: string, p: { ownerUserId: string | null; workspaceId: string | null; workspaceIds?: unknown; platform?: boolean }) {
+  // 平台渠道只归实例管理员管；它没有绑定工作区，下面的循环会空转成 true，必须先挡掉。
+  if (p.platform) return isInstanceAdmin(userId);
   if (p.ownerUserId) return p.ownerUserId === userId;
   if (await isInstanceAdmin(userId)) return true;
+  if (!providerWorkspaceIds(p).length) return false;
   for (const id of providerWorkspaceIds(p)) {
     const role = await memberRole(id, userId);
     if (role !== "owner" && role !== "admin") return false;
@@ -76,7 +89,7 @@ export async function enqueueAiIndexForWorkspaces(tx: DbLike, workspaceIds: stri
 
 /** 工作区被物理删除时缩小 Provider 范围；最后一个绑定也没了才删配置。 */
 export async function dropWorkspaceFromAiProviders(tx: DbLike, workspaceId: string) {
-  const rows = await tx.select().from(aiProviders).where(aiProviderCoversWorkspace(workspaceId));
+  const rows = await tx.select().from(aiProviders).where(aiProviderBoundToWorkspace(workspaceId));
   for (const p of rows) {
     const next = providerWorkspaceIds(p).filter(id => id !== workspaceId);
     if (!next.length) await tx.delete(aiProviders).where(eq(aiProviders.id, p.id));

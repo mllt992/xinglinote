@@ -34,7 +34,7 @@ export function MindMapRailTab({ note, workspaceId }: { note: RailNote; workspac
       nav(mindMapPath(d.workspaceId, d.mindMap.id));
     } catch (e) {
       const code = (e as { code?: string }).code;
-      toast.error("生成失败", code === "AI_NOT_CONFIGURED" ? "这个工作区还没配置 AI，可以先用「按标题结构生成」。" : (e as Error).message);
+      toast.error("生成失败", code === "AI_NOT_CONFIGURED" ? "还没有可用的 AI，可以先用「按标题结构生成」。" : (e as Error).message);
     } finally { setBusy(""); }
   }
 

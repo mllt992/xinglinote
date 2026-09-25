@@ -3,7 +3,7 @@ import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { aiChunks, aiProviders, notes, workspaceAiSettings, workspaces } from "../db/schema.ts";
+import { aiChunks, aiProviders, instanceSettings, notes, workspaceAiSettings, workspaces } from "../db/schema.ts";
 import { ok } from "../http.ts";
 import { enqueueIndexNotes } from "../lib/ai-index.ts";
 import { providerWorkspaceIds } from "../lib/ai-provider-workspaces.ts";
@@ -81,8 +81,8 @@ function indexCte(filters: IndexFilters) {
         w.name workspace_name,w.kind workspace_kind,w.ai_enabled workspace_ai_enabled,
         nb.title notebook_title,creator.display_name creator_name,creator.handle creator_handle,creator.email creator_email,
         coalesce(cs.chunks,0)::int chunks,cs.indexed_at,lj.status job_status,lj.run_after,lj.last_error,
-        (ep.id IS NOT NULL AND settings.embedding_model IS NOT NULL) provider_configured,
-        ep.name provider_name,settings.embedding_model,
+        (ep.id IS NOT NULL AND em.model IS NOT NULL) provider_configured,
+        ep.name provider_name,em.model embedding_model,
         CASE
           WHEN lj.status='running' THEN 'running'
           WHEN lj.status='pending' THEN 'pending'
@@ -98,8 +98,14 @@ function indexCte(filters: IndexFilters) {
       LEFT JOIN chunk_state cs ON cs.note_id=n.id
       LEFT JOIN latest_jobs lj ON lj.note_id=n.id::text
       LEFT JOIN workspace_ai_settings settings ON settings.workspace_id=w.id
-      LEFT JOIN ai_providers ep ON ep.id=settings.embedding_provider_id AND ep.enabled=true
-        AND (ep.workspace_id=w.id OR ep.workspace_ids @> jsonb_build_array(w.id::text))
+      LEFT JOIN instance_settings inst ON inst.id=1
+      -- 工作区没有单独配置向量模型时，沿用量化管理里的全站默认（与 aiEmbeddingProvider 一致）。
+      LEFT JOIN LATERAL (SELECT CASE WHEN settings.embedding_provider_id IS NOT NULL AND settings.embedding_model IS NOT NULL
+          THEN settings.embedding_provider_id ELSE inst.embedding_provider_id END provider_id,
+        CASE WHEN settings.embedding_provider_id IS NOT NULL AND settings.embedding_model IS NOT NULL
+          THEN settings.embedding_model ELSE inst.embedding_model END model) em ON true
+      LEFT JOIN ai_providers ep ON ep.id=em.provider_id AND ep.enabled=true
+        AND (ep.platform OR ep.workspace_id=w.id OR ep.workspace_ids @> jsonb_build_array(w.id::text))
       WHERE ${baseConditions(filters)}
     )
   `;
@@ -141,7 +147,7 @@ adminAiIndexRoutes.get("/admin/ai/index/options", async c => {
     models.add(row.model); assignedModels.set(row.providerId, models);
   }
   const providerOptions = providers.map(provider => ({
-    id: provider.id, name: provider.name, models: [...new Set([...(Array.isArray(provider.chatModels) ? provider.chatModels.filter((m): m is string => typeof m === "string") : []), ...(assignedModels.get(provider.id) ?? [])])],
+    id: provider.id, name: provider.name, platform: provider.platform, models: [...new Set([...(Array.isArray(provider.chatModels) ? provider.chatModels.filter((m): m is string => typeof m === "string") : []), ...(assignedModels.get(provider.id) ?? [])])],
   }));
   const preferred = assignments.find(row => row.providerId && row.model && providerOptions.some(provider => provider.id === row.providerId));
   return ok(c, {
@@ -197,7 +203,11 @@ adminAiIndexRoutes.post("/admin/ai/index/config", async c => {
   const changed = workspaceIds.filter(id => { const row = previous.get(id); return !row || row.embeddingProviderId !== provider.id || row.embeddingModel !== body.embeddingModel; });
   const noteRows = await db.select({ id: notes.id }).from(notes).where(isNull(notes.trashedAt));
   await db.transaction(async tx => {
-    await tx.update(aiProviders).set({ workspaceIds: [...new Set([...providerWorkspaceIds(provider), ...workspaceIds])], updatedAt: new Date() }).where(eq(aiProviders.id, provider.id));
+    // 平台渠道本来就全站可用，不需要把工作区一个个挂上去。
+    if (!provider.platform) await tx.update(aiProviders).set({ workspaceIds: [...new Set([...providerWorkspaceIds(provider), ...workspaceIds])], updatedAt: new Date() }).where(eq(aiProviders.id, provider.id));
+    // 记成全站默认：之后新建的工作区没有单独配置时自动沿用。
+    const embeddingDefault = { embeddingProviderId: provider.id, embeddingModel: body.embeddingModel, embeddingAutoEmbed: body.autoEmbed };
+    await tx.insert(instanceSettings).values({ id: 1, ...embeddingDefault }).onConflictDoUpdate({ target: instanceSettings.id, set: embeddingDefault });
     for (const workspaceId of workspaceIds) await tx.insert(workspaceAiSettings).values({ workspaceId, embeddingProviderId: provider.id, embeddingModel: body.embeddingModel, autoEmbed: body.autoEmbed, updatedAt: new Date() }).onConflictDoUpdate({ target: workspaceAiSettings.workspaceId, set: { embeddingProviderId: provider.id, embeddingModel: body.embeddingModel, autoEmbed: body.autoEmbed, updatedAt: new Date() } });
     if (changed.length) await tx.delete(aiChunks).where(inArray(aiChunks.workspaceId, changed));
     await enqueueIndexNotes(tx, noteRows.map(row => row.id), { force: true, includeExcluded: true });
