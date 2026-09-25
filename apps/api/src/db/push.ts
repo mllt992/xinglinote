@@ -1,5 +1,6 @@
 import { sql } from "./client.ts";
 import { seedBuiltin } from "./seed.ts";
+import { boardPlainText, sanitizeBoard, type BoardKind } from "@kb/shared";
 
 const statements = [
   `CREATE EXTENSION IF NOT EXISTS pgcrypto`,
@@ -810,7 +811,45 @@ END $$`,
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS mind_map_note_links_pair_idx ON mind_map_note_links(mind_map_id, note_id)`,
   `CREATE INDEX IF NOT EXISTS mind_map_note_links_note_idx ON mind_map_note_links(note_id)`,
+  // 设计 25 二期：画板类型、搜索文本、回收站、版本历史。
+  `ALTER TABLE mind_maps ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'mindmap'`,
+  `ALTER TABLE mind_maps ADD COLUMN IF NOT EXISTS search_text text NOT NULL DEFAULT ''`,
+  `ALTER TABLE mind_maps ADD COLUMN IF NOT EXISTS trashed_at timestamptz`,
+  `ALTER TABLE mind_maps ADD COLUMN IF NOT EXISTS trashed_by uuid`,
+  `CREATE TABLE IF NOT EXISTS mind_map_versions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    mind_map_id uuid NOT NULL REFERENCES mind_maps(id) ON DELETE CASCADE,
+    version integer NOT NULL,
+    title text NOT NULL,
+    data jsonb NOT NULL,
+    editor_id uuid NOT NULL,
+    source text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS mind_map_versions_map_idx ON mind_map_versions(mind_map_id, version)`,
 ];
+
+/**
+ * 设计 25 二期：第一版（mind-elixir）的导图转成新格式，并补上搜索文本与第一条历史版本。
+ * 只处理还没 search_text 的行，重复执行无副作用。
+ */
+async function backfillBoards() {
+  const rows = await sql<Array<{ id: string; kind: string; title: string; data: unknown; version: number; updated_by: string }>>`
+    SELECT id, kind, title, data, version, updated_by FROM mind_maps WHERE search_text = ''`;
+  for (const row of rows) {
+    const kind: BoardKind = row.kind === "drawio" ? "drawio" : "mindmap";
+    let data;
+    try { data = sanitizeBoard(kind, row.data); } catch { continue; }
+    const text = boardPlainText(kind, data) || " ";
+    const json = JSON.stringify(data);
+    await sql`UPDATE mind_maps SET data = ${json}::jsonb, search_text = ${text}::text WHERE id = ${row.id}::uuid`;
+    await sql`INSERT INTO mind_map_versions (mind_map_id, version, title, data, editor_id, source)
+      SELECT ${row.id}::uuid, ${row.version}::int, ${row.title}::text, ${json}::jsonb, ${row.updated_by}::uuid, 'migrate'
+      WHERE NOT EXISTS (SELECT 1 FROM mind_map_versions WHERE mind_map_id = ${row.id}::uuid)`;
+  }
+  if (rows.length) console.log(`思维导图：已转换 ${rows.length} 张`);
+}
 
 async function main() {
   // 语句是按功能一路追加的，不保证拓扑有序：新库上 ALTER 可能排在它的 CREATE 前面。
@@ -828,6 +867,7 @@ async function main() {
     todo = failed.map((f) => f.sql);
   }
   await seedBuiltin();
+  await backfillBoards();
   console.log("schema ready");
   process.exit(0);
 }

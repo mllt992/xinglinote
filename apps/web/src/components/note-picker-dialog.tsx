@@ -32,7 +32,7 @@ export function NotePickerDialog({ open, onOpenChange, workspaceId, title = "关
     setBusy(true);
     const timer = window.setTimeout(() => {
       const load = query
-        ? api<{ hits: PickedNote[] }>(`/api/v1/search?q=${encodeURIComponent(query)}&workspaceId=${workspaceId}&titleOnly=1&limit=20`).then(d => d.hits)
+        ? api<{ hits: PickedNote[] }>(`/api/v1/search?q=${encodeURIComponent(query)}&workspaceId=${workspaceId}&titleOnly=1&limit=20&boards=0`).then(d => d.hits)
         : api<{ notes: PickedNote[] }>("/api/v1/me/recent").then(d => d.notes.filter(n => n.workspaceId === workspaceId));
       load.then(list => { if (my === seq.current) { setItems(list); setActive(0); } })
         .catch(e => { if (my === seq.current) { setItems([]); toast.error("没能读取笔记列表", (e as Error).message); } })

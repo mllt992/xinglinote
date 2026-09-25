@@ -3,7 +3,7 @@ import { db } from "../db/client.ts";
 import {
   agentReplies, agents, aiChunks, attachments, authTokens, calendarFeedTokens, calendarItems,
   calendarOverrides, calendarReminders, calendarSubscriptions, calendarTemplates,
-  comments, contentReports, corrections, folders, instanceSettings, links, mcpAttachmentUploads, mcpTokens, mindMapNoteLinks, mindMaps,
+  comments, contentReports, corrections, folders, instanceSettings, links, mcpAttachmentUploads, mcpTokens, mindMapNoteLinks, mindMaps, mindMapVersions,
   moderationReviews, navGroups, navLinks, notebookMembers, notebooks, noteCollab,
   notes, noteFavorites, noteVersions, noteVisits, postAssets, postFavorites, postReactions, posts, projectColumns, projectMilestones, projectTasks, projectTimeEntries, projects,
   registrationCodes, registrationCodeUsages, savedShares, serviceRequests, sessions,
@@ -17,7 +17,7 @@ import { purgeWorkspaceProjects } from "./trash.ts";
 import { noteCandidates, rebuildLinks } from "./links.ts";
 import { seal } from "./secrets.ts";
 import { secureToken } from "./tokens.ts";
-import { emptyMindMap, extractMindMapNoteLinks, remapMindMapNotes } from "@kb/shared";
+import { boardPlainText, emptyBoard, extractBoardNoteLinks, remapBoardNotes, type BoardKind } from "@kb/shared";
 
 type Row = Record<string, unknown>;
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -355,18 +355,33 @@ export async function restoreWorkspacePackage(input: {
         ...revive(raw), id: milestoneMap.get(String(raw.id)), projectId: mapped(projectMap, raw.projectId),
       })));
 
-      // 思维导图：节点里关联的笔记 id 跟着笔记换新；关联表是派生物，按换好的数据重建。
+      // 思维导图 / 画板：节点里关联的笔记 id 跟着笔记换新；关联表是派生物，按换好的数据重建。
       const restoredNoteIds = new Set<string>(noteMap.values());
+      const kindOf = (raw: Record<string, unknown>): BoardKind => raw.kind === "drawio" ? "drawio" : "mindmap";
+      const kindById = new Map<string, BoardKind>();
       const mindMapValues = (snapshot.mindMaps ?? []).map(raw => {
+        const kind = kindOf(raw);
+        kindById.set(String(raw.id), kind);
         let data;
-        try { data = remapMindMapNotes(raw.data, id => mapped(noteMap, id)); }
-        catch { data = emptyMindMap(String(raw.title ?? "")); warnings.push(`思维导图「${String(raw.title ?? raw.id)}」数据损坏，已恢复为空白导图`); }
-        return { ...revive(raw), id: mindMapMap.get(String(raw.id)), notebookId: mapped(nbMap, raw.notebookId), data, createdBy: mapUser(raw.createdBy), updatedBy: mapUser(raw.updatedBy) };
+        try { data = remapBoardNotes(kind, raw.data, id => mapped(noteMap, id)); }
+        catch { data = emptyBoard(kind, String(raw.title ?? "")); warnings.push(`「${String(raw.title ?? raw.id)}」数据损坏，已恢复为空白${kind === "drawio" ? "画板" : "导图"}`); }
+        return {
+          ...revive(raw), id: mindMapMap.get(String(raw.id)), notebookId: mapped(nbMap, raw.notebookId), kind, data, searchText: boardPlainText(kind, data) || " ",
+          createdBy: mapUser(raw.createdBy), updatedBy: mapUser(raw.updatedBy), trashedBy: raw.trashedBy ? mapUser(raw.trashedBy) : null,
+        };
       });
       await insertRows(tx, mindMaps, mindMapValues);
-      await insertRows(tx, mindMapNoteLinks, mindMapValues.flatMap(m => extractMindMapNoteLinks(m.data)
+      await insertRows(tx, mindMapNoteLinks, mindMapValues.flatMap(m => extractBoardNoteLinks(m.kind, m.data)
         .filter(link => restoredNoteIds.has(link.noteId))
         .map(link => ({ mindMapId: m.id, noteId: link.noteId, nodeId: link.nodeId }))));
+      const versionValues = [];
+      for (const raw of snapshot.mindMapVersions ?? []) {
+        const kind = kindById.get(String(raw.mindMapId)) ?? "mindmap";
+        try {
+          versionValues.push({ ...revive(raw), id: undefined, mindMapId: mapped(mindMapMap, raw.mindMapId), data: remapBoardNotes(kind, raw.data, id => mapped(noteMap, id)), editorId: mapUser(raw.editorId) });
+        } catch { /* 坏掉的历史版本直接跳过，当前内容不受影响 */ }
+      }
+      await insertRows(tx, mindMapVersions, versionValues);
 
       const [verify] = await tx.select({ notebooks: sql<number>`count(distinct ${notebooks.id})`, notes: sql<number>`count(distinct ${notes.id})` })
         .from(notebooks).leftJoin(notes, eq(notes.workspaceId, notebooks.workspaceId)).where(eq(notebooks.workspaceId, targetWorkspaceId));

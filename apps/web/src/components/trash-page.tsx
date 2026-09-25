@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Archive, FileText, Folder, Notebook, RotateCcw, Trash2 } from "lucide-react";
+import { Archive, FileText, Folder, Network, Notebook, RotateCcw, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { EmptyState, Row, SectionCard, SettingsShell } from "./settings-shell";
 import { Badge } from "./ui/badge";
@@ -8,14 +8,15 @@ import { Button } from "./ui/button";
 import { useConfirm } from "./ui/confirm";
 import { useToast } from "./ui/toast";
 
-type Kind = "note" | "folder" | "notebook";
-type Item = { id: string; title: string; path: string; trashedAt: string; trashedByName: string; purgeAt: string | null };
-type TrashData = { notes: Item[]; folders: Item[]; notebooks: Item[] };
+type Kind = "note" | "folder" | "notebook" | "mindmap";
+type Item = { id: string; title: string; path: string; trashedAt: string; trashedByName: string; purgeAt: string | null; kind?: "mindmap" | "drawio"; notebookTrashed?: boolean };
+type TrashData = { notes: Item[]; folders: Item[]; notebooks: Item[]; mindMaps: Item[] };
 
 const GROUPS: Array<{ kind: Kind; label: string; icon: typeof FileText; key: keyof TrashData }> = [
   { kind: "note", label: "笔记", icon: FileText, key: "notes" },
   { kind: "folder", label: "目录", icon: Folder, key: "folders" },
   { kind: "notebook", label: "笔记本", icon: Notebook, key: "notebooks" },
+  { kind: "mindmap", label: "思维导图与画板", icon: Network, key: "mindMaps" },
 ];
 
 const daysLeft = (purgeAt: string | null) => purgeAt ? Math.max(0, Math.ceil((new Date(purgeAt).getTime() - Date.now()) / 86400000)) : null;
@@ -29,22 +30,23 @@ export function TrashPage() {
   const nav = useNavigate();
   const toast = useToast();
   const askConfirm = useConfirm();
-  const [data, setData] = useState<TrashData>({ notes: [], folders: [], notebooks: [] });
+  const [data, setData] = useState<TrashData>({ notes: [], folders: [], notebooks: [], mindMaps: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const load = useCallback(async () => { setData(await api<TrashData>(`/api/v1/workspaces/${wsId}/trash`)); }, [wsId]);
+  const load = useCallback(async () => { const d = await api<TrashData>(`/api/v1/workspaces/${wsId}/trash`); setData({ ...d, mindMaps: d.mindMaps ?? [] }); }, [wsId]);
   const reload = useCallback(() => {
     setLoading(true);
     load().then(() => setError("")).catch(e => setError((e as Error).message)).finally(() => setLoading(false));
   }, [load]);
   useEffect(() => { reload(); }, [reload]);
 
-  const total = data.notes.length + data.folders.length + data.notebooks.length;
+  const total = data.notes.length + data.folders.length + data.notebooks.length + data.mindMaps.length;
 
   /** 笔记只牵涉自己那一行，就地撤掉；目录和笔记本会连着同一删除批次的子内容一起动，那种只能回表。 */
   const afterChange = (kind: Kind, id: string) => {
     if (kind === "note") setData(d => ({ ...d, notes: d.notes.filter(n => n.id !== id) }));
+    else if (kind === "mindmap") setData(d => ({ ...d, mindMaps: d.mindMaps.filter(n => n.id !== id) }));
     else void load();
   };
 
@@ -70,7 +72,7 @@ export function TrashPage() {
 
   return <SettingsShell wsId={wsId} current="trash" counts={{ trash: total }} loading={loading} error={error} onRetry={reload}>
     {total === 0
-      ? <SectionCard title="回收站" desc="删除的笔记、目录和笔记本会先到这里。">
+      ? <SectionCard title="回收站" desc="删除的笔记、目录、笔记本、思维导图和画板会先到这里。">
         <EmptyState icon={<Archive className="size-5" />} title="回收站是空的" text="30 天内删掉的东西都能在这里找回来。"
           action={<Button variant="outline" onClick={() => nav(`/w/${wsId}`)}>回到笔记</Button>} />
       </SectionCard>
@@ -80,13 +82,13 @@ export function TrashPage() {
           if (!items.length) return null;
           const Icon = g.icon;
           return <SectionCard key={g.kind} icon={<Icon className="size-4" />} title={g.label}
-            desc={`${items.length} 项${g.kind === "note" ? "" : "；恢复时会一并恢复同一删除批次的子内容"}`}>
+            desc={`${items.length} 项${g.kind === "note" || g.kind === "mindmap" ? "" : "；恢复时会一并恢复同一删除批次的子内容"}`}>
             {items.map((n, i) => {
               const left = daysLeft(n.purgeAt);
               return <Row key={n.id} first={i === 0}
                 icon={<Trash2 className="size-4" />}
                 title={n.title}
-                desc={`${n.path} · ${n.trashedByName} 删除于 ${new Date(n.trashedAt).toLocaleString()}`}
+                desc={`${n.kind ? `${n.kind === "drawio" ? "画板" : "思维导图"} · ` : ""}${n.path}${n.notebookTrashed ? "（笔记本也在回收站）" : ""} · ${n.trashedByName} 删除于 ${new Date(n.trashedAt).toLocaleString()}`}
                 actions={<>
                   {left !== null && <Badge className={left <= 3 ? "border-destructive/40 text-destructive" : undefined}>{left} 天后销毁</Badge>}
                   <Button variant="outline" size="sm" onClick={() => void restore(g.kind, n)}><RotateCcw />恢复</Button>

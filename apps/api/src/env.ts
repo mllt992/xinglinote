@@ -39,6 +39,23 @@ function requireAppSecret() {
   return value;
 }
 
+/**
+ * draw.io 画板编辑器的地址（设计 25 §画板）。默认用官方的 embed.diagrams.net；
+ * 要离线 / 内网部署就自托管 jgraph/drawio 镜像，把这里指过去（见部署文档）。
+ * 设成 off 表示不启用画板。
+ */
+function drawioUrl() {
+  const raw = (process.env.DRAWIO_URL ?? "https://embed.diagrams.net").trim();
+  if (!raw || raw === "off") return "";
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error();
+    return u.href.replace(/\/+$/, "");
+  } catch {
+    throw new Error("DRAWIO_URL 必须是 http(s) 地址，或者 off");
+  }
+}
+
 export const env = {
   isProduction,
   appSecret: requireAppSecret(),
@@ -56,4 +73,6 @@ export const env = {
   redisUrl: process.env.REDIS_URL ?? "",
   /** 覆盖 URL 里的密码。外部 Redis 密码含 @ : / 时用这个，别塞进 URL。 */
   redisPassword: process.env.REDIS_PASSWORD ?? "",
+  /** draw.io 编辑器地址；空串 = 不启用画板。 */
+  drawioUrl: drawioUrl(),
 };

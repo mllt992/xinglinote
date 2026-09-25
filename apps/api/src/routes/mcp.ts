@@ -5,7 +5,7 @@ import { AppError, fail, FOLDER_DEPTH_LIMIT, folderMoveExceedsDepth, nextSortKey
 import { CANCELLED_STATUS, DEFAULT_BOARD_COLUMNS, canReadProject, canWriteProject, type WsRole } from "@kb/core";
 import { db } from "../db/client.ts";
 import { env } from "../env.ts";
-import { attachments,auditLogs,calendarItems,calendarOverrides,folders,links,mcpAttachmentUploads,mcpTokens,notebookMembers,notebooks,notes,noteVersions,posts,projectColumns,projectTasks,projects,users,workspaceMembers,workspaces } from "../db/schema.ts";
+import { attachments,auditLogs,calendarItems,calendarOverrides,folders,links,mcpAttachmentUploads,mcpTokens,mindMaps,notebookMembers,notebooks,notes,noteVersions,posts,projectColumns,projectTasks,projects,users,workspaceMembers,workspaces } from "../db/schema.ts";
 import { projectTags, projectTaskTags } from "../db/project-tags.ts";
 import { ok } from "../http.ts";import { currentUser } from "../lib/session.ts";import { hashSecret,secretHashes,secureToken } from "../lib/tokens.ts";import { memberRole } from "../lib/workspace.ts";import { writeNoteFile } from "../lib/files.ts";import { rebuildLinks } from "../lib/links.ts";import { relocateNote } from "../lib/note-move.ts";import { assertUserStorage,textBytes } from "../lib/quota.ts";import { limit } from "../lib/rate-limit.ts";import { noteAccess } from "../lib/note-access.ts";import { askKnowledgeAcross } from "../lib/knowledge-ai.ts";import { notebookAccess } from "../lib/notebook-access.ts";import { instanceConfig,moderationOn,queueReview } from "../lib/moderation.ts";import { completeCalendarItem,DEFAULT_TZ,occurrencesOf,startOfLocalDay,wallParts } from "../lib/calendar.ts";
 import { assertTokenWorkspaces, liveWorkspaceIds, resolveWorkspaceIds, tokenDto } from "../lib/mcp-workspaces.ts";
@@ -24,6 +24,8 @@ import { hashBytes } from "../lib/blob-path.ts";
 import { claimMcpUpload, cleanupExpiredMcpUploads, markUploadCompleted, MCP_BASE64_COMPAT_MAX_BYTES, MCP_UPLOAD_TTL_MS, readMcpUpload, releaseMcpUpload, storeMcpUpload } from "../lib/mcp-upload.ts";
 import { reorderSubset } from "../lib/mcp-order.ts";
 import { trashFolder } from "../lib/trash.ts";
+import { boardKind, cleanBoard, createBoard, loadBoard, readBoardData, saveBoard, searchBoards } from "../lib/mindmaps.ts";
+import { countMindMapNodes, emptyBoard, mindMapFromMarkdown, mindMapToOutline, type DrawioData, type MindMapData } from "@kb/shared";
 export const mcpRoutes=new Hono();
 type Ctx=Parameters<typeof currentUser>[0];
 async function user(c:Ctx){const u=await currentUser(c);if(!u)throw fail("UNAUTHENTICATED","未登录");return u;}
@@ -93,6 +95,68 @@ async function ensureMcpProjectColumns(projectId:string){let rows=await db.selec
 async function mcpLoadProject(a:Auth,projectId:string,mode:"read"|"write"="read"){const[row]=await db.select().from(projects).where(eq(projects.id,projectId));if(!row)throw fail("NOT_FOUND","项目不存在");if(!covers(a,row.workspaceId))throw fail(mode==="read"?"NOT_FOUND":"FORBIDDEN",mode==="read"?"项目不存在":"项目不在钥匙范围");const role=await memberRole(row.workspaceId,a.u.id) as WsRole|null;const[ws]=await db.select().from(workspaces).where(eq(workspaces.id,row.workspaceId));if(!role||!ws)throw fail("NOT_FOUND","项目不存在");const acl={userId:a.u.id,wsRole:role,frozen:ws.frozen,visibility:row.visibility as "workspace"|"private",createdBy:row.createdBy,status:row.status as "planning"|"active"|"paused"|"done"|"archived"};if(!canReadProject(acl))throw fail("NOT_FOUND","项目不存在");if(mode==="write"){requireWrite(a);if(!canWriteProject(acl)){if(role==="viewer"||ws.frozen)throw fail("FORBIDDEN",ws.frozen?"工作区已冻结，暂时只读":"只读成员不能改项目");throw fail("FORBIDDEN","已归档的项目只读");}}return{project:row,ws,role,acl};}
 async function mcpLoadProjectTask(a:Auth,taskId:string,mode:"read"|"write"="read"){const[task]=await db.select().from(projectTasks).where(eq(projectTasks.id,taskId));if(!task)throw fail("NOT_FOUND","项目任务不存在");const ctx=await mcpLoadProject(a,task.projectId,mode);return{...ctx,task};}
 
+// —— 思维导图 / 画板（设计 25）——
+const BOARD_TOOLS=new Set(["list_mind_maps","get_mind_map","create_mind_map","update_mind_map","trash_mind_map"]);
+async function boardPermission(a:Auth,id:string,mode:"read"|"edit"){
+  const{map}=await loadBoard(id,a.u.id,mode);
+  try{await nbPermission(a,map.notebookId,mode);}catch(e){if(mode==="read")throw fail("NOT_FOUND","思维导图不存在");throw e;}
+  return map;
+}
+function boardMeta(m:typeof mindMaps.$inferSelect,workspaceId?:string){return{id:m.id,kind:boardKind(m),title:m.title,version:m.version,notebook_id:m.notebookId,...(workspaceId?{workspace_id:workspaceId}:{}),updated_at:m.updatedAt};}
+async function boardTool(a:Auth,name:string,x:unknown):Promise<Record<string,unknown>>{
+  if(name==="list_mind_maps"){
+    const b=z.object({query:z.string().max(200).optional(),workspace_id:z.string().uuid().optional(),notebook_id:z.string().uuid().optional(),kind:z.enum(["mindmap","drawio"]).optional(),limit:zint().min(1).max(50).default(20)}).parse(x);
+    const nbs=(await scopedNotebooks(a)).filter(nb=>(!b.workspace_id||nb.workspace_id===b.workspace_id)&&(!b.notebook_id||nb.id===b.notebook_id));
+    if(b.workspace_id&&!covers(a,b.workspace_id))throw fail("FORBIDDEN","工作区不在钥匙范围");
+    const nbIds=new Set(nbs.map(n=>n.id));const wsOf=new Map(nbs.map(n=>[n.id,n.workspace_id]));
+    if(b.query?.trim()){
+      const hits=(await searchBoards(a.u.id,[...new Set(nbs.map(n=>n.workspace_id))],b.query,{notebookId:b.notebook_id,limit:50})).filter(h=>nbIds.has(h.notebookId)&&(!b.kind||h.kind===b.kind)).slice(0,b.limit);
+      return{items:hits.map(h=>({id:h.id,kind:h.kind,title:h.title,notebook_id:h.notebookId,workspace_id:h.workspaceId,updated_at:h.updatedAt,snippet:h.snippet}))};
+    }
+    if(!nbIds.size)return{items:[]};
+    const rows=await db.select().from(mindMaps).where(and(inArray(mindMaps.notebookId,[...nbIds]),isNull(mindMaps.trashedAt),...(b.kind?[eq(mindMaps.kind,b.kind)]:[]))).orderBy(desc(mindMaps.updatedAt)).limit(b.limit);
+    return{items:rows.map(m=>boardMeta(m,wsOf.get(m.notebookId)))};
+  }
+  if(name==="get_mind_map"){
+    const b=z.object({id:z.string().uuid(),format:z.enum(["outline","json"]).default("outline"),max_chars:zint().min(200).max(100000).default(8000)}).parse(x);
+    const m=await boardPermission(a,b.id,"read");const data=readBoardData(m);
+    const clip=(s:string)=>({text:s.slice(0,b.max_chars),truncated:s.length>b.max_chars,total_chars:s.length});
+    if(boardKind(m)==="drawio"){const c=clip((data as DrawioData).xml);return{...boardMeta(m),xml:c.text,truncated:c.truncated,total_chars:c.total_chars,note_ids:(data as DrawioData).noteIds};}
+    const mm=data as MindMapData;
+    const c=clip(b.format==="json"?JSON.stringify({layout:mm.layout,root:mm.root,theme:mm.theme}):mindMapToOutline(mm));
+    return{...boardMeta(m),layout:mm.layout,node_count:countMindMapNodes(mm),[b.format==="json"?"data_json":"outline"]:c.text,truncated:c.truncated,total_chars:c.total_chars};
+  }
+  requireWrite(a);
+  if(name==="create_mind_map"){
+    const b=z.object({notebook_id:z.string().uuid(),title:z.string().trim().min(1).max(200),kind:z.enum(["mindmap","drawio"]).default("mindmap"),outline_md:z.string().max(200000).optional(),xml:z.string().max(2000000).optional(),client_request_id:z.string().uuid().optional()}).parse(x);
+    const{notebook:nb}=await nbPermission(a,b.notebook_id,"edit");
+    const data=b.kind==="drawio"?cleanBoard("drawio",{xml:b.xml??"",noteIds:[]}):b.outline_md?.trim()?cleanBoard("mindmap",mindMapFromMarkdown(b.outline_md,b.title)):emptyBoard("mindmap",b.title);
+    await charge(a,Buffer.byteLength(JSON.stringify(data)));
+    const m=await createBoard({notebookId:nb.id,kind:b.kind,title:b.title,data,userId:a.u.id,source:"mcp"});
+    return boardMeta(m,nb.workspaceId);
+  }
+  if(name==="update_mind_map"){
+    const b=z.object({id:z.string().uuid(),expected_version:zint().min(1),title:z.string().trim().min(1).max(200).optional(),outline_md:z.string().max(200000).optional(),xml:z.string().max(2000000).optional()}).parse(x);
+    const m=await boardPermission(a,b.id,"edit");const kind=boardKind(m);
+    if(b.title===undefined&&b.outline_md===undefined&&b.xml===undefined)throw fail("VALIDATION","没有要修改的内容");
+    if(kind==="drawio"&&b.outline_md!==undefined)throw fail("VALIDATION","画板请传 xml");
+    if(kind==="mindmap"&&b.xml!==undefined)throw fail("VALIDATION","思维导图请传 outline_md");
+    const current=readBoardData(m);
+    const data=b.outline_md!==undefined?cleanBoard("mindmap",mindMapFromMarkdown(b.outline_md,b.title??m.title,{base:current as MindMapData})):b.xml!==undefined?cleanBoard("drawio",{...(current as DrawioData),xml:b.xml}):undefined;
+    if(data)await charge(a,Buffer.byteLength(JSON.stringify(data)));
+    const saved=await saveBoard(m,{userId:a.u.id,expectedVersion:b.expected_version,title:b.title,data,source:"mcp"});
+    if(!saved){const[cur]=await db.select({version:mindMaps.version}).from(mindMaps).where(eq(mindMaps.id,m.id));throw versionConflict(b.expected_version,cur?.version??m.version);}
+    return boardMeta(saved);
+  }
+  if(name==="trash_mind_map"){
+    const b=z.object({id:z.string().uuid(),expected_version:zint().min(1)}).parse(x);
+    const m=await boardPermission(a,b.id,"edit");
+    if(m.version!==b.expected_version)throw versionConflict(b.expected_version,m.version);
+    await db.update(mindMaps).set({trashedAt:new Date(),trashedBy:a.u.id}).where(eq(mindMaps.id,m.id));
+    return{id:m.id,trashed:true};
+  }
+  throw fail("VALIDATION","未知工具");
+}
 /** 客户端若没拿到 inputSchema（比如缓存着旧的空 schema），数字与布尔会以字符串发过来。
  *  工具层统一容忍这一种松散写法，别让调用方在类型上翻车。 */
 const zint=()=>z.coerce.number().int();
@@ -134,6 +198,7 @@ type ToolResult=Array<Record<string,unknown>>|Record<string,unknown>|undefined;l
  const dryRun=!!(x&&typeof x==="object"&&!Array.isArray(x)&&((x as Record<string,unknown>).dry_run===true||(x as Record<string,unknown>).dry_run==="true"));
  const idem=isWriteTool(name)&&!dryRun?readIdempotencyKey(c.req.header("Idempotency-Key"),x):undefined;
  if(idem){const started=await startIdempotent(a.t.id,name,idem,x);if(started.kind==="replay")result=started.result as ToolResult;else idemClaim=started.claim;}
+ if(result===undefined&&BOARD_TOOLS.has(name))result=await boardTool(a,name,x);
 if(result===undefined&&name==="get_me"){const spaces=await db.select({id:workspaces.id,name:workspaces.name}).from(workspaces).where(inArray(workspaces.id,a.workspaceIds));const ordered=a.workspaceIds.map(id=>spaces.find(s=>s.id===id)).filter((s):s is {id:string;name:string}=>!!s);result={handle:a.u.handle,workspace:ordered[0]??null,workspaces:ordered,rw:a.t.rw,notebook_mode:a.t.notebookMode,notebooks:await scopedNotebooks(a),expires_at:a.t.expiresAt,require_ai_index:a.t.requireAiIndex,allow_private_notebooks:a.t.allowPrivateNotebooks,allow_delete:a.t.allowDelete,image_max_bytes:await mcpImageMaxBytes()};}
 else if(result===undefined&&name==="list_notebooks"){const b=z.object({limit:zint().min(1).max(200).default(50),cursor:z.string().optional()}).parse(x),items=await scopedNotebooks(a),ctx=await cursorContext(a,name,{}),page=pageByCursor({...ctx,cursor:b.cursor,limit:b.limit,items,keyOf:n=>[n.title,n.id],directions:["asc","asc"]});result={...page,notebooks:page.items};}
 else if(result===undefined&&name==="list_folder"){const b=z.object({notebook_id:z.string().uuid(),folder_id:z.string().uuid().nullable().optional(),limit:zint().min(1).max(200).default(50),cursor:z.string().optional()}).parse(x);await nbPermission(a,b.notebook_id,"read");const folderId=await folderContext(b.notebook_id,b.folder_id),fs=await db.select().from(folders).where(and(eq(folders.notebookId,b.notebook_id),isNull(folders.trashedAt))),ns=await db.select().from(notes).where(and(eq(notes.notebookId,b.notebook_id),isNull(notes.trashedAt)));const items=[...fs.filter(f=>(f.parentId??null)===folderId).map(f=>({type:"folder" as const,id:f.id,title:f.title,parent_id:f.parentId??null,sort_key:f.sortKey})),...ns.filter(n=>(n.folderId??null)===folderId&&(!a!.t.requireAiIndex||n.aiIndex)).map(n=>({type:"note" as const,id:n.id,title:n.title,folder_id:n.folderId??null,sort_key:n.sortKey}))],ctx=await cursorContext(a,name,{notebook_id:b.notebook_id,folder_id:folderId}),page=pageByCursor({...ctx,cursor:b.cursor,limit:b.limit,items,keyOf:item=>[item.type==="folder"?0:1,item.sort_key,item.id],directions:["asc","asc","asc"]});result={...page,folders:page.items.filter(item=>item.type==="folder").map(item=>({id:item.id,title:item.title,parent_id:"parent_id" in item?item.parent_id:null,sort_key:item.sort_key})),notes:page.items.filter(item=>item.type==="note").map(item=>({id:item.id,title:item.title,folder_id:"folder_id" in item?item.folder_id:null,sort_key:item.sort_key}))};}

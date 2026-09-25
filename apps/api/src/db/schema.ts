@@ -802,20 +802,39 @@ export const noteCollab = pgTable("note_collab", {
 });
 
 /**
- * 思维导图（设计 25）。挂在笔记本下，权限完全跟笔记本走；笔记本彻底删除时级联删掉。
- * data 是清洗过的 mind-elixir 结构 `{ nodeData, direction }`，见 @kb/shared 的 sanitizeMindMap。
+ * 思维导图与画板（设计 25）。挂在笔记本下，权限完全跟笔记本走；笔记本彻底删除时级联删掉。
+ * kind=mindmap 时 data 是清洗过的 simple-mind-map 结构 `{ format, layout, root, theme }`；
+ * kind=drawio 时是 `{ format: "drawio", xml, noteIds }`。见 @kb/shared 的 sanitizeBoard。
+ * search_text 是保存时抽出来的纯文本，全局搜索用；删除先进回收站（trashed_at），30 天后清掉。
  */
 export const mindMaps = pgTable("mind_maps", {
   id: uuid("id").defaultRandom().primaryKey(),
   notebookId: uuid("notebook_id").notNull().references(() => notebooks.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull().default("mindmap"),
   title: text("title").notNull(),
   data: jsonb("data").notNull(),
+  searchText: text("search_text").notNull().default(""),
   version: integer("version").notNull().default(1),
   createdBy: uuid("created_by").notNull().references(() => users.id),
   updatedBy: uuid("updated_by").notNull().references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  trashedAt: timestamp("trashed_at", { withTimezone: true }),
+  trashedBy: uuid("trashed_by"),
 }, t => [index("mind_maps_notebook_idx").on(t.notebookId, t.updatedAt)]);
+
+/** 导图 / 画板的历史版本。5 分钟内同一人的连续保存合并成一版，保留策略与笔记版本一致。 */
+export const mindMapVersions = pgTable("mind_map_versions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  mindMapId: uuid("mind_map_id").notNull().references(() => mindMaps.id, { onDelete: "cascade" }),
+  version: integer("version").notNull(),
+  title: text("title").notNull(),
+  data: jsonb("data").notNull(),
+  editorId: uuid("editor_id").notNull(),
+  source: text("source").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, t => [index("mind_map_versions_map_idx").on(t.mindMapId, t.version)]);
 
 /** 导图节点 → 笔记的关联，保存导图时从 data 里重建。派生表，丢了可以从 data 重算。 */
 export const mindMapNoteLinks = pgTable("mind_map_note_links", {
