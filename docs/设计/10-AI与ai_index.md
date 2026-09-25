@@ -46,6 +46,27 @@
 
 密钥展示：只显示后四位。备份不落明文（13）。
 
+### 2.2.1 平台 AI（issue #64）
+
+实例管理员可以在实例后台「平台 AI」准备**平台渠道**，全站所有工作区、所有用户都能用，不需要逐个绑定工作区。
+
+- 存储：仍是 `ai_providers` 一行，`platform = true`、`workspace_id = null`、`workspace_ids = []`；`chat_models` 是开放给用户的模型，`chat_model` 是默认模型。`platform_default = true` 标记默认渠道，唯一部分索引 `ai_providers_platform_default_idx` 保证最多一条。第一条平台渠道自动成为默认。
+- 只有实例管理员（`users.role_instance = 'admin'`）能增改删平台渠道（`/admin/ai/platform*`）；工作区接口 `PATCH/DELETE /ai/providers/:id` 对平台渠道一律拒绝，`discover-models` 带平台渠道 id 也只认实例管理员。
+- 可见性：`GET /workspaces/:id/ai/provider` 对所有成员只返回平台渠道的 `id / name / models / defaultModel / platformDefault`，`baseUrl`、`keySuffix` 恒为空串；工作区渠道只有能管理它的人才拿到地址和密钥尾号。
+- 工作区选择：Owner / Admin 在「AI 与自动化」里选「自动（推荐）」、某个平台渠道 + 开放模型（不在目录里的模型会被拒绝），或工作区共享渠道 + 模型。
+- **自动**（`chat_provider_id` 为空）按顺序取第一个可用的：① 本人在该工作区的私人渠道 → ② 该工作区最新的共享渠道（需有模型）→ ③ 平台默认渠道 + 默认模型。已固定选择的工作区行为不变；以前设置行里对话为空的工作区，升级后也按自动走（原来是直接报未配置）。
+- 管理员停用平台渠道或下架某个模型时，固定选了它的工作区改回「自动」；删除时外键 `ON DELETE SET NULL` 效果相同。正用于全站量化的渠道不能停用或删除。
+- 平台渠道也可以在「量化管理」里被选为全站 Embedding 渠道；实例级默认存进 `instance_settings.embedding_*`，没有工作区设置行时回退到它。
+
+**每日额度**
+
+- `instance_settings.platform_ai_daily_limit`：全站默认每人每天次数，null = 不限，0 = 不开放。
+- `users.platform_ai_daily_limit`：个人覆盖，null = 跟随全站，-1 = 不限，n = n 次。
+- 只统计解析到平台渠道的请求（`ai_usage.platform = true`，同时记 `provider_id`）。按北京时间（UTC+8）自然日计算。调模型前检查、不预扣，成功写 `ai_usage` 才算一次；失败不计；并发时临界点可能多放行一两次。
+- 覆盖入口：AI 写作 / 图表、知识问答（含流式与 MCP `ask_knowledge`）、导图生成与扩展、画板 AI、日历任务提取。智能体用自己的配置，不在此列。Embedding / 向量化是后台任务，**不计次也不受限**。
+- 超额返回 `429 AI_QUOTA_EXCEEDED`，文案提示明早恢复或改用自己的渠道；设置页显示今天已用 / 上限。
+- 实例后台「平台 AI」列出近 7 天用过平台 AI 或单独设过额度的用户（今天、近 7 天次数与 token、最近使用时间），可搜索任何用户并单独设置额度。
+
 ### 2.3 向量切片
 
 `Chunk(note_id, ordinal, text, embedding, updated_at)`  
@@ -94,7 +115,7 @@
 
 ### 3.5 无 Key
 
-入口仍在，点开引导去配置。实例或工作区关 AI：入口隐藏。
+入口仍在，点开引导去配置。实例管理员设了平台默认渠道时，没配置的工作区会自动用它（见 2.2.1）。实例或工作区关 AI：入口隐藏。
 
 ### 3.6 画图
 

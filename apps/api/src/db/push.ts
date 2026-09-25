@@ -828,6 +828,19 @@ END $$`,
     updated_at timestamptz NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS mind_map_versions_map_idx ON mind_map_versions(mind_map_id, version)`,
+  // 平台 AI（issue #64）：实例管理员配置、全站可用的渠道，以及每人每日额度。
+  `ALTER TABLE ai_providers ALTER COLUMN workspace_id DROP NOT NULL`,
+  `ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS platform boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS platform_default boolean NOT NULL DEFAULT false`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS ai_providers_platform_default_idx ON ai_providers((true)) WHERE platform AND platform_default`,
+  `ALTER TABLE ai_usage ADD COLUMN IF NOT EXISTS provider_id uuid`,
+  `ALTER TABLE ai_usage ADD COLUMN IF NOT EXISTS platform boolean NOT NULL DEFAULT false`,
+  `CREATE INDEX IF NOT EXISTS ai_usage_user_created_idx ON ai_usage(user_id, created_at)`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS platform_ai_daily_limit integer`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS platform_ai_daily_limit integer`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS embedding_provider_id uuid`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS embedding_model text`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS embedding_auto_embed boolean NOT NULL DEFAULT true`,
 ];
 
 /**

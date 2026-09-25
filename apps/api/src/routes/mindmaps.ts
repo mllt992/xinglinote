@@ -13,7 +13,7 @@ import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
 import { notebookAccess, notebookVisibleTo } from "../lib/notebook-access.ts";
 import { noteAccess } from "../lib/note-access.ts";
-import { aiProvider, chatAi } from "../lib/ai.ts";
+import { aiChatProvider, chatAi, usageMeta } from "../lib/ai.ts";
 import {
   boardKind, briefBoard, canEditNotebook, cleanBoard, createBoard, loadBoard, readableNotebooks, readBoardData, saveBoard,
 } from "../lib/mindmaps.ts";
@@ -204,10 +204,10 @@ async function runAi(workspaceId: string, userId: string, action: string, messag
   const [inst] = await db.select({ aiEnabled: instanceSettings.aiEnabled }).from(instanceSettings);
   const [ws] = await db.select({ aiEnabled: workspaces.aiEnabled }).from(workspaces).where(eq(workspaces.id, workspaceId));
   if (!inst?.aiEnabled || !ws?.aiEnabled) throw fail("FORBIDDEN", "这个工作区的 AI 已关闭");
-  const p = await aiProvider(workspaceId, userId);
-  if (!p) throw fail("AI_NOT_CONFIGURED", "请先配置 AI 提供商");
+  const p = await aiChatProvider(workspaceId, userId);
+  if (!p) throw fail("AI_NOT_CONFIGURED", "还没有可用的 AI，请在「AI 与自动化」里设置，或联系站点管理员开放平台 AI");
   const out = await chatAi(p, messages, opts);
-  await db.insert(aiUsage).values({ userId, workspaceId, action, model: p.chatModel, inputTokens: out.usage.prompt_tokens ?? 0, outputTokens: out.usage.completion_tokens ?? 0 });
+  await db.insert(aiUsage).values({ userId, workspaceId, action, model: p.chatModel, inputTokens: out.usage.prompt_tokens ?? 0, outputTokens: out.usage.completion_tokens ?? 0, ...usageMeta(p) });
   return out.content;
 }
 

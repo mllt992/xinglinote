@@ -33,7 +33,7 @@ type Options = {
   workspaces: Array<{ id: string; name: string; kind: string; noteCount: number }>;
   users: Array<{ id: string; displayName: string; handle: string; email: string; noteCount: number }>;
   notebooks: Array<{ id: string; title: string; workspaceId: string; noteCount: number }>;
-  providers: Array<{ id: string; name: string; models: string[] }>;
+  providers: Array<{ id: string; name: string; models: string[]; platform?: boolean }>;
   preferred: { providerId: string; model: string } | null;
 };
 type IndexNote = {
@@ -283,11 +283,11 @@ export function AdminAiIndex() {
         <div className="grid gap-3 rounded-xl border bg-muted/25 p-4 sm:grid-cols-2">
           <Select label="共享渠道" value={providerId} onChange={changeProvider}>
             <option value="">选择渠道</option>
-            {options?.providers.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+            {options?.providers.map(item => <option key={item.id} value={item.id}>{item.platform ? `${item.name}（平台提供）` : item.name}</option>)}
           </Select>
           <label className="grid gap-1.5">
             <span className="text-[11px] font-medium text-muted-foreground">Embedding 模型</span>
-            <Input list="admin-embedding-models" value={model} onChange={e => setModel(e.target.value)} disabled={!providerId} placeholder={providerId ? "选择或输入模型 ID" : "请先选择渠道"} />
+            <Input list="admin-embedding-models" value={model} onChange={e => setModel(e.target.value)} disabled={!providerId} placeholder={providerId ? "选择或输入模型名" : "请先选择渠道"} />
             <datalist id="admin-embedding-models">{provider?.models.map(item => <option key={item} value={item} />)}</datalist>
           </label>
           <div className="flex flex-wrap items-center gap-3 sm:col-span-2">

@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode, type SelectHTMLAttributes } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
-  BellRing, BookOpen, Bot, Check, ChevronRight, CloudUpload, Compass, Copy, Download, Database, ExternalLink, Image, Inbox, KeyRound, LayoutGrid,
+  BellRing, BookOpen, Globe2, Bot, Check, ChevronRight, CloudUpload, Compass, Copy, Download, Database, ExternalLink, Image, Inbox, KeyRound, LayoutGrid,
   Plus, Search, Shield, ShieldCheck, Sparkles, Ticket, Trash2, Users, X,
 } from "lucide-react";
 import { api } from "../api";
@@ -20,11 +20,12 @@ import { SmtpConfig } from "./smtp-panel";
 import { NavAdmin } from "./nav-admin";
 import { BackupPanel } from "./backup-panel";
 import { AdminAiIndex } from "./admin-ai-index";
+import { AdminPlatformAi } from "./admin-platform-ai";
 import { OidcConfig } from "./oidc-panel";
 import { RequestRow, StorageBar, UserActions, UserDetailDialog, UserRow, type AdminRequest, type AdminUser } from "./admin-users";
 import { STORAGE_PRESETS } from "../lib/bytes";
 
-type Tab = "overview" | "registration" | "moderation" | "agents" | "index" | "notifications" | "codes" | "users" | "requests" | "nav" | "help" | "backup";
+type Tab = "overview" | "registration" | "moderation" | "agents" | "platformAi" | "index" | "notifications" | "codes" | "users" | "requests" | "nav" | "help" | "backup";
 type AdminCode = { id: string; prefix: string; code?: string | null; usedCount: number; maxUses: number; status: string; note?: string | null; expiresAt?: string | null; createdAt?: string; skipEmailVerification?: boolean; bindRole?: string | null };
 type Overview = {
   userCount: number; workspaceCount: number; adminCount: number; codeCount: number; activeCodeCount: number;
@@ -38,6 +39,7 @@ const TABS: { id: Tab; label: string; hint: string; icon: typeof LayoutGrid }[] 
   { id: "registration", label: "注册策略", hint: "谁能进来、能做什么", icon: Shield },
   { id: "moderation", label: "内容审核", hint: "AI 先审，拿不准再转人工", icon: ShieldCheck },
   { id: "agents", label: "智能体", hint: "创建可被动态 @ 的 AI 助手", icon: Bot },
+  { id: "platformAi", label: "平台 AI", hint: "准备给全站用户使用的 AI 渠道与每日额度", icon: Globe2 },
   { id: "index", label: "量化管理", hint: "全站笔记向量索引与批量重建", icon: Database },
   { id: "notifications", label: "通知与推送", hint: "SMTP、VAPID 密钥与推送总开关", icon: BellRing },
   { id: "nav", label: "导航", hint: "分组、站点与自动取图标", icon: Compass },
@@ -472,6 +474,7 @@ export function AdminPage() {
 
         {!error && !loading && tab === "agents" && <AgentsPanel />}
 
+        {!error && !loading && tab === "platformAi" && <AdminPlatformAi />}
         {!error && !loading && tab === "index" && <AdminAiIndex />}
 
         {!error && !loading && tab === "nav" && <NavAdmin settings={overview?.settings ?? {}} onSaved={loadOverview} />}

@@ -52,6 +52,12 @@ export const instanceSettings = pgTable("instance_settings", {
   /** 帮助入口。builtin 走站内 /help；external 在新标签页打开管理员配置的地址。 */
   helpSource: text("help_source").notNull().default("builtin"),
   helpUrl: text("help_url"),
+  /** 平台 AI 每人每日默认次数，null 为不限。只统计实际用到平台渠道的请求。 */
+  platformAiDailyLimit: integer("platform_ai_daily_limit"),
+  /** 量化管理里选定的向量渠道与模型，也作为没有单独配置的工作区的默认值。 */
+  embeddingProviderId: uuid("embedding_provider_id"),
+  embeddingModel: text("embedding_model"),
+  embeddingAutoEmbed: boolean("embedding_auto_embed").notNull().default(true),
   /** 外部 OIDC 认证中心；客户端密钥使用 lib/secrets.ts 加密。 */
   oidcEnabled: boolean("oidc_enabled").notNull().default(false),
   oidcIssuerUrl: text("oidc_issuer_url"),
@@ -83,6 +89,8 @@ export const users = pgTable("users", {
   themeId: text("theme_id").notNull().default("mono-modern"),
   accent: text("accent"),
   storageQuotaBytes: bigint("storage_quota_bytes", { mode: "number" }),
+  /** 平台 AI 每日次数：null 跟随全站默认，-1 不限，其余为具体次数。 */
+  platformAiDailyLimit: integer("platform_ai_daily_limit"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -447,8 +455,11 @@ export const themes = pgTable("themes", {
 });
 
 export const aiProviders = pgTable("ai_providers", {
-  id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id), ownerUserId: uuid("owner_user_id"),
+  id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").references(() => workspaces.id), ownerUserId: uuid("owner_user_id"),
   workspaceIds: jsonb("workspace_ids").notNull().default([]),
+  /** 平台渠道：实例管理员配置，不绑定工作区，全站可用。platform_default 标记「自动」回退时使用的那一条。 */
+  platform: boolean("platform").notNull().default(false),
+  platformDefault: boolean("platform_default").notNull().default(false),
   /** Provider 只是一条渠道/凭据；chat_model 与 embedding_* 是旧数据兼容列，chat_models 保存渠道模型目录。 */
   name: text("name").notNull().default("OpenAI 兼容渠道"),
   kind: text("kind").notNull().default("openai-compatible"), baseUrl: text("base_url").notNull(), chatModel: text("chat_model").notNull(), chatModels: jsonb("chat_models").notNull().default([]), embeddingModel: text("embedding_model"),
@@ -468,7 +479,7 @@ export const workspaceAiSettings = pgTable("workspace_ai_settings", {
 });
 export const aiChunks=pgTable("ai_chunks",{id:uuid("id").defaultRandom().primaryKey(),noteId:uuid("note_id").notNull().references(()=>notes.id),workspaceId:uuid("workspace_id").notNull().references(()=>workspaces.id),notebookId:uuid("notebook_id").notNull().references(()=>notebooks.id),chunkIndex:integer("chunk_index").notNull(),content:text("content").notNull(),embedding:text("embedding"),createdAt:timestamp("created_at",{withTimezone:true}).defaultNow().notNull()});
 
-export const aiUsage = pgTable("ai_usage", { id: uuid("id").defaultRandom().primaryKey(), userId: uuid("user_id").notNull(), workspaceId: uuid("workspace_id").notNull(), action: text("action").notNull(), model: text("model"), inputTokens: integer("input_tokens").notNull().default(0), outputTokens: integer("output_tokens").notNull().default(0), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull() });
+export const aiUsage = pgTable("ai_usage", { id: uuid("id").defaultRandom().primaryKey(), userId: uuid("user_id").notNull(), workspaceId: uuid("workspace_id").notNull(), action: text("action").notNull(), model: text("model"), inputTokens: integer("input_tokens").notNull().default(0), outputTokens: integer("output_tokens").notNull().default(0), providerId: uuid("provider_id"), platform: boolean("platform").notNull().default(false), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull() }, t => [index("ai_usage_user_created_idx").on(t.userId, t.createdAt)]);
 export const mcpTokens = pgTable("mcp_tokens", { id: uuid("id").defaultRandom().primaryKey(), secretHash: text("secret_hash").notNull().unique(), name: text("name").notNull(), userId: uuid("user_id").notNull().references(() => users.id), workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id), workspaceIds: jsonb("workspace_ids").notNull().default([]), notebookMode: text("notebook_mode").notNull().default("inherit"), notebookIds: jsonb("notebook_ids").notNull().default([]), rw: text("rw").notNull().default("read"), allowDelete: boolean("allow_delete").notNull().default(false), requireAiIndex: boolean("require_ai_index").notNull().default(true), allowPrivateNotebooks: boolean("allow_private_notebooks").notNull().default(false), feedPublic: boolean("feed_public").notNull().default(false), feedWorkspace: boolean("feed_workspace").notNull().default(false), dailyWriteLimitBytes: bigint("daily_write_limit_bytes",{mode:"number"}), expiresAt: timestamp("expires_at", {withTimezone:true}), status: text("status").notNull().default("active"), lastUsedAt: timestamp("last_used_at", {withTimezone:true}), clientId: text("client_id"), source: text("source").notNull().default("manual"), createdAt: timestamp("created_at", {withTimezone:true}).defaultNow().notNull() });
 export const backupTargets=pgTable("backup_targets",{id:uuid("id").defaultRandom().primaryKey(),scope:text("scope").notNull().default("workspace"),workspaceId:uuid("workspace_id").references(()=>workspaces.id),type:text("type").notNull(),name:text("name").notNull(),endpoint:text("endpoint").notNull(),prefix:text("prefix").notNull().default("knowledge"),credentials:text("credentials").notNull(),encryptionKey:text("encryption_key"),encryptionFingerprint:text("encryption_fingerprint"),schedule:text("schedule").notNull().default("manual"),retainDaily:integer("retain_daily").notNull().default(7),retainWeekly:integer("retain_weekly").notNull().default(4),enabled:boolean("enabled").notNull().default(true),createdBy:uuid("created_by").notNull().references(()=>users.id),lastRunAt:timestamp("last_run_at",{withTimezone:true}),lastRestoreTestAt:timestamp("last_restore_test_at",{withTimezone:true}),lastRestoreTestStatus:text("last_restore_test_status"),createdAt:timestamp("created_at",{withTimezone:true}).defaultNow().notNull()});
 export const backupRuns=pgTable("backup_runs",{id:uuid("id").defaultRandom().primaryKey(),targetId:uuid("target_id").notNull().references(()=>backupTargets.id),workspaceId:uuid("workspace_id").references(()=>workspaces.id),status:text("status").notNull().default("pending"),bytes:bigint("bytes",{mode:"number"}),checksumSha256:text("checksum_sha256"),remotePath:text("remote_path"),error:text("error"),manifest:jsonb("manifest"),startedAt:timestamp("started_at",{withTimezone:true}),finishedAt:timestamp("finished_at",{withTimezone:true}),createdAt:timestamp("created_at",{withTimezone:true}).defaultNow().notNull()});

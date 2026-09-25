@@ -19,6 +19,8 @@ export const ErrorCodes = {
   RATE_LIMIT: "RATE_LIMIT",
   AI_NOT_CONFIGURED: "AI_NOT_CONFIGURED",
   AI_PROVIDER_ERROR: "AI_PROVIDER_ERROR",
+  /** 平台 AI 当天的次数用完了。 */
+  AI_QUOTA_EXCEEDED: "AI_QUOTA_EXCEEDED",
   PUSH_FAILED: "PUSH_FAILED",
   /** 服务端自己炸了。以前这种情况一律回 VALIDATION，客户端分不清是自己传错还是服务器出错。 */
   INTERNAL: "INTERNAL",
@@ -58,6 +60,7 @@ export const httpStatus: Record<ErrorCode, number> = {
   RATE_LIMIT: 429,
   AI_NOT_CONFIGURED: 422,
   AI_PROVIDER_ERROR: 502,
+  AI_QUOTA_EXCEEDED: 429,
   PUSH_FAILED: 502,
   INTERNAL: 500,
 };

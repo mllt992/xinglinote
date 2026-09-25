@@ -48,7 +48,7 @@ function ago(iso: string) {
 }
 const when = (iso: string) => new Date(iso).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const errMsg = (e: unknown) => (e as Error).message || "请稍后再试";
-const aiErr = (e: unknown) => (e as { code?: string }).code === "AI_NOT_CONFIGURED" ? "这个工作区还没配置 AI 提供商，请管理员在设置里配置。" : errMsg(e);
+const aiErr = (e: unknown) => (e as { code?: string }).code === "AI_NOT_CONFIGURED" ? "还没有可用的 AI，可以在「AI 与自动化」里设置，或联系站点管理员开放平台 AI。" : errMsg(e);
 
 function Header({ wsId, children }: { wsId: string; children?: React.ReactNode }) {
   const nav = useNavigate();

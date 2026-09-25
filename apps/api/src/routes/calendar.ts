@@ -18,7 +18,7 @@ import { writeNoteFile } from "../lib/files.ts";
 import { completeCalendarItem, DEFAULT_TZ, localDayKey, occurrencesOf, rescheduleReminders, wallParts, wallToUtc } from "../lib/calendar.ts";
 import { itemsToTemplate, MAX_TEMPLATE_ITEMS, planTemplate, type TemplateItem } from "../lib/calendar-template.ts";
 import { assertPublicUrl, buildIcs, syncSubscription } from "../lib/ics.ts";
-import { aiProvider, chatAi } from "../lib/ai.ts";
+import { aiChatProvider, chatAi, usageMeta } from "../lib/ai.ts";
 import { dedupe, existingTaskTitles, extractPrompt, parseCandidates } from "../lib/task-extract.ts";
 import { parseQuickAdd } from "../lib/quick-add.ts";
 
@@ -1067,8 +1067,8 @@ calendarRoutes.post("/workspaces/:id/calendar/extract-tasks", async c => {
   if (note.workspaceId !== workspaceId) throw fail("NOT_FOUND", "笔记不存在");
   if (!note.bodyMd.trim()) throw fail("VALIDATION", "这篇笔记还是空的");
 
-  const provider = await aiProvider(workspaceId, user.id);
-  if (!provider) throw fail("AI_NOT_CONFIGURED", "请先配置 AI 提供商");
+  const provider = await aiChatProvider(workspaceId, user.id);
+  if (!provider) throw fail("AI_NOT_CONFIGURED", "还没有可用的 AI，请在「AI 与自动化」里设置，或联系站点管理员开放平台 AI");
   const tz = DEFAULT_TZ;
   const out = await chatAi(provider, extractPrompt(note.title, note.bodyMd.slice(0, 12_000), localDayKey(new Date(), tz)));
   const parsed = parseCandidates(out.content);
@@ -1082,7 +1082,7 @@ calendarRoutes.post("/workspaces/:id/calendar/extract-tasks", async c => {
 
   await db.insert(aiUsage).values({
     userId: user.id, workspaceId, action: "extract_tasks", model: provider.chatModel,
-    inputTokens: out.usage.prompt_tokens ?? 0, outputTokens: out.usage.completion_tokens ?? 0,
+    inputTokens: out.usage.prompt_tokens ?? 0, outputTokens: out.usage.completion_tokens ?? 0, ...usageMeta(provider),
   });
   await audit(workspaceId, user.id, "calendar.tasks.extract", note.id, { candidates: candidates.length, dropped: parsed.length - candidates.length }, "note");
   return ok(c, {

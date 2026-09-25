@@ -4,7 +4,7 @@ import { scoreNote, tokenize, type QueryPart } from "@kb/core";
 import { db } from "../db/client.ts";
 import { aiUsage, attachments, notes } from "../db/schema.ts";
 import { noteAccess } from "./note-access.ts";
-import { aiEmbeddingProvider, aiProvider, chatAi, embed, mediaCaption, streamChatAi, vector } from "./ai.ts";
+import { aiChatProvider, aiEmbeddingProvider, aiProvider, chatAi, embed, mediaCaption, streamChatAi, usageMeta, vector, type ResolvedChatProvider } from "./ai.ts";
 import { likeContains } from "./like.ts";
 
 type RetrieveInput = {
@@ -338,8 +338,8 @@ type AskInput = {
 };
 
 export async function askKnowledge(input: AskInput) {
-  const p = await aiProvider(input.workspaceId, input.userId);
-  if (!p) throw fail("AI_NOT_CONFIGURED", "请先配置 AI 提供商");
+  const p = await aiChatProvider(input.workspaceId, input.userId);
+  if (!p) throw fail("AI_NOT_CONFIGURED", "还没有可用的 AI，请在「AI 与自动化」里设置，或联系站点管理员开放平台 AI");
   const rows = askNeedsNotes(input.question)
     ? hitsSupportQuestion(input.question, await retrieve({ ...input, query: input.question, mode: "hybrid", limit: 8 }))
     : [];
@@ -348,8 +348,8 @@ export async function askKnowledge(input: AskInput) {
 
 /** 与 askKnowledge 共用检索、提示和引用校验，只把模型输出逐块交给 HTTP 层。 */
 export async function streamAskKnowledge(input: AskInput, onDelta: (delta: string) => void | Promise<void>) {
-  const p = await aiProvider(input.workspaceId, input.userId);
-  if (!p) throw fail("AI_NOT_CONFIGURED", "请先配置 AI 提供商");
+  const p = await aiChatProvider(input.workspaceId, input.userId);
+  if (!p) throw fail("AI_NOT_CONFIGURED", "还没有可用的 AI，请在「AI 与自动化」里设置，或联系站点管理员开放平台 AI");
   const rows = askNeedsNotes(input.question)
     ? hitsSupportQuestion(input.question, await retrieve({ ...input, query: input.question, mode: "hybrid", limit: 8 }))
     : [];
@@ -400,8 +400,8 @@ export function markCitationVersions(
 
 async function answerFromHits(workspaceId: string, userId: string, question: string, rows: KnowledgeSourceHit[], history?: AskHistoryTurn[], maxContextChars?: number) {
   const packed = packAskContext(rows, maxContextChars ?? ASK_MAX_CONTEXT_CHARS);
-  const p = await aiProvider(workspaceId, userId);
-  if (!p) throw fail("AI_NOT_CONFIGURED", "请先配置 AI 提供商");
+  const p = await aiChatProvider(workspaceId, userId);
+  if (!p) throw fail("AI_NOT_CONFIGURED", "还没有可用的 AI，请在「AI 与自动化」里设置，或联系站点管理员开放平台 AI");
   const grounded = packed.length > 0;
   const messages = [
     { role: "system", content: grounded ? GROUNDED_SYSTEM : GENERAL_SYSTEM },
@@ -409,7 +409,7 @@ async function answerFromHits(workspaceId: string, userId: string, question: str
     { role: "user", content: grounded ? formatAskUserMessage(packed, question) : question },
   ];
   const out = await chatAi(p, messages);
-  return finishAnswer(workspaceId, userId, p.chatModel, rows, packed, grounded, out.content, out.usage);
+  return finishAnswer(workspaceId, userId, p, rows, packed, grounded, out.content, out.usage);
 }
 
 async function streamAnswerFromHits(
@@ -422,8 +422,8 @@ async function streamAnswerFromHits(
   maxContextChars?: number,
 ) {
   const packed = packAskContext(rows, maxContextChars ?? ASK_MAX_CONTEXT_CHARS);
-  const p = await aiProvider(workspaceId, userId);
-  if (!p) throw fail("AI_NOT_CONFIGURED", "请先配置 AI 提供商");
+  const p = await aiChatProvider(workspaceId, userId);
+  if (!p) throw fail("AI_NOT_CONFIGURED", "还没有可用的 AI，请在「AI 与自动化」里设置，或联系站点管理员开放平台 AI");
   const grounded = packed.length > 0;
   const messages = [
     { role: "system", content: grounded ? GROUNDED_SYSTEM : GENERAL_SYSTEM },
@@ -439,13 +439,13 @@ async function streamAnswerFromHits(
     }
     if (event.usage) usage = event.usage;
   }
-  return finishAnswer(workspaceId, userId, p.chatModel, rows, packed, grounded, content, usage);
+  return finishAnswer(workspaceId, userId, p, rows, packed, grounded, content, usage);
 }
 
 async function finishAnswer(
   workspaceId: string,
   userId: string,
-  model: string,
+  p: ResolvedChatProvider,
   rows: KnowledgeSourceHit[],
   packed: KnowledgeSourceHit[],
   grounded: boolean,
@@ -462,7 +462,7 @@ async function finishAnswer(
     : [];
   const citations = markCitationVersions(packed, citedIndexes, new Map(currentRows.map(n => [n.id, n.version])));
   const sourceVersionChanged = citations.some(c => !c.versionMatchesCurrent);
-  await db.insert(aiUsage).values({ userId, workspaceId, action: "ask", model, inputTokens: usage.prompt_tokens ?? 0, outputTokens: usage.completion_tokens ?? 0 });
+  await db.insert(aiUsage).values({ userId, workspaceId, action: "ask", model: p.chatModel, inputTokens: usage.prompt_tokens ?? 0, outputTokens: usage.completion_tokens ?? 0, ...usageMeta(p) });
   return {
     answer: content,
     citations,
