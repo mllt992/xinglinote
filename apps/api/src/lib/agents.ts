@@ -1,8 +1,9 @@
 import { and, count, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { HANDLE_RE, fail, parseMentions } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { agentReplies, agents, backgroundJobs, comments, instanceSettings, notebooks, notes, notifications, posts, users } from "../db/schema.ts";
-import { chatAi } from "./ai.ts";
+import { agentReplies, agents, aiProviders, backgroundJobs, comments, instanceSettings, notebooks, notes, notifications, posts, users, workspaces, aiUsage } from "../db/schema.ts";
+import { aiProvider, channelDefaultModel, chatAi, usageMeta } from "./ai.ts";
+import { assertPlatformAiQuota } from "./ai-quota.ts";
 import { sanitizeAgentReply } from "./agents-text.ts";
 import { feedPostHref } from "./comments.ts";
 import { keywordNeedles, rankKeywordNotes } from "./knowledge-ai.ts";
@@ -47,7 +48,8 @@ export function publicAgent(row: AgentRow) {
   };
 }
 
-export function adminAgent(row: AgentRow) {
+export function adminAgent(row: AgentRow, provider?: { name: string } | null) {
+  const own = row.aiSource === "own";
   return {
     ...publicAgent(row),
     systemPrompt: row.systemPrompt,
@@ -55,14 +57,46 @@ export function adminAgent(row: AgentRow) {
     allowSquare: row.allowSquare,
     allowCircle: row.allowCircle,
     knowledgeEnabled: row.knowledgeEnabled,
-    baseUrl: row.baseUrl,
+    aiSource: row.aiSource,
+    providerId: row.providerId,
+    providerName: provider?.name ?? null,
+    // 平台渠道和「自动」都不把地址、密钥带出去。管理员要看平台渠道的地址，去「平台 AI」。
+    baseUrl: own ? row.baseUrl : "",
     chatModel: row.chatModel,
-    keyConfigured: !!row.apiKey,
-    keySuffix: keySuffix(row.apiKey),
+    keyConfigured: own && !!row.apiKey,
+    keySuffix: own ? keySuffix(row.apiKey) : "",
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
 }
+
+export type ResolvedAgentModel = { baseUrl: string; chatModel: string; apiKey: string; platform: boolean; providerId: string | null };
+
+/** 智能体这次回复用哪条渠道。auto 按触发者在该工作区的自动规则；没有工作区时只用平台默认。 */
+export async function resolveAgentModel(agent: AgentRow, ctx: { userId: string; workspaceId: string | null }): Promise<ResolvedAgentModel> {
+  if (agent.aiSource === "platform") {
+    if (!agent.providerId) throw fail("AI_NOT_CONFIGURED", "这个智能体的平台渠道已不可用，请到实例后台重新选择");
+    const [p] = await db.select().from(aiProviders).where(and(eq(aiProviders.id, agent.providerId), eq(aiProviders.platform, true), eq(aiProviders.enabled, true)));
+    if (!p) throw fail("AI_NOT_CONFIGURED", "这个智能体用的平台渠道已停用，请到实例后台换一个");
+    const models = Array.isArray(p.chatModels) ? p.chatModels.filter((m): m is string => typeof m === "string") : [];
+    const model = agent.chatModel && models.includes(agent.chatModel) ? agent.chatModel : channelDefaultModel(p);
+    if (!model) throw fail("AI_NOT_CONFIGURED", "这个平台渠道还没有可用的模型");
+    return { baseUrl: p.baseUrl, chatModel: model, apiKey: p.apiKey, platform: true, providerId: p.id };
+  }
+  if (agent.aiSource === "auto") {
+    const picked = ctx.workspaceId ? await aiProvider(ctx.workspaceId, ctx.userId) : await aiProviderFallbackPlatform();
+    if (!picked) throw fail("AI_NOT_CONFIGURED", "还没有可用的 AI，请在「AI 与自动化」里设置，或联系站点管理员开放平台 AI");
+    return { baseUrl: picked.baseUrl, chatModel: picked.chatModel, apiKey: picked.apiKey, platform: !!picked.platform, providerId: picked.id };
+  }
+  if (!agent.baseUrl || !agent.chatModel) throw fail("AI_NOT_CONFIGURED", "这个智能体还没填自己的模型");
+  return { baseUrl: agent.baseUrl, chatModel: agent.chatModel, apiKey: agent.apiKey, platform: false, providerId: null };
+}
+
+async function aiProviderFallbackPlatform() {
+  const [row] = await db.select().from(aiProviders).where(and(eq(aiProviders.platform, true), eq(aiProviders.platformDefault, true), eq(aiProviders.enabled, true)));
+  return row && channelDefaultModel(row) ? { ...row, chatModel: channelDefaultModel(row) } : undefined;
+}
+
 
 function keySuffix(value: string) {
   try { return suffix(value); } catch { return ""; }
@@ -231,6 +265,12 @@ function systemPrompt(agent: AgentRow) {
   ].filter(Boolean).join("\n");
 }
 
+
+async function personalWorkspaceId(userId: string) {
+  const [row] = await db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.personalUserId, userId)).limit(1);
+  return row?.id ?? null;
+}
+
 export async function executeAgentReply(payload: AgentReplyJob) {
   const [inst] = await db.select({ aiEnabled: instanceSettings.aiEnabled }).from(instanceSettings);
   if (!inst?.aiEnabled) throw new Error("实例关了 AI，智能体不会回复");
@@ -250,10 +290,12 @@ export async function executeAgentReply(payload: AgentReplyJob) {
   if (Number(recent ?? 0) >= AGENT_REPLY_HOURLY) throw new Error("智能体回复已达每小时上限");
 
   let trigger = post.body;
+  let actorId = post.authorUserId;
   if (payload.sourceType === "comment") {
     const [comment] = await db.select().from(comments).where(eq(comments.id, payload.sourceId));
     if (!comment || comment.status !== "visible" || comment.targetId !== post.id) throw new Error("触发回复的评论已经不可见");
     trigger = comment.body;
+    if (comment.authorUserId) actorId = comment.authorUserId;
   }
 
   const [author] = await db.select({ displayName: users.displayName, handle: users.handle }).from(users).where(eq(users.id, post.authorUserId));
@@ -269,11 +311,16 @@ export async function executeAgentReply(payload: AgentReplyJob) {
     }
   }
 
-  await assertSafeOutboundUrl(agent.baseUrl, "智能体模型地址");
+  // 广场动态没有工作区：自动选择只用平台默认渠道。记账仍需要一个工作区，用触发者的个人工作区。
+  const scopeWorkspaceId = post.workspaceId;
+  const ledgerWorkspaceId = post.workspaceId ?? await personalWorkspaceId(actorId);
+  const model = await resolveAgentModel(agent, { userId: actorId, workspaceId: scopeWorkspaceId });
+  if (model.platform) await assertPlatformAiQuota(actorId, model.providerId);
+  await assertSafeOutboundUrl(model.baseUrl, "智能体模型地址");
   const out = await chatAi({
-    baseUrl: agent.baseUrl.replace(/\/$/, ""),
-    chatModel: agent.chatModel,
-    apiKey: agent.apiKey,
+    baseUrl: model.baseUrl.replace(/\/$/, ""),
+    chatModel: model.chatModel,
+    apiKey: model.apiKey,
   }, [
     { role: "system", content: systemPrompt(agent) },
     { role: "user", content: parts.join("\n\n") },
@@ -281,7 +328,6 @@ export async function executeAgentReply(payload: AgentReplyJob) {
 
   const body = sanitizeAgentReply(out.content);
   if (!body) throw new Error("模型没有返回文字");
-
   const href = feedPostHref(post);
   await db.transaction(async tx => {
     const [dup] = await tx.select({ id: agentReplies.id }).from(agentReplies).where(and(
@@ -290,6 +336,13 @@ export async function executeAgentReply(payload: AgentReplyJob) {
       eq(agentReplies.sourceId, payload.sourceId),
     )).limit(1);
     if (dup) return;
+    if (model.platform && ledgerWorkspaceId) {
+      await tx.insert(aiUsage).values({
+        userId: actorId, workspaceId: ledgerWorkspaceId, action: "agent", model: model.chatModel,
+        inputTokens: out.usage.prompt_tokens ?? 0, outputTokens: out.usage.completion_tokens ?? 0,
+        ...usageMeta({ id: model.providerId ?? undefined, platform: true }),
+      });
+    }
     const [row] = await tx.insert(comments).values({
       targetType: "post",
       targetId: post.id,

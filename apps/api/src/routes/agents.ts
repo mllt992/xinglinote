@@ -1,15 +1,16 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { agents, blobStore } from "../db/schema.ts";
+import { agents, aiProviders, aiUsage, blobStore, workspaces } from "../db/schema.ts";
 import { env } from "../env.ts";
 import { ok } from "../http.ts";
-import { adminAgent, assertAgentHandle, listPublicAgents, publicAgent, sealAgentKey } from "../lib/agents.ts";
-import { chatAi } from "../lib/ai.ts";
+import { adminAgent, assertAgentHandle, listPublicAgents, publicAgent, resolveAgentModel, sealAgentKey } from "../lib/agents.ts";
+import { chatAi, usageMeta } from "../lib/ai.ts";
+import { assertPlatformAiQuota } from "../lib/ai-quota.ts";
 import { putBlob, releaseBlob } from "../lib/blobs.ts";
 import { assertAttachmentType } from "../lib/file-type.ts";
 import { assertSafeOutboundUrl } from "../lib/net-guard.ts";
@@ -38,10 +39,47 @@ const upsert = z.object({
   allowSquare: z.boolean().optional(),
   allowCircle: z.boolean().optional(),
   knowledgeEnabled: z.boolean().optional(),
-  baseUrl: z.string().url(),
-  chatModel: z.string().trim().min(1).max(120),
+  /** own 自己的接口；platform 平台渠道；auto 回复时按工作区规则选择。 */
+  aiSource: z.enum(["own", "platform", "auto"]).default("own"),
+  providerId: z.string().uuid().nullable().optional(),
+  baseUrl: z.string().max(500).optional(),
+  chatModel: z.string().trim().max(120).optional(),
   apiKey: z.string().max(400).optional(),
 });
+
+
+async function withProviders(rows: Array<typeof agents.$inferSelect>) {
+  const ids = [...new Set(rows.map(r => r.providerId).filter((id): id is string => !!id))];
+  const found = ids.length ? await db.select({ id: aiProviders.id, name: aiProviders.name }).from(aiProviders).where(inArray(aiProviders.id, ids)) : [];
+  const byId = new Map(found.map(p => [p.id, p]));
+  return rows.map(r => adminAgent(r, r.providerId ? byId.get(r.providerId) ?? null : null));
+}
+
+/** 按来源整理要写入的连接信息。平台渠道和自动都不保存地址和密钥。 */
+async function modelValues(body: { aiSource?: "own" | "platform" | "auto"; providerId?: string | null; baseUrl?: string; chatModel?: string; apiKey?: string }, current?: typeof agents.$inferSelect) {
+  const source = body.aiSource ?? current?.aiSource ?? "own";
+  if (source === "platform") {
+    const providerId = body.providerId === undefined ? current?.providerId : body.providerId;
+    if (!providerId) throw fail("VALIDATION", "请选择一条平台渠道");
+    const [p] = await db.select().from(aiProviders).where(and(eq(aiProviders.id, providerId), eq(aiProviders.platform, true), eq(aiProviders.enabled, true)));
+    if (!p) throw fail("VALIDATION", "这条平台渠道不可用");
+    const models = Array.isArray(p.chatModels) ? p.chatModels.filter((m): m is string => typeof m === "string") : [];
+    const chatModel = (body.chatModel ?? current?.chatModel ?? "").trim();
+    if (!chatModel || !models.includes(chatModel)) throw fail("VALIDATION", "请从平台提供的模型里选择");
+    return { aiSource: "platform" as const, providerId: p.id, baseUrl: "", chatModel, apiKey: current?.apiKey ?? sealAgentKey("") };
+  }
+  if (source === "auto") return { aiSource: "auto" as const, providerId: null, baseUrl: "", chatModel: "", apiKey: current?.apiKey ?? sealAgentKey("") };
+  const baseUrl = (body.baseUrl ?? current?.baseUrl ?? "").trim().replace(/\/$/, "");
+  const chatModel = (body.chatModel ?? current?.chatModel ?? "").trim();
+  if (!baseUrl || !chatModel) throw fail("VALIDATION", "请填写接口地址和模型名");
+  let parsed: URL;
+  try { parsed = new URL(baseUrl); } catch { throw fail("VALIDATION", "接口地址不正确"); }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw fail("VALIDATION", "接口地址不正确");
+  await assertSafeOutboundUrl(baseUrl, "智能体模型地址");
+  const apiKey = body.apiKey?.trim() && !body.apiKey.startsWith("••") ? sealAgentKey(body.apiKey) : current?.apiKey;
+  if (!apiKey) throw fail("VALIDATION", "请填写密钥");
+  return { aiSource: "own" as const, providerId: null, baseUrl, chatModel, apiKey };
+}
 
 const AVATAR_MAX = 1024 * 1024;
 const AVATAR_MIME = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
@@ -73,16 +111,14 @@ agentRoutes.get("/agents/:id/avatar", async c => {
 agentRoutes.get("/admin/agents", async c => {
   await admin(c);
   const rows = await db.select().from(agents).where(isNull(agents.deletedAt)).orderBy(desc(agents.createdAt));
-  return ok(c, { agents: rows.map(adminAgent) });
+  return ok(c, { agents: await withProviders(rows) });
 });
 
 agentRoutes.post("/admin/agents", async c => {
   const u = await admin(c);
   const body = upsert.parse(await c.req.json());
   const handle = await assertAgentHandle(body.handle);
-  if (!body.apiKey?.trim() || body.apiKey.startsWith("••")) throw fail("VALIDATION", "请填写模型 API Key", { apiKey: "必填" });
-  const baseUrl = body.baseUrl.replace(/\/$/, "");
-  await assertSafeOutboundUrl(baseUrl, "智能体模型地址");
+  const model = await modelValues(body);
   const [row] = await db.insert(agents).values({
     handle,
     displayName: body.displayName,
@@ -94,12 +130,10 @@ agentRoutes.post("/admin/agents", async c => {
     allowSquare: body.allowSquare ?? true,
     allowCircle: body.allowCircle ?? true,
     knowledgeEnabled: body.knowledgeEnabled ?? false,
-    baseUrl,
-    chatModel: body.chatModel,
-    apiKey: sealAgentKey(body.apiKey),
+    ...model,
     createdBy: u.id,
   }).returning();
-  return ok(c, adminAgent(row), 201);
+  return ok(c, (await withProviders([row]))[0], 201);
 });
 
 agentRoutes.patch("/admin/agents/:id", async c => {
@@ -123,17 +157,9 @@ agentRoutes.patch("/admin/agents/:id", async c => {
   if (body.allowSquare !== undefined) values.allowSquare = body.allowSquare;
   if (body.allowCircle !== undefined) values.allowCircle = body.allowCircle;
   if (body.knowledgeEnabled !== undefined) values.knowledgeEnabled = body.knowledgeEnabled;
-  if (body.chatModel !== undefined) values.chatModel = body.chatModel;
-  if (body.baseUrl !== undefined) {
-    const baseUrl = body.baseUrl.replace(/\/$/, "");
-    await assertSafeOutboundUrl(baseUrl, "智能体模型地址");
-    values.baseUrl = baseUrl;
-  }
-  if (body.apiKey !== undefined && body.apiKey.trim() && !body.apiKey.startsWith("••")) {
-    values.apiKey = sealAgentKey(body.apiKey);
-  }
+  Object.assign(values, await modelValues(body, cur));
   const [saved] = await db.update(agents).set(values).where(eq(agents.id, cur.id)).returning();
-  return ok(c, adminAgent(saved));
+  return ok(c, (await withProviders([saved]))[0]);
 });
 
 agentRoutes.delete("/admin/agents/:id", async c => {
@@ -160,20 +186,30 @@ agentRoutes.post("/admin/agents/avatar", async c => {
 });
 
 agentRoutes.post("/admin/agents/:id/test", async c => {
-  await admin(c);
+  const u = await admin(c);
   const [agent] = await db.select().from(agents).where(and(eq(agents.id, c.req.param("id")), isNull(agents.deletedAt)));
   if (!agent) throw fail("NOT_FOUND", "智能体不存在");
-  await assertSafeOutboundUrl(agent.baseUrl, "智能体模型地址");
+  const [ws] = await db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.personalUserId, u.id)).limit(1);
+  const model = await resolveAgentModel(agent, { userId: u.id, workspaceId: ws?.id ?? null });
+  if (model.platform) await assertPlatformAiQuota(u.id, model.providerId);
+  await assertSafeOutboundUrl(model.baseUrl, "智能体模型地址");
   const out = await chatAi({
-    baseUrl: agent.baseUrl.replace(/\/$/, ""),
-    chatModel: agent.chatModel,
-    apiKey: agent.apiKey,
+    baseUrl: model.baseUrl.replace(/\/$/, ""),
+    chatModel: model.chatModel,
+    apiKey: model.apiKey,
   }, [
     { role: "system", content: "只回一个词：pong。不要解释。" },
     { role: "user", content: "ping" },
   ], { temperature: 0.2, timeoutMs: 60_000, maxTokens: 32 });
   const reply = sanitizeAgentReply(out.content);
   if (!reply) throw fail("AI_PROVIDER_ERROR", "模型没有返回文字");
+  if (model.platform && ws) {
+    await db.insert(aiUsage).values({
+      userId: u.id, workspaceId: ws.id, action: "agent:test", model: model.chatModel,
+      inputTokens: out.usage.prompt_tokens ?? 0, outputTokens: out.usage.completion_tokens ?? 0,
+      ...usageMeta({ id: model.providerId ?? undefined, platform: true }),
+    });
+  }
   return ok(c, { reply });
 });
 

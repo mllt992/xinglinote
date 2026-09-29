@@ -26,7 +26,7 @@ import { AppError } from "@kb/shared";
 function shouldRetry(e:unknown){
   const msg=e instanceof Error?e.message:String(e);
   if(/实例关了 AI|智能体已停用|密文解不开|模型没有返回文字|找不到这个模型|请检查 Key/.test(msg))return false;
-  if(e instanceof AppError&&e.status>=400&&e.status<500&&e.status!==429)return false;
+  if(e instanceof AppError&&(e.code==="AI_QUOTA_EXCEEDED"||e.status>=400&&e.status<500&&e.status!==429))return false;
   const code=/\((\d{3})\)/.exec(msg)?.[1];
   if(code&&["400","401","403","404","422"].includes(code))return false;
   return true;

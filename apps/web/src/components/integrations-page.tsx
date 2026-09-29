@@ -28,7 +28,7 @@ type AiSettings = {
   embeddingModel:string|null;autoEmbed:boolean;
 };
 type Effective = {providerId:string;name:string;model:string;platform:boolean;personal:boolean};
-type Quota = {limit:number|null;used:number;remaining:number|null};
+type Quota = {limit:number|null;used:number;remaining:number|null;tokens?:{limit:number|null;used:number;remaining:number|null}};
 type ProviderResponse = {providers:Provider[];settings:AiSettings;effective?:Effective|null;quota?:Quota};
 type Ws = {id:string;name:string;role:string};
 type ChannelDraft = {name:string;baseUrl:string;apiKey:string;models:string[];workspaceIds:string[];clearApiKey:boolean};
@@ -160,12 +160,14 @@ function WorkspaceModelCard({providers,settings,setSettings,effective,quota,savi
           <p className="flex flex-wrap items-center gap-1.5 text-xs"><span className="font-medium">{provider?.name??"已失效的渠道"}</span>{settings.chatModel&&<span className="font-mono text-muted-foreground">{settings.chatModel}</span>}{provider&&<SourceBadge platform={!!provider.platform} label={provider.platform?"平台提供":"工作区渠道"}/>}</p>
           <p className="text-xs leading-5 text-muted-foreground">工作区所有成员都会使用这个模型。改回「自动」后，成员可以优先用自己的私人渠道。</p>
         </>}
-        {quota&&(quota.limit!==null||quota.used>0)&&<div className="border-t border-border pt-3 text-xs text-muted-foreground">
+        {quota&&(quota.limit!==null||quota.used>0||(quota.tokens?.limit??null)!==null||(quota.tokens?.used??0)>0)&&<div className="border-t border-border pt-3 text-xs text-muted-foreground">
           {quota.limit===null?<>今天已使用平台提供的 AI {quota.used} 次，不限次数。</>
             :quota.limit===0?<>站点暂未给你开放平台提供的 AI，可以使用自己的渠道。</>
-            :<><div className="flex items-center justify-between"><span>今天平台 AI 额度</span><span className="tabular-nums font-medium text-foreground">{quota.used} / {quota.limit}</span></div>
-              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-border"><div className={cn("h-full rounded-full",quota.used>=quota.limit?"bg-[var(--warning)]":"bg-primary")} style={{width:`${Math.min(100,quota.used/quota.limit*100)}%`}}/></div>
-              <p className="mt-1.5">北京时间每天 0 点重置；使用自己的渠道不占额度。</p></>}
+            :<><div className="flex items-center justify-between"><span>今天平台 AI 次数</span><span className="tabular-nums font-medium text-foreground">{quota.used} / {quota.limit}</span></div>
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-border"><div className={cn("h-full rounded-full",quota.used>=quota.limit?"bg-[var(--warning)]":"bg-primary")} style={{width:`${Math.min(100,quota.used/quota.limit*100)}%`}}/></div></>}
+          {quota.tokens&&quota.tokens.limit!==null&&<div className="mt-2 flex items-center justify-between"><span>今天平台 AI 用量</span><span className="tabular-nums font-medium text-foreground">{quota.tokens.used} / {quota.tokens.limit}</span></div>}
+          {quota.tokens&&quota.tokens.limit===null&&quota.tokens.used>0&&<p className="mt-2">今天用量 {quota.tokens.used}，不限。</p>}
+          <p className="mt-1.5">北京时间每天 0 点重置；使用自己的渠道不占额度。</p>
         </div>}
       </div>
     </div>
