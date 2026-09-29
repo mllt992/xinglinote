@@ -9,6 +9,7 @@ import {
 import { TaskTagFields } from "./project-tags";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
+import { useToast } from "./ui/toast";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 
@@ -26,7 +27,7 @@ export function ProjectDialog({ open, onOpenChange, onSubmit, project, canChange
   const [dueAt, setDueAt] = useState(isoDate(project?.dueAt ?? null));
   const [workspaceId, setWorkspaceId] = useState(initialWorkspaceId ?? "");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const toast = useToast();
   const workspaceOptionsKey = workspaces.map(workspace => workspace.id).join(",");
   useEffect(() => {
     if (!open) return;
@@ -35,15 +36,14 @@ export function ProjectDialog({ open, onOpenChange, onSubmit, project, canChange
     setColor(project?.color ?? "ink"); setVisibility(project?.visibility ?? "workspace");
     setStartAt(isoDate(project?.startAt ?? null)); setDueAt(isoDate(project?.dueAt ?? null));
     setWorkspaceId(initialWorkspaceId ?? workspaces[0]?.id ?? "");
-    setErr("");
   }, [open, project, initialWorkspaceId, workspaceOptionsKey]);
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!title.trim() || (!project && !workspaceId)) return;
-    setBusy(true); setErr("");
+    setBusy(true);
     try {
       await onSubmit({ title: title.trim(), description, status, color, startAt: toIso(startAt), dueAt: toIso(dueAt), ...(canChangeVisibility ? { visibility } : {}), ...(!project ? { workspaceId } : {}) });
-    } catch (x) { setErr((x as Error).message); }
+    } catch (x) { toast.error("没能保存", (x as Error).message); }
     finally { setBusy(false); }
   }
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent>
@@ -58,11 +58,11 @@ export function ProjectDialog({ open, onOpenChange, onSubmit, project, canChange
       </label>}
       <Input autoFocus={!!project} value={title} onChange={e => setTitle(e.target.value)} placeholder="项目名" />
       <Textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="一句话说明" />
-      <div className="grid grid-cols-2 gap-2">
-        <select className="h-9 rounded-lg border border-input bg-background px-2 text-sm" value={status} onChange={e => setStatus(e.target.value as Project["status"])}>
+      <div className="grid min-w-0 grid-cols-2 gap-2">
+        <select className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-sm" value={status} onChange={e => setStatus(e.target.value as Project["status"])}>
           {(["planning", "active", "paused", "done"] as const).map(s => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
         </select>
-        <select className="h-9 rounded-lg border border-input bg-background px-2 text-sm" value={visibility} disabled={!canChangeVisibility} onChange={e => setVisibility(e.target.value as Project["visibility"])}>
+        <select className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-sm" value={visibility} disabled={!canChangeVisibility} onChange={e => setVisibility(e.target.value as Project["visibility"])}>
           <option value="workspace">工作区可见</option>
           <option value="private">仅自己</option>
         </select>
@@ -70,8 +70,7 @@ export function ProjectDialog({ open, onOpenChange, onSubmit, project, canChange
         <Input type="date" value={dueAt} onChange={e => setDueAt(e.target.value)} />
       </div>
       <div className="flex gap-1">{(["ink", "accent", "good", "warn", "muted"] as const).map(c => <button type="button" key={c} onClick={() => setColor(c)} className={cn("size-6 rounded-full", COLOR_DOT[c], color === c && "ring-2 ring-offset-2 ring-foreground")} aria-label={c} />)}</div>
-      {err && <p className="text-sm text-destructive">{err}</p>}
-      <div className="flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>取消</Button><Button disabled={busy || !title.trim() || (!project && !workspaceId)}>{busy ? "保存中…" : project ? "保存" : "创建项目"}</Button></div>
+      <div className="flex flex-wrap justify-end gap-2"><Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>取消</Button><Button disabled={busy || !title.trim() || (!project && !workspaceId)}>{busy ? "保存中…" : project ? "保存" : "创建项目"}</Button></div>
     </form>
   </DialogContent></Dialog>;
 }
@@ -83,16 +82,16 @@ export function MoveProjectDialog({ open, project, currentWorkspaceName, targets
 }) {
   const [workspaceId, setWorkspaceId] = useState("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const toast = useToast();
   const targetOptionsKey = targets.map(target => target.id).join(",");
   useEffect(() => {
     if (!open) return;
-    setWorkspaceId(targets[0]?.id ?? ""); setErr("");
+    setWorkspaceId(targets[0]?.id ?? "");
   }, [open, targetOptionsKey]);
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!workspaceId || busy) return;
-    setBusy(true); setErr("");
+    setBusy(true);
     try {
       const result = await api<{ workspaceId: string; moved: { tasks: number; clearedAssignees: number } }>(`/api/v1/projects/${project.id}/move`, {
         method: "POST",
@@ -100,7 +99,7 @@ export function MoveProjectDialog({ open, project, currentWorkspaceName, targets
       });
       onOpenChange(false);
       onMoved(result.workspaceId, result.moved);
-    } catch (error) { setErr((error as Error).message); }
+    } catch (error) { toast.error("没能移动", (error as Error).message); }
     finally { setBusy(false); }
   }
   const targetName = targets.find(target => target.id === workspaceId)?.name ?? "目标工作区";
@@ -121,8 +120,7 @@ export function MoveProjectDialog({ open, project, currentWorkspaceName, targets
         </select>
       </label>
       <p className="text-xs leading-relaxed text-muted-foreground">若任务指派人不属于目标工作区，对应指派会被清空。正在运行计时时不会移动。</p>
-      {err && <p className="text-sm text-destructive">{err}</p>}
-      <div className="flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>取消</Button><Button disabled={busy || !workspaceId}>{busy ? "移动中…" : "确认移动"}</Button></div>
+      <div className="flex flex-wrap justify-end gap-2"><Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>取消</Button><Button disabled={busy || !workspaceId}>{busy ? "移动中…" : "确认移动"}</Button></div>
     </form>
   </DialogContent></Dialog>;
 }
@@ -156,7 +154,8 @@ export function TaskDialog({ open, task, columns, wsId, members, tags = [], mile
   const [draftTagIds, setDraftTagIds] = useState<string[]>([]);
   const [draftMilestoneId, setDraftMilestoneId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const toast = useToast();
+  const fail = (x: unknown) => toast.error("没能保存", (x as Error).message);
   useEffect(() => {
     if (!open) return;
     setTitle(task?.title ?? ""); setBodyMd(task?.bodyMd ?? "");
@@ -164,7 +163,7 @@ export function TaskDialog({ open, task, columns, wsId, members, tags = [], mile
     setPriority(task?.priority ?? 0);
     setEstimateMin(task?.estimateMin ? String(task.estimateMin) : "");
     setStartAt(isoDate(task?.startAt ?? null)); setDueAt(isoDate(task?.dueAt ?? null));
-    setAssigneeUserId(task?.assigneeUserId ?? ""); setChildTitle(""); setErr("");
+    setAssigneeUserId(task?.assigneeUserId ?? ""); setChildTitle("");
     setSourceNoteId(task?.sourceNoteId ?? null); setSourceNoteTitle(task?.sourceNoteTitle ?? null);
     setNoteQuery(""); setNoteHits([]);
     setDraftTagIds(task?.tags?.map(t => t.id) ?? []);
@@ -185,7 +184,7 @@ export function TaskDialog({ open, task, columns, wsId, members, tags = [], mile
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!title.trim() || !canEdit) return;
-    setBusy(true); setErr("");
+    setBusy(true);
     try {
       await onSubmit({
         title: title.trim(), bodyMd, status, priority,
@@ -195,23 +194,23 @@ export function TaskDialog({ open, task, columns, wsId, members, tags = [], mile
         sourceNoteId,
         ...(!task ? { tagIds: draftTagIds, milestoneId: draftMilestoneId } : {}),
       });
-    } catch (x) { setErr((x as Error).message); }
+    } catch (x) { fail(x); }
     finally { setBusy(false); }
   }
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent>
     <DialogHeader><DialogTitle>{task ? "任务" : "写下要交的事"}</DialogTitle><DialogDescription>不回写笔记正文。挂笔记只当入口。</DialogDescription></DialogHeader>
-    <form className="space-y-3" onSubmit={submit}>
+    <form className="min-w-0 space-y-3" onSubmit={submit}>
       <Input autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder="第一件要交的事" disabled={!canEdit} />
       <Textarea value={bodyMd} onChange={e => setBodyMd(e.target.value)} placeholder="备注，可选" disabled={!canEdit} />
-      <div className="grid grid-cols-2 gap-2">
-        <select className="h-9 rounded-lg border border-input bg-background px-2 text-sm" value={status} disabled={!canEdit} onChange={e => setStatus(e.target.value)}>
+      <div className="grid min-w-0 grid-cols-2 gap-2">
+        <select className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-sm" value={status} disabled={!canEdit} onChange={e => setStatus(e.target.value)}>
           {columns.map(c => <option key={c.key} value={c.key}>{c.title}</option>)}
         </select>
-        <select className="h-9 rounded-lg border border-input bg-background px-2 text-sm" value={priority} disabled={!canEdit} onChange={e => setPriority(Number(e.target.value))}>
+        <select className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-sm" value={priority} disabled={!canEdit} onChange={e => setPriority(Number(e.target.value))}>
           {PRI.map((l, i) => <option key={i} value={i}>{l}优先级</option>)}
         </select>
         <Input type="number" min={1} value={estimateMin} disabled={!canEdit} onChange={e => setEstimateMin(e.target.value)} placeholder="估时（分钟）" />
-        <select className="h-9 rounded-lg border border-input bg-background px-2 text-sm" value={assigneeUserId} disabled={!canEdit} onChange={e => setAssigneeUserId(e.target.value)}>
+        <select className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-sm" value={assigneeUserId} disabled={!canEdit} onChange={e => setAssigneeUserId(e.target.value)}>
           <option value="">不指派</option>
           {members.map(m => <option key={m.userId} value={m.userId}>{m.displayName}</option>)}
         </select>
@@ -247,20 +246,20 @@ export function TaskDialog({ open, task, columns, wsId, members, tags = [], mile
       </div>}
       {!canEdit && sourceNoteId && <button type="button" className="text-xs underline" onClick={() => onOpenNote(sourceNoteId)}>打开挂着的笔记{sourceNoteTitle ? `《${sourceNoteTitle}》` : ""}</button>}
       {(onCreateChild || !!task?.children?.length) && <div className="space-y-2">
-        {onCreateChild && <div className="flex gap-2">
+        {onCreateChild && <div className="flex min-w-0 gap-2">
           <Input value={childTitle} onChange={e => setChildTitle(e.target.value)} placeholder="加一层子任务" disabled={busy} onKeyDown={e => {
             if (e.key !== "Enter") return;
             e.preventDefault();
             const next = childTitle.trim();
             if (!next || busy) return;
-            setBusy(true); setErr("");
-            void onCreateChild(next).then(() => setChildTitle("")).catch(x => setErr((x as Error).message)).finally(() => setBusy(false));
+            setBusy(true);
+            void onCreateChild(next).then(() => setChildTitle("")).catch(fail).finally(() => setBusy(false));
           }} />
-          <Button type="button" size="sm" variant="outline" disabled={busy || !childTitle.trim()} onClick={() => {
+          <Button type="button" size="sm" variant="outline" className="shrink-0" disabled={busy || !childTitle.trim()} onClick={() => {
             const next = childTitle.trim();
             if (!next || busy) return;
-            setBusy(true); setErr("");
-            void onCreateChild(next).then(() => setChildTitle("")).catch(x => setErr((x as Error).message)).finally(() => setBusy(false));
+            setBusy(true);
+            void onCreateChild(next).then(() => setChildTitle("")).catch(fail).finally(() => setBusy(false));
           }}>加上</Button>
         </div>}
         {!!task?.children?.length && <>
@@ -274,26 +273,25 @@ export function TaskDialog({ open, task, columns, wsId, members, tags = [], mile
                 disabled={!onToggleChild || busy || child.status === "cancelled"}
                 onChange={e => {
                   if (!onToggleChild) return;
-                  setBusy(true); setErr("");
-                  void onToggleChild(child.id, e.target.checked).catch(x => setErr((x as Error).message)).finally(() => setBusy(false));
+                  setBusy(true);
+                  void onToggleChild(child.id, e.target.checked).catch(fail).finally(() => setBusy(false));
                 }}
                 aria-label={`完成 ${child.title}`}
               />
-              <span className={cn("min-w-0 flex-1 truncate text-sm", (isDoneStatus(child.status, columns) || child.status === "cancelled") && "text-muted-foreground line-through")}>{child.title}</span>
+              <span className={cn("min-w-0 flex-1 break-words text-sm", (isDoneStatus(child.status, columns) || child.status === "cancelled") && "text-muted-foreground line-through")}>{child.title}</span>
               {onDeleteChild && <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0" disabled={busy} aria-label={`删除 ${child.title}`} onClick={() => {
-                setBusy(true); setErr("");
-                void onDeleteChild(child.id).catch(x => setErr((x as Error).message)).finally(() => setBusy(false));
+                setBusy(true);
+                void onDeleteChild(child.id).catch(fail).finally(() => setBusy(false));
               }}><X className="size-3.5" /></Button>}
             </li>)}
           </ul>
         </>}
       </div>}
-      {err && <p className="text-sm text-destructive">{err}</p>}
-      <div className="flex justify-end gap-2">
+      <div className="flex flex-wrap justify-end gap-2">
         {task && canEdit && task.status !== "cancelled" && <Button type="button" variant="outline" disabled={busy} onClick={async () => {
-          setBusy(true); setErr("");
+          setBusy(true);
           try { await onSubmit({ status: "cancelled" }); }
-          catch (x) { setErr((x as Error).message); }
+          catch (x) { fail(x); }
           finally { setBusy(false); }
         }}>不做了</Button>}
         {onDelete && <Button type="button" variant="destructive" onClick={() => void onDelete()}>删除</Button>}

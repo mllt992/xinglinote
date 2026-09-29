@@ -16,7 +16,7 @@ export function DialogContent({ className, children, ...props }: React.Component
     <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px] motion-safe:data-[state=open]:animate-overlay-in" />
     <div className="pointer-events-none fixed inset-0 z-50 overflow-y-auto">
       <div className="flex min-h-full items-center justify-center p-4">
-        <DialogPrimitive.Content className={cn("pointer-events-auto relative grid w-full max-w-md gap-4 rounded-2xl border border-border bg-background p-6 shadow-2xl outline-none motion-safe:data-[state=open]:animate-dialog-in", className)} {...props}>
+        <DialogPrimitive.Content className={cn("pointer-events-auto relative grid w-full min-w-0 max-w-md gap-4 rounded-2xl border border-border bg-background p-6 shadow-2xl outline-none motion-safe:data-[state=open]:animate-dialog-in [&>*]:min-w-0", className)} {...props}>
           {children}
           <DialogPrimitive.Close className="absolute right-4 top-4 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"><X className="size-4" /></DialogPrimitive.Close>
         </DialogPrimitive.Content>
