@@ -211,8 +211,8 @@ export function CalendarItemEditor({ target, wsId, tz, canEdit, onClose, onSaved
           <Textarea value={form.bodyMd} disabled={readOnly} onChange={e => patch("bodyMd", e.target.value)} placeholder="可选，短备注就行" className="min-h-20" />
         </label>
 
-        <div className="grid grid-cols-2 gap-3">
-          <label className="grid gap-1.5">
+        <div className="grid min-w-0 grid-cols-2 gap-3">
+          <label className="grid min-w-0 gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">日期</span>
             <Input type="date" value={form.date} disabled={locked} onChange={e => patch("date", e.target.value)} />
           </label>
@@ -222,12 +222,12 @@ export function CalendarItemEditor({ target, wsId, tz, canEdit, onClose, onSaved
           </div>
         </div>
 
-        {!form.allDay && <div className="grid grid-cols-2 gap-3">
-          <label className="grid gap-1.5">
+        {!form.allDay && <div className="grid min-w-0 grid-cols-2 gap-3">
+          <label className="grid min-w-0 gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">{form.kind === "event" ? "开始" : "时间"}</span>
             <Input type="time" value={form.start} disabled={locked} onChange={e => patch("start", e.target.value)} />
           </label>
-          {form.kind === "event" && <label className="grid gap-1.5">
+          {form.kind === "event" && <label className="grid min-w-0 gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">结束</span>
             <Input type="time" value={form.end} disabled={locked} onChange={e => patch("end", e.target.value)} />
           </label>}
