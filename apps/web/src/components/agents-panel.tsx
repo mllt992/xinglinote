@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type Dispatch, type SetStateAction } from "react";
 import { Bot, Pencil, Plus, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { AgentAvatar } from "./agent-avatar";
@@ -6,7 +6,6 @@ import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { useConfirm } from "./ui/confirm";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
-import { FormError } from "./ui/form-error";
 import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
 import { Textarea } from "./ui/textarea";
@@ -24,6 +23,9 @@ export type AdminAgent = {
   allowSquare: boolean;
   allowCircle: boolean;
   knowledgeEnabled: boolean;
+  aiSource?: "own" | "platform" | "auto";
+  providerId?: string | null;
+  providerName?: string | null;
   baseUrl: string;
   chatModel: string;
   keyConfigured: boolean;
@@ -43,6 +45,8 @@ type Form = {
   allowSquare: boolean;
   allowCircle: boolean;
   knowledgeEnabled: boolean;
+  aiSource: "own" | "platform" | "auto";
+  providerId: string;
   baseUrl: string;
   chatModel: string;
   apiKey: string;
@@ -52,7 +56,7 @@ const EMPTY: Form = {
   handle: "", displayName: "", bio: "", avatarEmoji: "🤖", avatarSha256: null, avatarMime: null,
   systemPrompt: "你是这个知识库的助手。用简洁的中文回答动态里的问题，不知道就直说。",
   enabled: true, allowSquare: true, allowCircle: true, knowledgeEnabled: false,
-  baseUrl: "", chatModel: "", apiKey: "",
+  aiSource: "own", providerId: "", baseUrl: "", chatModel: "", apiKey: "",
 };
 
 const EMOJIS = ["🤖", "🧠", "📚", "✨", "🪄", "🦊", "🐱", "🧭"];
@@ -66,10 +70,8 @@ export function AgentsPanel() {
   const askConfirm = useConfirm();
   const [agents, setAgents] = useState<AdminAgent[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const [editing, setEditing] = useState<AdminAgent | null | "new">(null);
   const [form, setForm] = useState<Form>(EMPTY);
-  const [formErr, setFormErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
@@ -77,15 +79,14 @@ export function AgentsPanel() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = () => api<{ agents: AdminAgent[] }>("/api/v1/admin/agents")
-    .then(d => { setAgents(d.agents); setError(""); })
-    .catch(e => setError((e as Error).message))
+    .then(d => setAgents(d.agents))
+    .catch(e => toast.error("智能体没加载出来", (e as Error).message))
     .finally(() => setLoading(false));
 
   useEffect(() => { void load(); }, []);
 
   function openNew() {
     setForm(EMPTY);
-    setFormErr("");
     setPreview(null);
     setAvatarDirty(false);
     setEditing("new");
@@ -95,12 +96,12 @@ export function AgentsPanel() {
       handle: a.handle, displayName: a.displayName, bio: a.bio ?? "", avatarEmoji: a.avatarEmoji || "🤖",
       avatarSha256: null, avatarMime: null,
       systemPrompt: a.systemPrompt ?? "", enabled: a.enabled, allowSquare: a.allowSquare, allowCircle: a.allowCircle,
-      knowledgeEnabled: a.knowledgeEnabled, baseUrl: a.baseUrl, chatModel: a.chatModel,
+      knowledgeEnabled: a.knowledgeEnabled, aiSource: a.aiSource ?? "own", providerId: a.providerId ?? "",
+      baseUrl: a.baseUrl, chatModel: a.chatModel,
       apiKey: a.keyConfigured ? `••••${a.keySuffix}` : "",
     });
     setPreview(a.avatarUrl ?? null);
     setAvatarDirty(false);
-    setFormErr("");
     setEditing(a);
   }
 
@@ -114,7 +115,9 @@ export function AgentsPanel() {
   }
 
   async function save() {
-    setBusy(true); setFormErr("");
+    if (form.aiSource === "own" && (!form.baseUrl.trim() || !form.chatModel.trim())) return toast.error("还不能保存", "请填写接口地址和模型名。");
+    if (form.aiSource === "platform" && (!form.providerId || !form.chatModel.trim())) return toast.error("还不能保存", "请选择平台渠道和模型。");
+    setBusy(true);
     try {
       const body = {
         handle: form.handle.trim().toLowerCase(),
@@ -127,9 +130,11 @@ export function AgentsPanel() {
         allowSquare: form.allowSquare,
         allowCircle: form.allowCircle,
         knowledgeEnabled: form.knowledgeEnabled,
-        baseUrl: form.baseUrl.trim(),
-        chatModel: form.chatModel.trim(),
-        apiKey: form.apiKey,
+        aiSource: form.aiSource,
+        providerId: form.aiSource === "platform" ? form.providerId : null,
+        baseUrl: form.aiSource === "own" ? form.baseUrl.trim() : "",
+        chatModel: form.aiSource === "auto" ? "" : form.chatModel.trim(),
+        apiKey: form.aiSource === "own" ? form.apiKey : "",
       };
       if (editing === "new") await api("/api/v1/admin/agents", { method: "POST", body: JSON.stringify(body) });
       else if (editing) await api(`/api/v1/admin/agents/${editing.id}`, { method: "PATCH", body: JSON.stringify(body) });
@@ -137,7 +142,7 @@ export function AgentsPanel() {
       setEditing(null);
       await load();
     } catch (e) {
-      setFormErr((e as Error).message);
+      toast.error("没能保存", (e as Error).message);
     } finally { setBusy(false); }
   }
 
@@ -173,9 +178,8 @@ export function AgentsPanel() {
       <Button onClick={openNew}><Plus />新建智能体</Button>
     </section>
 
-    {error && <div className="rounded-xl border bg-background p-6 text-center text-sm text-muted-foreground">{error}</div>}
     {loading && <div className="h-28 animate-pulse rounded-xl border bg-muted/60" />}
-    {!loading && !error && agents.length === 0 && <div className="rounded-xl border border-dashed py-14 text-center">
+    {!loading && agents.length === 0 && <div className="rounded-xl border border-dashed py-14 text-center">
       <p className="text-sm font-medium">还没有智能体</p>
       <p className="mt-1 text-xs text-muted-foreground">先建一个，再去动态里 @ 它试试。</p>
     </div>}
@@ -194,7 +198,7 @@ export function AgentsPanel() {
           {a.allowSquare && <Badge>广场</Badge>}
           {a.allowCircle && <Badge>圈子</Badge>}
           {a.knowledgeEnabled && <Badge>检索公开笔记</Badge>}
-          <Badge className="font-normal text-muted-foreground">{a.chatModel}</Badge>
+          <Badge className="font-normal text-muted-foreground">{a.aiSource === "platform" ? `平台提供${a.providerName ? ` · ${a.providerName}` : ""}${a.chatModel ? ` · ${a.chatModel}` : ""}` : a.aiSource === "auto" ? "自动选择" : (a.chatModel || "自己的接口")}</Badge>
         </div>
       </div>
       <div className="flex items-center gap-2">
@@ -208,7 +212,7 @@ export function AgentsPanel() {
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{editing === "new" ? "新建智能体" : "编辑智能体"}</DialogTitle>
-          <DialogDescription>人设会进系统提示。模型要填 OpenAI 兼容的地址，Key 只显示后四位。</DialogDescription>
+          <DialogDescription>人设会进系统提示。模型可以用站点准备的，也可以接自己的服务。</DialogDescription>
         </DialogHeader>
         <div className="grid gap-3">
           <div className="grid gap-3 sm:grid-cols-2">
@@ -226,14 +230,13 @@ export function AgentsPanel() {
                   const file = e.target.files?.[0];
                   e.target.value = "";
                   if (!file) return;
-                  setFormErr("");
                   try {
                     const uploaded = await uploadAvatar(file);
                     setForm(f => ({ ...f, avatarSha256: uploaded.sha256, avatarMime: uploaded.mime }));
                     setAvatarDirty(true);
                     setPreview(URL.createObjectURL(file));
                   } catch (err) {
-                    setFormErr((err as Error).message);
+                    toast.error("头像没传上", (err as Error).message);
                   }
                 }} />
               <Button type="button" variant="outline" size="sm" onClick={() => fileRef.current?.click()}>上传图片</Button>
@@ -251,27 +254,68 @@ export function AgentsPanel() {
             <div className="flex items-center justify-between gap-3"><div><p className="text-sm">圈子</p><p className="text-xs text-muted-foreground">允许在工作区动态里被叫到。</p></div><Switch checked={form.allowCircle} label="圈子" onCheckedChange={v => setForm({ ...form, allowCircle: v })} /></div>
             <div className="flex items-center justify-between gap-3"><div><p className="text-sm">检索公开笔记</p><p className="text-xs text-muted-foreground">只读已发布到文档站且允许 AI 读的篇，不会碰到私密本。</p></div><Switch checked={form.knowledgeEnabled} label="检索公开笔记" onCheckedChange={v => setForm({ ...form, knowledgeEnabled: v })} /></div>
           </div>
-          <Field title="模型地址"><Input value={form.baseUrl} placeholder="https://api.openai.com/v1" onChange={e => setForm({ ...form, baseUrl: e.target.value })} /></Field>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field title="模型名"><Input value={form.chatModel} placeholder="gpt-4.1-mini" onChange={e => setForm({ ...form, chatModel: e.target.value })} /></Field>
-            <Field title="API Key"><Input type="password" value={form.apiKey} placeholder={editing === "new" ? "sk-…" : "不改请留掩码"} onChange={e => setForm({ ...form, apiKey: e.target.value })} /></Field>
-          </div>
+          <AgentModelFields form={form} setForm={setForm} />
         </div>
-        <FormError>{formErr}</FormError>
-        <div className="flex flex-wrap justify-end gap-2">
+                <div className="flex flex-wrap justify-end gap-2">
           {editing && editing !== "new" && <Button type="button" variant="outline" disabled={testing || busy} onClick={async () => {
-            setTesting(true); setFormErr("");
+            setTesting(true);
             try {
               const d = await api<{ reply: string }>(`/api/v1/admin/agents/${editing.id}/test`, { method: "POST", body: JSON.stringify({}) });
               toast.success("模型通了", d.reply);
             } catch (e) {
-              setFormErr((e as Error).message);
+              toast.error("模型没通", (e as Error).message);
             } finally { setTesting(false); }
           }}>{testing ? "在试…" : "试一下模型"}</Button>}
           <Button variant="ghost" onClick={() => setEditing(null)}>取消</Button>
-          <Button disabled={busy || !form.displayName.trim() || !form.handle.trim() || !form.systemPrompt.trim() || !form.baseUrl.trim() || !form.chatModel.trim()} onClick={() => void save()}>{busy ? "保存中…" : "保存"}</Button>
+          <Button disabled={busy || !form.displayName.trim() || !form.handle.trim() || !form.systemPrompt.trim()} onClick={() => void save()}>{busy ? "保存中…" : "保存"}</Button>
         </div>
       </DialogContent>
     </Dialog>
+  </div>;
+}
+
+type PlatformChannel = { id: string; name: string; models: string[]; platformDefault: boolean };
+function AgentModelFields({ form, setForm }: { form: Form; setForm: Dispatch<SetStateAction<Form>> }) {
+  const toast = useToast();
+  const [channels, setChannels] = useState<PlatformChannel[]>([]);
+  useEffect(() => {
+    api<{ channels: Array<PlatformChannel & { enabled?: boolean }> }>("/api/v1/admin/ai/platform").then(d => setChannels(d.channels.filter(c => c.enabled !== false))).catch(e => toast.error("平台渠道没读到", (e as Error).message));
+  }, [toast]);
+  const current = channels.find(c => c.id === form.providerId);
+  return <div className="grid gap-3">
+    <Field title="模型来源">
+      <select className="h-9 w-full rounded-lg border border-input bg-background px-2 text-sm" value={form.aiSource} onChange={e => setForm({ ...form, aiSource: e.target.value as Form["aiSource"] })}>
+        <option value="auto">自动（回复时按私人渠道、工作区渠道、平台默认的顺序）</option>
+        <option value="platform">平台提供</option>
+        <option value="own">自己的接口</option>
+      </select>
+    </Field>
+    {form.aiSource === "auto" && <p className="text-xs leading-5 text-muted-foreground">有人 @ 它时，用那个人在动态所在工作区会自动用到的渠道。广场上没有工作区时，用平台默认渠道。用到平台渠道会计入那个人当天的额度。</p>}
+    {form.aiSource === "platform" && <>
+      <Field title="平台渠道">
+        <select className="h-9 w-full rounded-lg border border-input bg-background px-2 text-sm" value={form.providerId} onChange={e => {
+          const id = e.target.value;
+          const ch = channels.find(c => c.id === id);
+          setForm({ ...form, providerId: id, chatModel: ch?.models.includes(form.chatModel) ? form.chatModel : ch?.models[0] ?? "" });
+        }}>
+          <option value="">选择渠道</option>
+          {channels.map(c => <option key={c.id} value={c.id}>{c.name}{c.platformDefault ? "（默认）" : ""}</option>)}
+        </select>
+      </Field>
+      <Field title="模型">
+        <select className="h-9 w-full rounded-lg border border-input bg-background px-2 text-sm" value={form.chatModel} disabled={!current} onChange={e => setForm({ ...form, chatModel: e.target.value })}>
+          {(current?.models ?? []).map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+      </Field>
+      <p className="text-xs text-muted-foreground">只显示渠道名称和开放的模型。接口地址和密钥在「平台 AI」里管理。</p>
+    </>}
+    {form.aiSource === "own" && <>
+      <Field title="接口地址"><Input value={form.baseUrl} placeholder="https://api.openai.com/v1" onChange={e => setForm({ ...form, baseUrl: e.target.value })} /></Field>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field title="模型名"><Input value={form.chatModel} placeholder="所用模型的名字" onChange={e => setForm({ ...form, chatModel: e.target.value })} /></Field>
+        <Field title="密钥"><Input type="password" value={form.apiKey} placeholder={form.apiKey.startsWith("••") ? "不改请留着" : "服务商提供的密钥"} onChange={e => setForm({ ...form, apiKey: e.target.value })} /></Field>
+      </div>
+      <p className="text-xs text-muted-foreground">自己的接口不占平台额度，也不会出现在其他人的渠道列表里。</p>
+    </>}
   </div>;
 }

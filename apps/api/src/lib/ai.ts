@@ -105,7 +105,7 @@ export async function aiProvider(wsId: string, userId?: string): Promise<Resolve
  */
 export async function aiChatProvider(wsId: string, userId: string) {
   const p = await aiProvider(wsId, userId);
-  if (p?.platform) await assertPlatformAiQuota(userId);
+  if (p?.platform) await assertPlatformAiQuota(userId, p.id);
   return p;
 }
 

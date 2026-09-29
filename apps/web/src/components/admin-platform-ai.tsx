@@ -14,23 +14,31 @@ import { useToast } from "./ui/toast";
 
 /**
  * 实例后台 → 平台 AI（issue #64）。
- * 管理员在这里准备全站可用的 AI 渠道、默认渠道和每人每日次数；工作区成员只能看到渠道名称和模型。
+ * 管理员在这里准备全站可用的 AI 渠道、默认渠道、每人每日次数和用量，以及渠道每天的总额。
  */
 type Channel = {
   id: string; name: string; baseUrl: string; keySuffix: string; models: string[]; defaultModel: string;
-  enabled: boolean; platformDefault: boolean; workspaces: number; usageToday: number; usage7d: number; createdAt: string;
+  enabled: boolean; platformDefault: boolean; workspaces: number; usageToday: number; usage7d: number;
+  tokensToday?: number; tokens7d?: number; dailyRequestLimit: number | null; dailyTokenLimit: number | null; createdAt: string;
 };
-type PlatformData = { defaultDailyLimit: number | null; channels: Channel[] };
+type PlatformData = { defaultDailyLimit: number | null; defaultDailyTokenLimit?: number | null; channels: Channel[] };
 type UsageRow = {
   id: string; displayName: string; handle: string; email: string; admin: boolean;
-  override: number | null; effectiveLimit: number | null; today: number; last7d: number; tokens7d: number; lastUsedAt: string | null;
+  override: number | null; effectiveLimit: number | null; tokenOverride: number | null; effectiveTokenLimit: number | null;
+  today: number; last7d: number; tokensToday: number; tokens7d: number; rangeRequests: number; rangeTokens: number; lastUsedAt: string | null;
 };
-type UsageData = { defaultDailyLimit: number | null; totals: { today: number; last7d: number; users: number }; users: UsageRow[] };
-type Draft = { name: string; baseUrl: string; apiKey: string; clearApiKey: boolean; models: string[]; defaultModel: string; platformDefault: boolean };
+type UsageChannel = { id: string | null; name: string; requests: number; tokens: number };
+type UsageData = {
+  defaultDailyLimit: number | null; defaultDailyTokenLimit: number | null;
+  range: { preset: string; from: string; to: string };
+  totals: { today: number; last7d: number; todayTokens: number; last7dTokens: number; rangeRequests: number; rangeTokens: number; users: number };
+  users: UsageRow[]; channels: UsageChannel[];
+};
+type Draft = { name: string; baseUrl: string; apiKey: string; clearApiKey: boolean; models: string[]; defaultModel: string; platformDefault: boolean; requestLimit: string; tokenLimit: string };
 
-const EMPTY_DRAFT: Draft = { name: "", baseUrl: "https://api.openai.com/v1", apiKey: "", clearApiKey: false, models: [], defaultModel: "", platformDefault: false };
+const EMPTY_DRAFT: Draft = { name: "", baseUrl: "https://api.openai.com/v1", apiKey: "", clearApiKey: false, models: [], defaultModel: "", platformDefault: false, requestLimit: "", tokenLimit: "" };
 const uniq = (values: string[]) => [...new Set(values.map(v => v.trim()).filter(Boolean))];
-const limitText = (limit: number | null) => limit === null ? "不限" : limit === 0 ? "不开放" : `${limit} 次/天`;
+const limitText = (limit: number | null, unit = "次") => limit === null ? "不限" : limit === 0 ? "不开放" : `${limit} ${unit}/天`;
 
 function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
   return <select className={cn("h-9 rounded-lg border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/20", className)} {...props} />;
@@ -42,20 +50,28 @@ export function AdminPlatformAi() {
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState(""), [searching, setSearching] = useState(false);
+  const [preset, setPreset] = useState("7"), [from, setFrom] = useState(""), [to, setTo] = useState("");
   const [editor, setEditor] = useState<Channel | "new" | null>(null);
 
   const loadChannels = useCallback(async () => setData(await api<PlatformData>("/api/v1/admin/ai/platform")), []);
-  const loadUsage = useCallback(async (q = "") => setUsage(await api<UsageData>(`/api/v1/admin/ai/usage${q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ""}`)), []);
+  const loadUsage = useCallback(async (q = "", range: { preset: string; from: string; to: string } = { preset: "7", from: "", to: "" }) => {
+    const params = new URLSearchParams();
+    if (q.trim()) params.set("q", q.trim());
+    params.set("preset", range.preset);
+    if (range.preset === "custom" && range.from) params.set("from", range.from);
+    if (range.preset === "custom" && range.to) params.set("to", range.to);
+    setUsage(await api<UsageData>(`/api/v1/admin/ai/usage?${params}`));
+  }, []);
   useEffect(() => {
-    Promise.all([loadChannels(), loadUsage()])
+    Promise.all([loadChannels(), loadUsage("", { preset, from, to })])
       .catch(e => toast.error("平台 AI 暂时打不开", (e as Error).message))
       .finally(() => setLoading(false));
   }, [loadChannels, loadUsage, toast]);
 
-  async function refreshAll() { try { await Promise.all([loadChannels(), loadUsage(query)]); } catch (e) { toast.error("刷新失败", (e as Error).message); } }
+  async function refreshAll() { try { await Promise.all([loadChannels(), loadUsage(query, { preset, from, to })]); } catch (e) { toast.error("刷新失败", (e as Error).message); } }
   async function search(q: string) {
     setSearching(true);
-    try { await loadUsage(q); } catch (e) { toast.error("搜索失败", (e as Error).message); } finally { setSearching(false); }
+    try { await loadUsage(q, { preset, from, to }); } catch (e) { toast.error("搜索失败", (e as Error).message); } finally { setSearching(false); }
   }
   async function patchChannel(c: Channel, body: Record<string, unknown>, success: string) {
     try {
@@ -115,13 +131,23 @@ export function AdminPlatformAi() {
       </div>}
     </section>
 
-    <LimitCard value={data?.defaultDailyLimit ?? null} onSaved={async () => { await Promise.all([loadChannels(), loadUsage(query)]); }} />
+    <LimitCard requests={data?.defaultDailyLimit ?? null} tokens={data?.defaultDailyTokenLimit ?? null} onSaved={async () => { await Promise.all([loadChannels(), loadUsage(query, { preset, from, to })]); }} />
 
     <section className="rounded-2xl border border-border bg-background shadow-sm">
       <div className="flex flex-col gap-3 border-b border-border p-5 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-base font-semibold">用户用量</h2>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">默认列出近 7 天用过平台 AI 或单独设置过额度的用户；搜索可以找到任何人。按北京时间 0 点重置。</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">记录会一直留着。下面可以按今天、近 7 天、近 30 天或自己选的日期查看；今天和近 7 天的数字始终都在。按北京时间 0 点算一天。</p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {[["today","今天"],["7","近 7 天"],["30","近 30 天"],["custom","自定义"]].map(([id, label]) => <button key={id} type="button" onClick={() => { setPreset(id); if (id !== "custom") void loadUsage(query, { preset: id, from, to }); }} className={cn("rounded-lg px-3 py-1.5 text-xs", preset===id ? "bg-foreground text-background" : "bg-muted text-muted-foreground")}>{label}</button>)}
+            {preset==="custom" && <>
+              <Input type="date" value={from} onChange={e => setFrom(e.target.value)} aria-label="开始日期" className="w-36" />
+              <span className="text-xs text-muted-foreground">到</span>
+              <Input type="date" value={to} onChange={e => setTo(e.target.value)} aria-label="结束日期" className="w-36" />
+              <Button type="button" size="sm" variant="outline" onClick={() => { if (!from || !to) return toast.error("请选择日期", "开始和结束都要填。"); void loadUsage(query, { preset, from, to }); }}>查看</Button>
+            </>}
+          </div>
+          {usage?.range && <p className="mt-2 text-[11px] text-muted-foreground">当前查看 {usage.range.from} 至 {usage.range.to}：{usage.totals.rangeRequests} 次，用量 {formatTokens(usage.totals.rangeTokens)}。今天 {usage.totals.today} 次 / 用量 {formatTokens(usage.totals.todayTokens)}，近 7 天 {usage.totals.last7d} 次 / 用量 {formatTokens(usage.totals.last7dTokens)}。</p>}
         </div>
         <form className="flex gap-2" onSubmit={e => { e.preventDefault(); void search(query); }}>
           <div className="relative">
@@ -129,29 +155,35 @@ export function AdminPlatformAi() {
             <Input value={query} onChange={e => setQuery(e.target.value)} placeholder="姓名、账号或邮箱" className="w-56 pl-8" />
           </div>
           <Button type="submit" variant="outline" size="sm" disabled={searching}>{searching ? <LoaderCircle className="animate-spin" /> : "搜索"}</Button>
-          {query && <Button type="button" variant="ghost" size="sm" onClick={() => { setQuery(""); void search(""); }}><X />清除</Button>}
+          {query && <Button type="button" variant="ghost" size="sm" onClick={() => { setQuery(""); void loadUsage("", { preset, from, to }); }}><X />清除</Button>}
         </form>
       </div>
-      {!usage?.users.length ? <p className="p-10 text-center text-sm text-muted-foreground">{query ? "没有找到匹配的用户。" : "近 7 天还没有人使用平台 AI。"}</p> :
+      {!usage?.users.length ? <p className="p-10 text-center text-sm text-muted-foreground">{query ? "没有找到匹配的用户。" : "这段时间还没有人使用平台 AI。"}</p> :
         <div className="overflow-x-auto">
           <table className="w-full min-w-[760px] text-sm">
             <thead><tr className="border-b border-border text-left text-xs text-muted-foreground">
               <th className="px-5 py-2.5 font-medium">用户</th>
               <th className="px-3 py-2.5 font-medium">今天</th>
               <th className="px-3 py-2.5 font-medium">近 7 天</th>
-              <th className="px-3 py-2.5 font-medium">近 7 天 token</th>
+              <th className="px-3 py-2.5 font-medium">所选范围</th>
               <th className="px-3 py-2.5 font-medium">最近使用</th>
-              <th className="px-5 py-2.5 font-medium">每日额度</th>
+              <th className="px-5 py-2.5 font-medium">每天次数</th>
+              <th className="px-5 py-2.5 font-medium">每天用量</th>
             </tr></thead>
-            <tbody>{usage.users.map(u => <UsageTableRow key={u.id} row={u} defaultLimit={usage.defaultDailyLimit} onSaved={() => loadUsage(query)} />)}</tbody>
+            <tbody>{usage.users.map(u => <UsageTableRow key={u.id} row={u} defaultLimit={usage.defaultDailyLimit} defaultTokenLimit={usage.defaultDailyTokenLimit} onSaved={() => loadUsage(query, { preset, from, to })} />)}</tbody>
           </table>
         </div>}
     </section>
 
+    {!!usage?.channels.length && <section className="rounded-2xl border border-border bg-background shadow-sm">
+      <div className="border-b border-border p-5"><h2 className="text-base font-semibold">渠道用量</h2><p className="mt-1 text-xs text-muted-foreground">上面所选日期里，每条平台渠道的次数和用量（所有人合计）。</p></div>
+      <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-border text-left text-xs text-muted-foreground"><th className="px-5 py-2.5 font-medium">渠道</th><th className="px-3 py-2.5 font-medium">次数</th><th className="px-5 py-2.5 font-medium">用量</th></tr></thead>
+        <tbody>{usage.channels.map(c => <tr key={c.id ?? c.name} className="border-b border-border last:border-0"><td className="px-5 py-3 font-medium">{c.name}</td><td className="px-3 py-3 tabular-nums">{c.requests}</td><td className="px-5 py-3 tabular-nums">{formatTokens(c.tokens)}</td></tr>)}</tbody></table></div>
+    </section>}
     <div className="rounded-xl border bg-muted/30 px-4 py-3 text-xs leading-6 text-muted-foreground">
       <p className="font-medium text-foreground">额度怎么算</p>
-      <p>只有实际用到平台渠道的 AI 请求才计次：AI 写作、知识问答（含 MCP 提问）、导图和画板的 AI 生成、日历任务提取都算一次；用户自己配置的渠道不受限制。</p>
-      <p>请求失败不计次；笔记的后台向量化不计次。多个请求同时发出时，临界点可能多放行一两次。</p>
+      <p>只有实际用到平台渠道的请求才计数：AI 写作、知识问答（含外部工具提问）、导图和画板的 AI 生成、日历任务提取、智能体回复都算。自己配置的渠道不受限制。</p>
+      <p>每人每天有次数和用量两道上限，每条渠道也可以设当天的总次数和总用量。任何一道到顶都会停下来。按北京时间 0 点重置。请求失败不计；笔记的后台向量化不计。多个请求同时发出时，临界点可能多放行一两次。</p>
     </div>
 
     <ChannelDialog editor={editor} onClose={() => setEditor(null)} onSaved={async () => { setEditor(null); await loadChannels(); }} />
@@ -184,6 +216,7 @@ function ChannelCard({ channel: c, onEdit, onDefault, onToggle, onRemove }: { ch
       <Row icon={<Layers3 />} label="模型" value={c.models.length ? `${c.models.length} 个，默认 ${c.defaultModel || c.models[0]}` : "还没选模型"} />
       <Row icon={<Users />} label="工作区选用" value={`${c.workspaces} 个`} />
       <Row icon={<Activity />} label="调用" value={`今天 ${c.usageToday} · 近 7 天 ${c.usage7d}`} />
+      <Row icon={<Gauge />} label="每天上限" value={`${c.dailyRequestLimit === null ? "次数不限" : c.dailyRequestLimit === 0 ? "次数不开放" : `次数 ${c.dailyRequestLimit}`} · ${c.dailyTokenLimit === null ? "用量不限" : c.dailyTokenLimit === 0 ? "用量不开放" : `用量 ${c.dailyTokenLimit}`}`} />
     </div>
     <div className="mt-auto flex flex-wrap gap-1.5 border-t border-border pt-3">
       <Button variant="outline" size="sm" onClick={onEdit}><Pencil />编辑</Button>
@@ -198,68 +231,88 @@ function Row({ icon, label, value }: { icon: ReactNode; label: string; value: st
   return <div className="flex min-w-0 items-center gap-2"><span className="[&_svg]:size-3.5">{icon}</span><span>{label}</span><span className="ml-auto truncate font-medium text-foreground">{value}</span></div>;
 }
 
-function LimitCard({ value, onSaved }: { value: number | null; onSaved: () => Promise<void> }) {
+function LimitCard({ requests, tokens, onSaved }: { requests: number | null; tokens: number | null; onSaved: () => Promise<void> }) {
   const toast = useToast();
-  const [limited, setLimited] = useState(value !== null), [count, setCount] = useState(String(value ?? 50)), [saving, setSaving] = useState(false);
-  useEffect(() => { setLimited(value !== null); setCount(String(value ?? 50)); }, [value]);
-  const dirty = limited !== (value !== null) || (limited && Number(count) !== value);
+  const [limitCount, setLimitCount] = useState(requests !== null);
+  const [count, setCount] = useState(String(requests ?? 50));
+  const [limitTokens, setLimitTokens] = useState(tokens !== null);
+  const [tokenCount, setTokenCount] = useState(String(tokens ?? 100000));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setLimitCount(requests !== null); setCount(String(requests ?? 50)); setLimitTokens(tokens !== null); setTokenCount(String(tokens ?? 100000)); }, [requests, tokens]);
+  const nextRequests = limitCount ? Number(count) : null;
+  const nextTokens = limitTokens ? Number(tokenCount) : null;
+  const dirty = nextRequests !== requests || nextTokens !== tokens;
   async function save() {
-    const n = Number(count);
-    if (limited && (!Number.isInteger(n) || n < 0 || n > 100000)) return toast.error("次数不对", "请填写 0 到 100000 之间的整数。");
+    if (limitCount && (!Number.isInteger(nextRequests) || (nextRequests ?? 0) < 0 || (nextRequests ?? 0) > 100000)) return toast.error("次数不对", "请填写 0 到 100000 之间的整数。");
+    if (limitTokens && (!Number.isInteger(nextTokens) || (nextTokens ?? 0) < 0 || (nextTokens ?? 0) > 100000000)) return toast.error("用量不对", "请填写 0 到 1 亿之间的整数。");
     setSaving(true);
     try {
-      await api("/api/v1/admin/ai/limits", { method: "PATCH", body: JSON.stringify({ defaultDailyLimit: limited ? n : null }) });
-      toast.success("每日额度已保存", limited ? (n === 0 ? "没有单独设置的用户将不能使用平台 AI。" : `每人每天最多 ${n} 次，北京时间 0 点重置。`) : "平台 AI 不再限制次数。");
+      await api("/api/v1/admin/ai/limits", { method: "PATCH", body: JSON.stringify({ defaultDailyLimit: nextRequests, defaultDailyTokenLimit: nextTokens }) });
+      toast.success("每日额度已保存", "按北京时间 0 点重置。没有单独设置的用户使用这里的默认。");
       await onSaved();
     } catch (e) { toast.error("保存失败", (e as Error).message); } finally { setSaving(false); }
   }
   return <section className="rounded-2xl border border-border bg-background p-5 shadow-sm">
-    <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-      <div className="min-w-0 flex-1">
+    <div className="flex flex-col gap-4">
+      <div>
         <h2 className="text-base font-semibold">每人每日额度</h2>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">限制每位用户每天使用平台渠道的次数。用户用自己配置的渠道不受影响；可在下方给个别用户单独放宽或收紧。</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">限制每位用户每天使用平台渠道的次数和用量。自己配置的渠道不受影响；可在下方给个别用户单独放宽或收紧。空着表示不限，填 0 表示不开放。</p>
       </div>
-      <div className="flex flex-wrap items-center gap-3">
-        <label className="flex items-center gap-2 text-sm"><Switch checked={limited} onCheckedChange={setLimited} label="限制次数" />限制次数</label>
-        {limited && <div className="flex items-center gap-2 text-sm"><span className="text-muted-foreground">每人每天</span><Input type="number" min={0} max={100000} value={count} onChange={e => setCount(e.target.value)} className="w-24" /><span className="text-muted-foreground">次</span></div>}
+      <div className="flex flex-wrap items-center gap-4">
+        <label className="flex items-center gap-2 text-sm"><Switch checked={limitCount} onCheckedChange={setLimitCount} label="限制次数" />限制次数</label>
+        {limitCount && <div className="flex items-center gap-2 text-sm"><span className="text-muted-foreground">每人每天</span><Input type="number" min={0} max={100000} value={count} onChange={e => setCount(e.target.value)} className="w-28" /><span className="text-muted-foreground">次</span></div>}
+        <label className="flex items-center gap-2 text-sm"><Switch checked={limitTokens} onCheckedChange={setLimitTokens} label="限制用量" />限制用量</label>
+        {limitTokens && <div className="flex items-center gap-2 text-sm"><span className="text-muted-foreground">每人每天</span><Input type="number" min={0} max={100000000} value={tokenCount} onChange={e => setTokenCount(e.target.value)} className="w-32" /><span className="text-muted-foreground">用量</span></div>}
         <Button size="sm" disabled={!dirty || saving} onClick={() => void save()}>{saving ? <LoaderCircle className="animate-spin" /> : <Check />}保存</Button>
       </div>
     </div>
   </section>;
 }
 
-function UsageTableRow({ row: u, defaultLimit, onSaved }: { row: UsageRow; defaultLimit: number | null; onSaved: () => Promise<void> }) {
+function LimitPicker({ label, value, fallback, max, unit = "次", onSave }: { label: string; value: number | null; fallback: number | null; max: number; unit?: string; onSave: (limit: number | null) => Promise<void> }) {
   const toast = useToast();
-  const initialMode = u.override === null ? "default" : u.override === -1 ? "unlimited" : "custom";
-  const [mode, setMode] = useState(initialMode), [count, setCount] = useState(String(u.override !== null && u.override >= 0 ? u.override : defaultLimit ?? 50)), [saving, setSaving] = useState(false);
-  useEffect(() => { setMode(u.override === null ? "default" : u.override === -1 ? "unlimited" : "custom"); setCount(String(u.override !== null && u.override >= 0 ? u.override : defaultLimit ?? 50)); }, [u.override, defaultLimit]);
-  const dirty = mode !== initialMode || (mode === "custom" && Number(count) !== u.override);
+  const initial = value === null ? "default" : value === -1 ? "unlimited" : "custom";
+  const [mode, setMode] = useState(initial);
+  const [count, setCount] = useState(String(value !== null && value >= 0 ? value : fallback ?? 50));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setMode(value === null ? "default" : value === -1 ? "unlimited" : "custom"); setCount(String(value !== null && value >= 0 ? value : fallback ?? 50)); }, [value, fallback]);
+  const dirty = mode !== initial || (mode === "custom" && Number(count) !== value);
   async function save() {
     const n = Number(count);
-    if (mode === "custom" && (!Number.isInteger(n) || n < 0 || n > 100000)) return toast.error("次数不对", "请填写 0 到 100000 之间的整数。");
+    if (mode === "custom" && (!Number.isInteger(n) || n < 0 || n > max)) return toast.error("数字不对", `请填写 0 到 ${max} 之间的整数。`);
     setSaving(true);
-    try {
-      await api(`/api/v1/admin/users/${u.id}/ai-limit`, { method: "PATCH", body: JSON.stringify({ limit: mode === "default" ? null : mode === "unlimited" ? -1 : n }) });
-      toast.success(`已更新 ${u.displayName} 的额度`);
-      await onSaved();
-    } catch (e) { toast.error("保存失败", (e as Error).message); } finally { setSaving(false); }
+    try { await onSave(mode === "default" ? null : mode === "unlimited" ? -1 : n); }
+    catch (e) { toast.error("保存失败", (e as Error).message); } finally { setSaving(false); }
+  }
+  return <div className="flex items-center gap-2">
+    <span className="w-8 shrink-0 text-[11px] text-muted-foreground">{label}</span>
+    <Select value={mode} onChange={e => setMode(e.target.value)} aria-label={label}>
+      <option value="default">跟随全站（{limitText(fallback, unit)}）</option>
+      <option value="unlimited">不限</option>
+      <option value="custom">单独设置</option>
+    </Select>
+    {mode === "custom" && <Input type="number" min={0} max={max} value={count} onChange={e => setCount(e.target.value)} className="w-24" />}
+    {dirty && <Button size="sm" disabled={saving} onClick={() => void save()}>{saving ? <LoaderCircle className="animate-spin" /> : "保存"}</Button>}
+  </div>;
+}
+
+function UsageTableRow({ row: u, defaultLimit, defaultTokenLimit, onSaved }: { row: UsageRow; defaultLimit: number | null; defaultTokenLimit: number | null; onSaved: () => Promise<void> }) {
+  const toast = useToast();
+  async function save(body: { limit?: number | null; tokenLimit?: number | null }) {
+    await api(`/api/v1/admin/users/${u.id}/ai-limit`, { method: "PATCH", body: JSON.stringify(body) });
+    toast.success(`已更新 ${u.displayName} 的额度`);
+    await onSaved();
   }
   const over = u.effectiveLimit !== null && u.today >= u.effectiveLimit;
+  const overTokens = u.effectiveTokenLimit !== null && u.tokensToday >= u.effectiveTokenLimit;
   return <tr className="border-b border-border last:border-0">
     <td className="px-5 py-3"><div className="flex items-center gap-2"><span className="font-medium">{u.displayName}</span>{u.admin && <Badge>管理员</Badge>}</div><p className="text-xs text-muted-foreground">@{u.handle} · {u.email}</p></td>
-    <td className="px-3 py-3 tabular-nums"><span className={cn(over && "font-medium text-[var(--warning)]")}>{u.today}</span><span className="text-muted-foreground"> / {u.effectiveLimit === null ? "不限" : u.effectiveLimit}</span></td>
-    <td className="px-3 py-3 tabular-nums">{u.last7d}</td>
-    <td className="px-3 py-3 tabular-nums text-muted-foreground">{formatTokens(u.tokens7d)}</td>
+    <td className="px-3 py-3 tabular-nums"><span className={cn(over && "font-medium text-[var(--warning)]")}>{u.today}</span><span className="text-muted-foreground"> / {u.effectiveLimit === null ? "不限" : u.effectiveLimit}</span><div className={cn("text-[11px]", overTokens && "text-[var(--warning)]")}>{formatTokens(u.tokensToday)} / {u.effectiveTokenLimit === null ? "不限" : formatTokens(u.effectiveTokenLimit)}</div></td>
+    <td className="px-3 py-3 tabular-nums">{u.last7d}<div className="text-[11px] text-muted-foreground">{formatTokens(u.tokens7d)}</div></td>
+    <td className="px-3 py-3 tabular-nums">{u.rangeRequests}<div className="text-[11px] text-muted-foreground">{formatTokens(u.rangeTokens)}</div></td>
     <td className="px-3 py-3 text-xs text-muted-foreground">{u.lastUsedAt ? new Date(u.lastUsedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
-    <td className="px-5 py-3"><div className="flex items-center gap-2">
-      <Select value={mode} onChange={e => setMode(e.target.value)} aria-label={`${u.displayName} 的每日额度`}>
-        <option value="default">跟随全站（{limitText(defaultLimit)}）</option>
-        <option value="unlimited">不限</option>
-        <option value="custom">单独设置</option>
-      </Select>
-      {mode === "custom" && <Input type="number" min={0} max={100000} value={count} onChange={e => setCount(e.target.value)} className="w-20" aria-label="每天次数" />}
-      {dirty && <Button size="sm" disabled={saving} onClick={() => void save()}>{saving ? <LoaderCircle className="animate-spin" /> : "保存"}</Button>}
-    </div></td>
+    <td className="px-5 py-3"><LimitPicker label="次数" value={u.override} fallback={defaultLimit} max={100000} onSave={limit => save({ limit })} /></td>
+    <td className="px-5 py-3"><LimitPicker label="用量" value={u.tokenOverride} fallback={defaultTokenLimit} max={100000000} unit="用量" onSave={tokenLimit => save({ tokenLimit })} /></td>
   </tr>;
 }
 
@@ -278,7 +331,7 @@ function ChannelDialog({ editor, onClose, onSaved }: { editor: Channel | "new" |
   useEffect(() => {
     if (!editor) return;
     if (editor === "new") { setDraft(EMPTY_DRAFT); setCatalog([]); }
-    else { setDraft({ name: editor.name, baseUrl: editor.baseUrl, apiKey: "", clearApiKey: false, models: editor.models, defaultModel: editor.defaultModel, platformDefault: editor.platformDefault }); setCatalog(editor.models); }
+    else { setDraft({ name: editor.name, baseUrl: editor.baseUrl, apiKey: "", clearApiKey: false, models: editor.models, defaultModel: editor.defaultModel, platformDefault: editor.platformDefault, requestLimit: editor.dailyRequestLimit === null || editor.dailyRequestLimit === undefined ? "" : String(editor.dailyRequestLimit), tokenLimit: editor.dailyTokenLimit === null || editor.dailyTokenLimit === undefined ? "" : String(editor.dailyTokenLimit) }); setCatalog(editor.models); }
     setSearch(""); setManual("");
   }, [editor]);
   const shown = useMemo(() => uniq([...draft.models, ...catalog]).filter(m => m.toLowerCase().includes(search.toLowerCase())).slice(0, 150), [catalog, draft.models, search]);
@@ -300,11 +353,16 @@ function ChannelDialog({ editor, onClose, onSaved }: { editor: Channel | "new" |
     if (!draft.name.trim()) return toast.error("还不能保存", "请给渠道起一个用户能看懂的名字，例如「站点 AI」。");
     if (!draft.baseUrl.trim()) return toast.error("还不能保存", "请填写接口地址。");
     if (!draft.models.length) return toast.error("还不能保存", "至少勾选一个模型，用户才有得选。");
+    const requestN = draft.requestLimit.trim() === "" ? null : Number(draft.requestLimit);
+    const tokenN = draft.tokenLimit.trim() === "" ? null : Number(draft.tokenLimit);
+    if (requestN !== null && (!Number.isInteger(requestN) || requestN < 0)) return toast.error("次数不对", "每天次数留空表示不限，或填一个非负整数。");
+    if (tokenN !== null && (!Number.isInteger(tokenN) || tokenN < 0)) return toast.error("用量不对", "每天用量留空表示不限，或填一个非负整数。");
     setSaving(true);
     try {
       const payload = {
         name: draft.name.trim(), baseUrl: draft.baseUrl.trim(), models: draft.models, defaultModel: draft.defaultModel || draft.models[0],
-        platformDefault: draft.platformDefault, ...(draft.apiKey ? { apiKey: draft.apiKey } : {}), ...(current && draft.clearApiKey ? { clearApiKey: true } : {}),
+        platformDefault: draft.platformDefault, dailyRequestLimit: requestN, dailyTokenLimit: tokenN,
+        ...(draft.apiKey ? { apiKey: draft.apiKey } : {}), ...(current && draft.clearApiKey ? { clearApiKey: true } : {}),
       };
       if (current) await api(`/api/v1/admin/ai/platform/channels/${current.id}`, { method: "PATCH", body: JSON.stringify(payload) });
       else await api("/api/v1/admin/ai/platform/channels", { method: "POST", body: JSON.stringify(payload) });
@@ -340,6 +398,10 @@ function ChannelDialog({ editor, onClose, onSaved }: { editor: Channel | "new" |
             </button>; })}
           </div> : <p className="rounded-xl border border-dashed border-border p-4 text-center text-xs text-muted-foreground">填好接口地址和密钥后点「获取模型列表」，或在下面手动添加模型名。</p>}
           <div className="flex gap-2"><Input value={manual} onChange={e => setManual(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addManual(); } }} placeholder="手动添加模型名" /><Button variant="outline" onClick={addManual}><Plus />添加</Button></div>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="grid gap-1.5 text-sm"><span className="font-medium">每天次数上限</span><Input value={draft.requestLimit} onChange={e => setDraft(d => ({ ...d, requestLimit: e.target.value }))} placeholder="不限" inputMode="numeric" /><span className="text-xs text-muted-foreground">这条渠道所有人合计，留空不限。按北京时间 0 点重置。</span></label>
+          <label className="grid gap-1.5 text-sm"><span className="font-medium">每天用量上限</span><Input value={draft.tokenLimit} onChange={e => setDraft(d => ({ ...d, tokenLimit: e.target.value }))} placeholder="不限" inputMode="numeric" /><span className="text-xs text-muted-foreground">输入和输出加在一起。留空不限。</span></label>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="grid gap-1.5 text-sm"><span className="font-medium">默认模型</span>

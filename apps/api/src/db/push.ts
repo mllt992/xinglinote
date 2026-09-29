@@ -841,6 +841,23 @@ END $$`,
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS embedding_provider_id uuid`,
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS embedding_model text`,
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS embedding_auto_embed boolean NOT NULL DEFAULT true`,
+  // 平台 AI 用量额度、渠道总额、智能体接入（issue #68）。只加列，不改已有行。
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS platform_ai_daily_token_limit integer`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS platform_ai_daily_token_limit integer`,
+  `ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS platform_daily_request_limit integer`,
+  `ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS platform_daily_token_limit integer`,
+  `ALTER TABLE agents ADD COLUMN IF NOT EXISTS ai_source text NOT NULL DEFAULT 'own'`,
+  `ALTER TABLE agents ADD COLUMN IF NOT EXISTS provider_id uuid`,
+  `DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'agents_ai_source_chk') THEN
+      ALTER TABLE agents ADD CONSTRAINT agents_ai_source_chk CHECK (ai_source IN ('own', 'platform', 'auto'));
+    END IF;
+  END $$`,
+  `DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'agents_provider_id_fkey') THEN
+      ALTER TABLE agents ADD CONSTRAINT agents_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES ai_providers(id) ON DELETE SET NULL;
+    END IF;
+  END $$`,
 ];
 
 /**

@@ -54,6 +54,8 @@ export const instanceSettings = pgTable("instance_settings", {
   helpUrl: text("help_url"),
   /** 平台 AI 每人每日默认次数，null 为不限。只统计实际用到平台渠道的请求。 */
   platformAiDailyLimit: integer("platform_ai_daily_limit"),
+  /** 平台 AI 每人每日默认用量（输入+输出 token），null 为不限。 */
+  platformAiDailyTokenLimit: integer("platform_ai_daily_token_limit"),
   /** 量化管理里选定的向量渠道与模型，也作为没有单独配置的工作区的默认值。 */
   embeddingProviderId: uuid("embedding_provider_id"),
   embeddingModel: text("embedding_model"),
@@ -89,8 +91,9 @@ export const users = pgTable("users", {
   themeId: text("theme_id").notNull().default("mono-modern"),
   accent: text("accent"),
   storageQuotaBytes: bigint("storage_quota_bytes", { mode: "number" }),
-  /** 平台 AI 每日次数：null 跟随全站默认，-1 不限，其余为具体次数。 */
+  /** 平台 AI 每日次数：null 跟随全站默认，-1 不限，其余为具体次数。用量同理。 */
   platformAiDailyLimit: integer("platform_ai_daily_limit"),
+  platformAiDailyTokenLimit: integer("platform_ai_daily_token_limit"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -460,6 +463,9 @@ export const aiProviders = pgTable("ai_providers", {
   /** 平台渠道：实例管理员配置，不绑定工作区，全站可用。platform_default 标记「自动」回退时使用的那一条。 */
   platform: boolean("platform").notNull().default(false),
   platformDefault: boolean("platform_default").notNull().default(false),
+  /** 平台渠道每天的总额度（北京时间，所有人合计）。null 不限。 */
+  platformDailyRequestLimit: integer("platform_daily_request_limit"),
+  platformDailyTokenLimit: integer("platform_daily_token_limit"),
   /** Provider 只是一条渠道/凭据；chat_model 与 embedding_* 是旧数据兼容列，chat_models 保存渠道模型目录。 */
   name: text("name").notNull().default("OpenAI 兼容渠道"),
   kind: text("kind").notNull().default("openai-compatible"), baseUrl: text("base_url").notNull(), chatModel: text("chat_model").notNull(), chatModels: jsonb("chat_models").notNull().default([]), embeddingModel: text("embedding_model"),
@@ -674,6 +680,9 @@ export const agents = pgTable("agents", {
   allowSquare: boolean("allow_square").notNull().default(true),
   allowCircle: boolean("allow_circle").notNull().default(true),
   knowledgeEnabled: boolean("knowledge_enabled").notNull().default(false),
+  /** own 自己的接口；platform 指定平台渠道；auto 回复时按工作区规则回退。已有行保持 own。 */
+  aiSource: text("ai_source").notNull().default("own"),
+  providerId: uuid("provider_id").references(() => aiProviders.id, { onDelete: "set null" }),
   baseUrl: text("base_url").notNull(),
   chatModel: text("chat_model").notNull(),
   apiKey: text("api_key").notNull(),
