@@ -88,3 +88,12 @@ test("只有明确右滑才完成，纵向滚动与轻触不会误完成", () =>
   assert.equal(isCompletionSwipe(20, 2, 400), false);
   assert.equal(isCompletionSwipe(90, 0, 2000), false);
 });
+
+test('跨挂载请求所有权与新草稿比较，旧响应不能清空新正文', async()=>{
+ const {beginCapture,finishCapture,captureIsPending,canReplaceCapture}=await import('./mobile-capture.ts');
+ assert.equal(beginCapture('u.w','a'),true);assert.equal(beginCapture('u.w','a'),false);
+ assert.equal(captureIsPending('u.w'),true);finishCapture('u.w','different');assert.equal(captureIsPending('u.w'),true);
+ finishCapture('u.w','a');assert.equal(captureIsPending('u.w'),false);
+ const draft=JSON.stringify({id:'b',text:'新内容',kind:'task',notebookId:''});
+ assert.equal(canReplaceCapture(draft,'a'),false);assert.equal(canReplaceCapture(draft,'b'),true);
+});

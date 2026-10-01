@@ -1,3 +1,4 @@
+import { captureTargetId } from "../lib/capture-id.ts";
 import { Hono } from "hono";
 import { and, count, desc, eq, gte, inArray, isNull, lt, lte } from "drizzle-orm";
 import { z } from "zod";
@@ -213,6 +214,7 @@ calendarRoutes.get("/workspaces/:id/calendar/inbox", async c => {
 // ── 写 ────────────────────────────────────────────────────────────────
 
 const itemBody = z.object({
+  captureId: z.string().uuid().optional(),
   kind: z.enum(["task", "event"]).default("task"),
   title: z.string().min(1).max(200),
   bodyMd: z.string().max(2000).optional(),
@@ -243,14 +245,22 @@ calendarRoutes.post("/workspaces/:id/calendar/items", async c => {
   const body = itemBody.parse(await c.req.json());
   if (body.kind === "event" && !body.startsAt) throw fail("VALIDATION", "日程必须有开始时间");
   if (body.assigneeUserId && ws.kind === "personal") throw fail("VALIDATION", "个人工作区不支持指派");
-  const [row] = await db.insert(calendarItems).values({
+  const captureId = body.captureId ? captureTargetId(user.id,workspaceId,'task',body.captureId) : undefined;
+  const [created] = await db.insert(calendarItems).values({
+    ...(captureId ? {id:captureId} : {}),
     workspaceId, kind: body.kind, title: body.title.trim(), bodyMd: body.bodyMd ?? "",
     allDay: body.allDay ?? false, startsAt: date(body.startsAt), endsAt: date(body.endsAt),
     dueAt: date(body.dueAt) ?? date(body.startsAt), timezone: body.timezone ?? DEFAULT_TZ,
     priority: body.priority ?? 0, color: body.color ?? null, rrule: body.rrule ?? null, rruleUntil: date(body.rruleUntil),
     visibility: body.visibility ?? "workspace", assigneeUserId: body.assigneeUserId ?? null,
     source: "manual", createdBy: user.id, updatedBy: user.id,
-  }).returning();
+  }).onConflictDoNothing().returning();
+  if (!created && captureId) {
+    const [existing]=await db.select().from(calendarItems).where(and(eq(calendarItems.id,captureId),eq(calendarItems.workspaceId,workspaceId),eq(calendarItems.createdBy,user.id)));
+    if(!existing || existing.trashedAt)throw fail('CONFLICT_VERSION','速记目标已删除，请修改草稿后重新保存');
+    return ok(c,itemDto(existing));
+  }
+  const row=created!;
   if (body.reminders?.length) {
     await db.insert(calendarReminders).values(body.reminders.map(r => ({ itemId: row.id, kind: r.kind, offsetMin: r.offsetMin, absoluteAt: date(r.absoluteAt), channel: r.channel })));
     await rescheduleReminders(row.id);
@@ -323,14 +333,21 @@ calendarRoutes.patch("/calendar/items/:id", async c => {
 calendarRoutes.post("/calendar/items/:id/reschedule", async c => {
   const { user, item } = await loadItem(c, c.req.param("id"), "edit");
   const body = z.object({
-    startsAt: z.string().datetime(),
+    startsAt: z.string().datetime().nullable(),
     endsAt: z.string().datetime().nullish(),
     occurrenceStart: z.string().datetime().optional(),
     scope: z.enum(["one", "following"]).default("one"),
   }).parse(await c.req.json());
-  const start = new Date(body.startsAt);
+  const start = body.startsAt ? new Date(body.startsAt) : null;
   const end = date(body.endsAt);
 
+  if (!start) {
+    if(item.kind !== 'task' || item.rrule)throw fail('VALIDATION','只有非重复任务可移回无日期收件箱');
+    const saved=item.source === 'note' && item.sourceNoteId
+      ? await rescheduleNoteCalendarItem(item,user.id,null,null)
+      : (await db.update(calendarItems).set({startsAt:null,endsAt:null,dueAt:null,allDay:false,updatedBy:user.id,updatedAt:new Date()}).where(eq(calendarItems.id,item.id)).returning())[0];
+    await rescheduleReminders(saved.id);await audit(item.workspaceId,user.id,'calendar.item.reschedule',item.id,{startsAt:null});return ok(c,{scope:'one',item:itemDto(saved)});
+  }
   if (item.rrule && body.occurrenceStart) {
     const occurrence = new Date(body.occurrenceStart);
     if (body.scope === "one") {

@@ -282,11 +282,12 @@ export function toggleTaskLine(body: string, key: string, done: boolean): string
 }
 
 /** 改期只改目标任务的 @日期，保留锚、优先级、指派及所有其他行。歧义锚拒绝写入。 */
-export function rescheduleTaskLine(body: string, key: string, start: Date, end: Date | null, tz: string): string | null {
+export function rescheduleTaskLine(body: string, key: string, start: Date | null, end: Date | null, tz: string): string | null {
   const matches = parseTaskLines(body, tz).filter(t => t.key === key);
   if (matches.length !== 1) return null;
   const task = matches[0];
   const lines = body.split(/\r?\n/);
+  if (!start) { lines[task.line]=lines[task.line].replace(TIME_RE, "").trimEnd();return lines.join(body.includes("\r\n") ? "\r\n" : "\n"); }
   const w = wallParts(start, tz);
   const pad = (n: number) => String(n).padStart(2, "0");
   let value = `@${w.y}-${pad(w.m)}-${pad(w.d)}`;
@@ -304,7 +305,7 @@ export function rescheduleTaskLine(body: string, key: string, start: Date, end: 
 }
 
 /** 来源正文和日历条目一起提交，不能先改日历后被下一次同步悄悄改回。 */
-export async function rescheduleNoteCalendarItem(item: typeof calendarItems.$inferSelect, actorId: string, start: Date, end: Date | null) {
+export async function rescheduleNoteCalendarItem(item: typeof calendarItems.$inferSelect, actorId: string, start: Date | null, end: Date | null) {
   const result = await db.transaction(async tx => {
     const [note] = await tx.select().from(notes).where(eq(notes.id, item.sourceNoteId!)).for("update");
     if (!note || note.trashedAt) throw fail("NOT_FOUND", "来源笔记不存在");
@@ -326,9 +327,10 @@ export async function rescheduleNoteCalendarItem(item: typeof calendarItems.$inf
 // ── 差量同步：新增插入、消失标 detached、内容变更更新，绝不整表删重建 ──────────
 
 export async function syncNoteTasks(noteId: string) {
-  const [note] = await db.select().from(notes).where(eq(notes.id, noteId));
+ return db.transaction(async tx => {
+  const [note] = await tx.select().from(notes).where(eq(notes.id, noteId)).for("update");
   if (!note) return { added: 0, updated: 0, detached: 0 };
-  const [notebook] = await db.select().from(notebooks).where(eq(notebooks.id, note.notebookId));
+  const [notebook] = await tx.select().from(notebooks).where(eq(notebooks.id, note.notebookId));
   const tz = DEFAULT_TZ;
   const tasks = parseTaskLines(note.bodyMd, tz);
 
@@ -337,7 +339,7 @@ export async function syncNoteTasks(noteId: string) {
     if (rewritten) {
       // 补锚是系统标注，不算用户编辑：不升 version、不写 note_versions。
       // 带 version 条件，正文在解析期间被改过就跳过，下一轮再补。
-      const [saved] = await db.update(notes).set({ bodyMd: rewritten }).where(and(eq(notes.id, note.id), eq(notes.version, note.version))).returning();
+      const [saved] = await tx.update(notes).set({ bodyMd: rewritten }).where(and(eq(notes.id, note.id), eq(notes.version, note.version))).returning();
       if (saved) await writeNoteFile({ ...saved, noteId: saved.id });
       else return { added: 0, updated: 0, detached: 0 };
     }
@@ -347,14 +349,14 @@ export async function syncNoteTasks(noteId: string) {
   const handles = [...new Set(tasks.map(t => t.assignee).filter((h): h is string => !!h))];
   const assignees = new Map<string, string>();
   if (handles.length) {
-    const rows = await db.select({ id: users.id, handle: users.handle, role: workspaceMembers.role })
+    const rows = await tx.select({ id: users.id, handle: users.handle, role: workspaceMembers.role })
       .from(users)
       .innerJoin(workspaceMembers, and(eq(workspaceMembers.userId, users.id), eq(workspaceMembers.workspaceId, note.workspaceId)))
       .where(inArray(users.handle, handles));
     for (const r of rows) assignees.set(r.handle, r.id);
   }
 
-  const existing = await db.select().from(calendarItems).where(and(eq(calendarItems.sourceNoteId, note.id), eq(calendarItems.source, "note")));
+  const existing = await tx.select().from(calendarItems).where(and(eq(calendarItems.sourceNoteId, note.id), eq(calendarItems.source, "note")));
   const byKey = new Map(existing.map(e => [e.sourceAnchor ?? `h:${createHash("sha1").update(e.title.normalize("NFKC").trim().toLocaleLowerCase()).digest("hex").slice(0, 16)}`, e]));
   const seen = new Set<string>();
   let added = 0, updated = 0, detached = 0;
@@ -377,7 +379,7 @@ export async function syncNoteTasks(noteId: string) {
       updatedAt: new Date(),
     };
     if (!row) {
-      await db.insert(calendarItems).values({
+      await tx.insert(calendarItems).values({
         ...values, workspaceId: note.workspaceId, timezone: tz, source: "note", sourceNoteId: note.id,
         sourceAnchor: t.anchor, status: t.checked ? "done" : "open", doneAt: t.checked ? new Date() : null,
         createdBy: note.updatedBy, updatedBy: note.updatedBy,
@@ -385,7 +387,7 @@ export async function syncNoteTasks(noteId: string) {
       added++;
     } else {
       const statusChanged = (row.status === "done") !== t.checked;
-      await db.update(calendarItems).set({
+      await tx.update(calendarItems).set({
         ...values, updatedBy: note.updatedBy,
         ...(statusChanged ? { status: t.checked ? "done" : "open", doneAt: t.checked ? new Date() : null, doneBy: t.checked ? note.updatedBy : null } : {}),
       }).where(eq(calendarItems.id, row.id));
@@ -395,10 +397,11 @@ export async function syncNoteTasks(noteId: string) {
 
   for (const [key, row] of byKey) {
     if (seen.has(key) || row.linkState === "detached") continue;
-    await db.update(calendarItems).set({ linkState: "detached", updatedAt: new Date() }).where(eq(calendarItems.id, row.id));
+    await tx.update(calendarItems).set({ linkState: "detached", updatedAt: new Date() }).where(eq(calendarItems.id, row.id));
     detached++;
   }
   return { added, updated, detached };
+ });
 }
 
 // ── 展开窗口内的实例，供列表接口用 ────────────────────────────────────────
@@ -422,10 +425,19 @@ export function occurrencesOf(item: typeof calendarItems.$inferSelect, overrides
   // rrule_until 是列上的截断，「此后全部」靠它把原序列停在分裂点之前。
   // RRULE 文本里的 UNTIL 由 parseRrule 管，两者都要生效，取更早的那个。
   const stop = rule && item.rruleUntil && item.rruleUntil < to ? item.rruleUntil : to;
-  for (const inst of expandRule(base, rule, item.timezone, from, stop)) {
+  const instances = new Map(expandRule(base, rule, item.timezone, from, stop).map(d=>[d.getTime(),d]));
+  // 从窗口外移进来的例外也要加入；旧实例必须仍属于尚未截断的原序列。
+  for (const override of overrides) {
+    if (override.action !== 'moved' || !override.newStart || override.newStart < from || override.newStart > to) continue;
+    const at=override.occurrenceStart;
+    if (item.rruleUntil && at > item.rruleUntil) continue;
+    if (expandRule(base,rule,item.timezone,at,at).some(d=>d.getTime()===at.getTime())) instances.set(at.getTime(),at);
+  }
+  for (const inst of instances.values()) {
     const ov = byStart.get(inst.getTime());
     if (ov?.action === "cancelled") continue;
     const start = ov?.action === "moved" && ov.newStart ? ov.newStart : inst;
+    if (start < from || start > to) continue;
     out.push({
       item,
       occurrenceStart: inst,

@@ -348,13 +348,12 @@ export function CalendarPage() {
 
   async function doReschedule(item: CalendarItem, target: Date, scope: "one" | "following") {
     const source = item.startsAt ?? item.dueAt;
-    if (!source) return;
-    const before = civil(source, tz);
+    const before = source ? civil(source, tz) : null;
     await act(
       `已改到 ${target.getUTCMonth() + 1}月${target.getUTCDate()}日${target.getUTCHours() || target.getUTCMinutes() ? ` ${fmtHM(target)}` : ""}`,
       () => setItems(v => v.map(x => (x.id === item.id && x.occurrenceStart === item.occurrenceStart ? { ...x, startsAt: x.startsAt ? wallToIso(target, tz) : null, dueAt: wallToIso(target, tz) } : x))),
       () => api(`/api/v1/calendar/items/${item.id}/reschedule`, { method: "POST", body: JSON.stringify({ startsAt: wallToIso(target, tz), occurrenceStart: item.recurring ? item.occurrenceStart : undefined, scope }) }),
-      () => api(`/api/v1/calendar/items/${item.id}/reschedule`, { method: "POST", body: JSON.stringify({ startsAt: wallToIso(before, tz), scope: "one" }) }),
+      () => api(`/api/v1/calendar/items/${item.id}/reschedule`, { method: "POST", body: JSON.stringify({ startsAt: before ? wallToIso(before, tz) : null, endsAt: item.endsAt, occurrenceStart: item.recurring ? item.occurrenceStart : undefined, scope: "one" }) }),
     );
   }
 

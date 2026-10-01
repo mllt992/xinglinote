@@ -47,6 +47,26 @@ try {
  const today=await q(`/workspaces/${ids.ws}/today`);
  assert.equal(today.canEdit,true);
  assert.ok(today.items.some(x=>x.title==='手机买菜'&&x.bodyMd.includes('买番茄和面条')));
+ // 响应延迟时切换页面，旧请求不能让新页面重复提交或删除另一标签的新草稿。
+ let releaseResponse;
+ const responseGate=new Promise(resolve=>{releaseResponse=resolve;});
+ let reached;
+ const reachedRequest=new Promise(resolve=>{reached=resolve;});
+ await page.route('**/api/v1/workspaces/*/calendar/items',async route=>{const response=await route.fetch();reached();await responseGate;await route.fulfill({response});});
+ await input.fill('延迟保存A');await page.getByRole('button',{name:'任务',exact:true}).click();await reachedRequest;
+ await page.getByRole('button',{name:'日历',exact:true}).click();
+ await page.getByRole('textbox',{name:'随手记内容'}).waitFor();
+ assert.equal(await page.getByRole('textbox',{name:'随手记内容'}).isDisabled(),true,'重新挂载仍应知道请求在进行');
+ const second=await context.newPage();await second.goto(`${base}/w/${ids.ws}/today`);
+ const secondInput=second.getByRole('textbox',{name:'随手记内容'});await secondInput.fill('另一标签的新草稿B');
+ releaseResponse();await page.waitForTimeout(300);await second.reload();await secondInput.waitFor();
+ assert.equal(await secondInput.inputValue(),'另一标签的新草稿B','旧响应不能删除B');await second.close();
+ await page.unroute('**/api/v1/workspaces/*/calendar/items');await page.goto(`${base}/w/${ids.ws}/today`);await input.waitFor();
+ // 同一个 captureId 的响应丢失重试只创建一份任务/笔记。
+ const captureId=randomUUID();const replay={kind:'task',title:'幂等任务',captureId};
+ const [a,b]=await Promise.all([q(`/workspaces/${ids.ws}/calendar/items`,replay),q(`/workspaces/${ids.ws}/calendar/items`,replay)]);assert.equal(a.id,b.id);
+ const noteReplay={notebookId:ids.nb,title:'幂等笔记',captureId:randomUUID()};
+ const [na,nb]=await Promise.all([q('/notes',noteReplay),q('/notes',noteReplay)]);assert.equal(na.id,nb.id);
  // 失败草稿经过真正刷新仍在，成功才清空。
  await page.route('**/api/v1/workspaces/*/calendar/items',r=>r.abort());
  await input.fill('断网时写下的内容');
@@ -92,6 +112,18 @@ try {
  await page.getByRole('menuitem',{name:'改到明天',exact:true}).click();
  await page.getByRole('button',{name:'取消完成 原文待办',exact:true}).waitFor({state:'hidden'});
  assert.ok(!(await q(`/notes/${source.id}`)).bodyMd.includes(`@${today.date}`));
+ // 无日期任务从收件箱改到明天，撤销要恢复无日期；来源任务也走相同回写。
+ const undated=await q(`/workspaces/${ids.ws}/calendar/items`,{kind:'task',title:'无日期手工任务'});
+ await page.goto(`${base}/w/${ids.ws}/calendar`);await page.getByRole('button',{name:'待办面板'}).click();
+ await page.getByRole('button',{name:'改期 无日期手工任务',exact:true}).click();await page.getByRole('menuitem',{name:'改到明天',exact:true}).click();
+ await page.waitForTimeout(300);assert.ok((await q(`/calendar/items/${undated.id}`)).dueAt);
+ await page.getByRole('button',{name:'撤销',exact:true}).last().click();await page.waitForTimeout(300);assert.equal((await q(`/calendar/items/${undated.id}`)).dueAt,null);
+ const undatedNote=await q('/notes',{notebookId:ids.nb,title:'无日期来源'});
+ await q(`/notes/${undatedNote.id}`,{expectedVersion:undatedNote.version,bodyMd:'- [ ] 无日期来源任务 ^tk-9988abcd'},'PATCH');await syncNoteTasks(undatedNote.id);
+ await page.reload();await page.getByRole('button',{name:'待办面板'}).click();
+ await page.getByRole('button',{name:'改期 无日期来源任务',exact:true}).click();await page.getByRole('menuitem',{name:'改到明天',exact:true}).click();await page.waitForTimeout(300);
+ assert.ok((await q(`/notes/${undatedNote.id}`)).bodyMd.includes('@'));
+ await page.getByRole('button',{name:'撤销',exact:true}).last().click();await page.waitForTimeout(300);assert.ok(!(await q(`/notes/${undatedNote.id}`)).bodyMd.includes('@'));
  // 已公开页的 375px 正文、长 URL、表格和图片都不能撑出屏幕。
  const publicNote=await q('/notes',{notebookId:ids.nb,title:'窄屏公开阅读'});
  await q(`/notes/${publicNote.id}`,{expectedVersion:publicNote.version,bodyMd:`长链接 https://example.invalid/${'x'.repeat(180)}\n\n| 第一列 | 第二列 |\n| --- | --- |\n| ${'长'.repeat(50)} | 正文 |\n\n![品牌](/brand/share-card.png)`},'PATCH');

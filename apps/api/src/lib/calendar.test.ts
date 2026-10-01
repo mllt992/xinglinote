@@ -157,3 +157,18 @@ test("定时任务改期保留时长，跨日区间不静默丢失结束日", as
   assert.equal(rescheduleTaskLine(source, '^tk-1234abcd', start, new Date('2026-10-02T02:00:00Z'), SH), source.replace('2026-10-01', '2026-10-02'));
   assert.equal(rescheduleTaskLine(source, '^tk-1234abcd', start, new Date('2026-10-03T02:00:00Z'), SH), null);
 });
+
+test('无日期来源任务可改期并撤销回收件箱',async()=>{
+ const {rescheduleTaskLine}=await import('./calendar.ts');const original='- [ ] 无日期 ^tk-1234abcd';
+ const dated=rescheduleTaskLine(original,'^tk-1234abcd',new Date('2026-10-01T16:00:00Z'),null,SH)!;
+ assert.ok(dated.includes('@2026-10-02'));assert.equal(rescheduleTaskLine(dated,'^tk-1234abcd',null,null,SH),original);
+});
+test('重复例外按实际时间进出窗口，不按旧日期',()=>{
+ const base=wallToUtc(2026,10,1,9,0,SH),next=wallToUtc(2026,10,2,9,0,SH);
+ const item={id:'x',startsAt:base,dueAt:base,endsAt:null,timezone:SH,rrule:'FREQ=DAILY',rruleUntil:null,status:'open'} as unknown as Parameters<typeof occurrencesOf>[0];
+ const override={occurrenceStart:base,action:'moved',newStart:next,newEnd:null} as unknown as Parameters<typeof occurrencesOf>[1][0];
+ const from=wallToUtc(2026,10,1,0,0,SH),to=new Date(wallToUtc(2026,10,2,0,0,SH).getTime()-1);
+ assert.equal(occurrencesOf(item,[override],from,to).length,0);
+ const moved=occurrencesOf(item,[override],new Date(to.getTime()+1),new Date(to.getTime()+86400000));
+ assert.ok(moved.some(o=>o.occurrenceStart.getTime()===base.getTime() && o.start.getTime()===next.getTime()));
+});

@@ -1,3 +1,4 @@
+import { captureTargetId } from "../lib/capture-id.ts";
 import { Hono } from "hono";
 import { and, asc, count, desc, eq, ilike, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import { z } from "zod";
@@ -209,15 +210,17 @@ knowledge.patch("/notebooks/:id/folders/order", async (c) => {
 
 knowledge.post("/notes", async (c) => {
   const user = await requireUser(c);
-  const body = z.object({ notebookId: z.string().uuid(), folderId: z.string().uuid().nullish(), title: z.string().min(1).max(200).optional() }).parse(await c.req.json());
+  const body = z.object({ captureId:z.string().uuid().optional(), notebookId: z.string().uuid(), folderId: z.string().uuid().nullish(), title: z.string().min(1).max(200).optional() }).parse(await c.req.json());
   const {notebook:nb,workspace:ws}=await notebookAccess(body.notebookId,user.id,"edit");
   await assertFolderInNotebook(body.folderId, nb.id);
   const title = body.title?.trim() || "未命名";
   await assertUserStorage(user.id, textBytes(title, ""));
   const existing = await db.select({ sortKey: notes.sortKey }).from(notes).where(and(eq(notes.notebookId, nb.id), isNull(notes.trashedAt)));
+  const captureId=body.captureId ? captureTargetId(user.id,nb.id,"note",body.captureId) : undefined;
   const [note] = await db
     .insert(notes)
     .values({
+      ...(captureId ? {id:captureId} : {}),
       workspaceId: ws.id,
       notebookId: nb.id,
       folderId: body.folderId ?? null,
@@ -228,7 +231,12 @@ knowledge.post("/notes", async (c) => {
       createdBy: user.id,
       updatedBy: user.id,
     })
-    .returning();
+    .onConflictDoNothing().returning();
+  if (!note && captureId) {
+    const [existing]=await db.select().from(notes).where(and(eq(notes.id,captureId),eq(notes.notebookId,nb.id),eq(notes.createdBy,user.id)));
+    if(!existing || existing.trashedAt)throw fail('CONFLICT_VERSION','速记目标已删除，请修改草稿后重新保存');
+    return ok(c,existing);
+  }
   await db.insert(noteVersions).values({
     noteId: note.id,
     version: 1,
