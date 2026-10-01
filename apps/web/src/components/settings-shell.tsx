@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
-  Archive, ArrowUpRight, BellRing, Bot, ChevronRight, CloudUpload, Download, FileClock, HardDrive, Kanban, Link2,
+  Archive, BarChart3, ArrowUpRight, BellRing, Bot, ChevronRight, CloudUpload, Download, FileClock, HardDrive, Kanban, Link2,
   Paintbrush, ShieldAlert, ShieldCheck, Snowflake, Sparkles, TriangleAlert, UserRound, Users,
 } from "lucide-react";
 import { api } from "../api";
@@ -23,7 +23,7 @@ export const cardCls = "rounded-xl border border-border bg-background";
 /** 设置壳认的所有落点。前八个是 /w/:id/settings 的 ?tab=，后面是独立路由。 */
 export type SettingsPlace =
   | "overview" | "members" | "shares" | "backup" | "transfer" | "audit" | "moderation" | "danger"
-  | "trash" | "feed" | "projects" | "integrations" | "profile" | "appearance" | "notifications" | "account";
+  | "analytics" | "trash" | "feed" | "projects" | "integrations" | "profile" | "appearance" | "notifications" | "account";
 
 type NavItem = {
   id: SettingsPlace;
@@ -45,6 +45,7 @@ export const SETTINGS_NAV: Array<{ title: string; items: NavItem[] }> = [
   {
     title: "工作区",
     items: [
+      { id: "analytics", label: "数据统计", hint: "可见笔记本的规模、活跃趋势与内容结构。", icon: BarChart3, to: wsId => `/w/${wsId}/analytics` },
       { id: "overview", label: "概览", hint: "这个工作区现在是什么状态，有什么该处理。", icon: Sparkles, to: tab("overview") },
       { id: "members", label: "成员与邀请", hint: "谁在里面、各自能做什么、别人怎么进来。", icon: Users, to: tab("members") },
       { id: "shares", label: "分享与外链", hint: "所有对外开的口子：分享链接和日历订阅地址。", icon: Link2, to: tab("shares") },
