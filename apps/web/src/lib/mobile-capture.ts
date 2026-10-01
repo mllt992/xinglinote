@@ -74,10 +74,10 @@ export function isCompletionSwipe(dx: number, dy: number, elapsedMs: number) {
 
 // 页面切换不能重置正在保存的请求。键只含已验证的用户与工作区，不跨账号暴露正文。
 const pendingCaptures = new Map<string, string>();
-const captureListeners = new Set<() => void>();
+const captureListeners = new Set<(draftChanged: boolean) => void>();
 export const captureIsPending = (key: string) => pendingCaptures.has(key);
-export function notifyCaptureChange() { for (const listener of captureListeners) listener(); }
-export function subscribeCapture(listener: () => void) { captureListeners.add(listener); return () => { captureListeners.delete(listener); }; }
+export function notifyCaptureChange(draftChanged = false) { for (const listener of captureListeners) listener(draftChanged); }
+export function subscribeCapture(listener: (draftChanged: boolean) => void) { captureListeners.add(listener); return () => { captureListeners.delete(listener); }; }
 export function beginCapture(key: string, id: string) { if (pendingCaptures.has(key)) return false; pendingCaptures.set(key,id);notifyCaptureChange();return true; }
 export function finishCapture(key: string, id: string) { if(pendingCaptures.get(key)===id) {pendingCaptures.delete(key);notifyCaptureChange();} }
 export function canReplaceCapture(persisted: string | null, expectedId: string) { const current=readCaptureDraft(persisted);return !current || current.id===expectedId; }

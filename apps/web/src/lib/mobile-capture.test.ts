@@ -97,3 +97,10 @@ test('跨挂载请求所有权与新草稿比较，旧响应不能清空新正�
  const draft=JSON.stringify({id:'b',text:'新内容',kind:'task',notebookId:''});
  assert.equal(canReplaceCapture(draft,'a'),false);assert.equal(canReplaceCapture(draft,'b'),true);
 });
+
+test('请求状态通知不能要求从失败的持久化覆盖内存草稿',async()=>{
+ const {subscribeCapture,beginCapture,finishCapture,notifyCaptureChange}=await import('./mobile-capture.ts');
+ const events:boolean[]=[];const stop=subscribeCapture(changed=>events.push(changed));
+ beginCapture('quota.w','a');finishCapture('quota.w','a');notifyCaptureChange(true);stop();
+ assert.deepEqual(events,[false,false,true]);
+});

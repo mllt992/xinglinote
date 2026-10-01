@@ -22,7 +22,7 @@ await db.insert(sessions).values({userId:ids.user,tokenHash:hashSecret(token),ex
 const base='http://127.0.0.1:12099';
 const server=spawn(process.execPath,['--import','./apps/api/node_modules/tsx/dist/loader.mjs','apps/api/src/index.ts'],{env:{...process.env,PUBLIC_URL:base,API_PORT:'12099'},stdio:['ignore','pipe','pipe']});
 let serverError='';server.stderr.on('data',chunk=>{serverError+=chunk;});
-let browser;
+let browser, page;
 const q=async(path,body,method=body?'POST':'GET')=>{
  const r=await fetch(base+'/api/v1'+path,{method,headers:{cookie:`kb_session=${token}`,'content-type':'application/json','x-requested-with':'fetch'},...(body?{body:JSON.stringify(body)}:{})});
  const j=await r.json();assert.ok(j.ok,`${path}: ${JSON.stringify(j)}`);return j.data;
@@ -34,7 +34,7 @@ try {
  browser=await chromium.launch({executablePath:process.env.KB_CHROMIUM_EXECUTABLE,headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
  const context=await browser.newContext({viewport:{width:375,height:812},isMobile:true,hasTouch:true});
  await context.addCookies([{name:'kb_session',value:token,url:base}]);
- const page=await context.newPage();
+ page=await context.newPage();
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(`${base}/w/${ids.ws}/today`);
  const input=page.getByRole('textbox',{name:'随手记内容'});await input.waitFor();
@@ -79,7 +79,7 @@ try {
  await page.waitForFunction(()=>document.querySelector('textarea[aria-label="随手记内容"]')?.value==='');
  const diary=await q(`/workspaces/${ids.ws}/calendar/diary`,{date:today.date});
  assert.ok((await q(`/notes/${diary.noteId}`)).bodyMd.includes('日记第一条'));
- await input.fill('手机笔记\n完整正文');await page.getByRole('button',{name:'笔记',exact:true}).click();
+ await input.fill('手机笔记\n完整正文');await page.locator('footer[aria-label="随手记"]').getByRole('button',{name:'笔记',exact:true}).click();
  await page.getByRole('button',{name:'保存笔记',exact:true}).click();
  await page.getByRole('dialog').waitFor({state:'hidden'});
  assert.equal(await input.inputValue(),'');
@@ -112,6 +112,14 @@ try {
  await page.getByRole('menuitem',{name:'改到明天',exact:true}).click();
  await page.getByRole('button',{name:'取消完成 原文待办',exact:true}).waitFor({state:'hidden'});
  assert.ok(!(await q(`/notes/${source.id}`)).bodyMd.includes(`@${today.date}`));
+ // 存储配额错误时保住内存正文，仍可直接保存到服务器。
+ const quotaPage=await context.newPage();
+ await quotaPage.addInitScript(()=>{const original=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if(k.startsWith('kb.capture.'))throw new DOMException('test quota','QuotaExceededError');return original.call(this,k,v);};});
+ await quotaPage.goto(`${base}/w/${ids.ws}/today`);
+ const quotaInput=quotaPage.getByRole('textbox',{name:'随手记内容'});await quotaInput.fill('缓存满了也保留正文');
+ assert.equal(await quotaInput.inputValue(),'缓存满了也保留正文');
+ await quotaPage.locator('footer[aria-label="随手记"]').getByRole('button',{name:'任务',exact:true}).click();
+ await quotaPage.getByText('缓存满了也保留正文',{exact:true}).waitFor();await quotaPage.close();
  // 无日期任务从收件箱改到明天，撤销要恢复无日期；来源任务也走相同回写。
  const undated=await q(`/workspaces/${ids.ws}/calendar/items`,{kind:'task',title:'无日期手工任务'});
  await page.goto(`${base}/w/${ids.ws}/calendar`);await page.getByRole('button',{name:'待办面板'}).click();
@@ -137,4 +145,4 @@ try {
  await anon.close();
  assert.deepEqual(errors,[]);
  console.log(JSON.stringify({mobile375:true,taskUnder20s:true,failedDraftSurvivesReload:true,journalAppend:true,noteFullText:true,noHorizontalOverflow:true},null,2));
-}finally{await browser?.close();server.kill('SIGTERM');await sql.end();}
+}catch(error){await page?.screenshot({path:'/tmp/xingli-mobile-failure.png',fullPage:true}).catch(()=>{});throw error;}finally{await browser?.close();server.kill('SIGTERM');await sql.end();}

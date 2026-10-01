@@ -33,10 +33,13 @@ function CaptureComposer({ wsId, date, timezone, onCreated, onOpenNote, userId }
     try { return readCaptureDraft(localStorage.getItem(key)) ?? emptyDraft(); } catch { return emptyDraft(); }
   });
   const draftRef = useRef(draft);
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current=true;return ()=>{mountedRef.current=false;}; }, []);
   const [busy, setBusy] = useState(() => captureIsPending(key));
   const saving = useRef(false);
   const [error, setError] = useState("");
   const [storageError, setStorageError] = useState(false);
+  const storageErrorRef = useRef(false);
   const [noteOpen, setNoteOpen] = useState(false);
   const [notebooks, setNotebooks] = useState<Array<{ id: string; title: string }>>([]);
   const [notebooksLoading, setNotebooksLoading] = useState(false);
@@ -47,17 +50,18 @@ function CaptureComposer({ wsId, date, timezone, onCreated, onOpenNote, userId }
       draftRef.current = next;
       setDraft(next);
       if (next.text) localStorage.setItem(key, JSON.stringify(next)); else localStorage.removeItem(key);
-      setStorageError(false);notifyCaptureChange();
-    } catch { draftRef.current=next;setDraft(next);setStorageError(true); }
+      storageErrorRef.current=false;setStorageError(false);notifyCaptureChange(true);
+    } catch { draftRef.current=next;setDraft(next);storageErrorRef.current=true;setStorageError(true); }
   }
 
   useEffect(() => {
-    const refresh = () => {
+    const refresh = (draftChanged: boolean) => {
       setBusy(captureIsPending(key));
+      if (!draftChanged || storageErrorRef.current) return;
       try { const next=readCaptureDraft(localStorage.getItem(key)) ?? emptyDraft(draftRef.current.notebookId);draftRef.current=next;setDraft(next); } catch { /* 当前输入仍保留 */ }
     };
     const unsubscribe=subscribeCapture(refresh);
-    const storage=(event:StorageEvent)=>{if(event.key===key)refresh();};
+    const storage=(event:StorageEvent)=>{if(event.key===key)refresh(true);};
     window.addEventListener('storage',storage);
     return ()=>{unsubscribe();window.removeEventListener('storage',storage);};
   }, [key]);
@@ -85,12 +89,13 @@ function CaptureComposer({ wsId, date, timezone, onCreated, onOpenNote, userId }
   async function save(kind: CaptureKind) {
     if (saving.current || !draftRef.current.text.trim()) return;
     if (kind === "note" && !draftRef.current.notebookId) { setError("请选择一本笔记本"); return; }
-    const requestId=draftRef.current.id;
+    const snapshot={...draftRef.current};
+    const requestId=snapshot.id;
     if (!beginCapture(key,requestId)) return;
     saving.current = true;
     setBusy(true);
     setError("");
-    let current = { ...draftRef.current, kind, noteId: draftRef.current.kind === kind ? draftRef.current.noteId : undefined };
+    let current = { ...snapshot, kind, noteId: snapshot.kind === kind ? snapshot.noteId : undefined };
     update(current,current.id);
     try {
       let noteId = current.noteId;
@@ -113,6 +118,7 @@ function CaptureComposer({ wsId, date, timezone, onCreated, onOpenNote, userId }
         await appendCapturedNote(api, noteId, current.text, current.id);
       }
       update(emptyDraft(current.notebookId),current.id);
+      if (!mountedRef.current) return;
       setNoteOpen(false);
       const label = kind === "task" ? "已加入今天的任务" : kind === "journal" ? "已追加到今天的日记" : "已保存笔记";
       if (noteId) toast.toast({ title: label, description: <button className="min-h-11 underline underline-offset-2" onClick={() => onOpenNote(noteId)}>打开笔记</button> });
