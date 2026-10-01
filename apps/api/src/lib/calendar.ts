@@ -1,3 +1,4 @@
+import { fail } from "@kb/shared";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client.ts";
@@ -43,6 +44,12 @@ export function wallToUtc(y: number, m: number, d: number, hh: number, mm: numbe
 export function startOfLocalDay(date: Date, tz: string) {
   const w = wallParts(date, tz);
   return wallToUtc(w.y, w.m, w.d, 0, 0, tz);
+}
+
+/** 今天窗口为当地两个午夜间的半开区间，夏令时当天可以是 23/25 小时。 */
+export function localDayWindow(date: Date, tz: string) {
+  const w = wallParts(date, tz);
+  return { from: wallToUtc(w.y, w.m, w.d, 0, 0, tz), to: wallToUtc(w.y, w.m, w.d + 1, 0, 0, tz) };
 }
 
 export function localDayKey(date: Date, tz: string) {
@@ -274,6 +281,48 @@ export function toggleTaskLine(body: string, key: string, done: boolean): string
   return null;
 }
 
+/** 改期只改目标任务的 @日期，保留锚、优先级、指派及所有其他行。歧义锚拒绝写入。 */
+export function rescheduleTaskLine(body: string, key: string, start: Date, end: Date | null, tz: string): string | null {
+  const matches = parseTaskLines(body, tz).filter(t => t.key === key);
+  if (matches.length !== 1) return null;
+  const task = matches[0];
+  const lines = body.split(/\r?\n/);
+  const w = wallParts(start, tz);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  let value = `@${w.y}-${pad(w.m)}-${pad(w.d)}`;
+  if (!task.allDay && (task.dueAt || task.startsAt)) {
+    value += ` ${pad(w.hh)}:${pad(w.mm)}`;
+    if (end && task.startsAt) {
+      const e = wallParts(end, tz);
+      // 正文语法没有跨日区间；拒绝无法无损表达的改期。
+      if (localDayKey(end, tz) !== localDayKey(start, tz) || end <= start) return null;
+      value += `-${pad(e.hh)}:${pad(e.mm)}`;
+    }
+  }
+  lines[task.line] = TIME_RE.test(lines[task.line]) ? lines[task.line].replace(TIME_RE, value) : `${lines[task.line]} ${value}`;
+  return lines.join(body.includes("\r\n") ? "\r\n" : "\n");
+}
+
+/** 来源正文和日历条目一起提交，不能先改日历后被下一次同步悄悄改回。 */
+export async function rescheduleNoteCalendarItem(item: typeof calendarItems.$inferSelect, actorId: string, start: Date, end: Date | null) {
+  const result = await db.transaction(async tx => {
+    const [note] = await tx.select().from(notes).where(eq(notes.id, item.sourceNoteId!)).for("update");
+    if (!note || note.trashedAt) throw fail("NOT_FOUND", "来源笔记不存在");
+    const key = taskKey(item.sourceAnchor, item.title);
+    const body = key ? rescheduleTaskLine(note.bodyMd, key, start, end, item.timezone) : null;
+    if (body === null) throw fail("CONFLICT_VERSION", "任务来源已变化或时间无法写回，请打开来源笔记处理");
+    const task = parseTaskLines(body, item.timezone).find(t => t.key === key)!;
+    const [saved] = await tx.update(calendarItems).set({ startsAt: task.startsAt, endsAt: task.endsAt, dueAt: task.dueAt, allDay: task.allDay, updatedBy: actorId, updatedAt: new Date() }).where(eq(calendarItems.id, item.id)).returning();
+    if (body === note.bodyMd) return { item: saved, note: null };
+    const [written] = await tx.update(notes).set({ bodyMd: body, version: note.version + 1, updatedBy: actorId, updatedAt: new Date() }).where(eq(notes.id, note.id)).returning();
+    await recordNoteVersion(tx, { noteId: note.id, version: written.version, previousVersion: note.version, title: written.title, bodyMd: written.bodyMd, editorId: actorId, source: "task_reschedule" });
+    return { item: saved, note: written };
+  });
+  if (result.note) await writeNoteFile({ ...result.note, noteId: result.note.id });
+  await rescheduleReminders(result.item.id);
+  return result.item;
+}
+
 // ── 差量同步：新增插入、消失标 detached、内容变更更新，绝不整表删重建 ──────────
 
 export async function syncNoteTasks(noteId: string) {
@@ -462,43 +511,29 @@ export async function completeCalendarItem(item: typeof calendarItems.$inferSele
     return { status: done ? "done" : "open", occurrenceStart, noteWritten: false, detached: false, noteId: item.sourceNoteId };
   }
 
-  const [saved] = await db.update(calendarItems).set({
-    status: done ? "done" : "open",
-    doneAt: done ? new Date() : null,
-    doneBy: done ? actorId : null,
-    updatedBy: actorId, updatedAt: new Date(),
-  }).where(eq(calendarItems.id, item.id)).returning();
-  await rescheduleReminders(saved.id);
-
-  let noteWritten = false;
-  let detached = false;
-  if (item.source === "note" && item.sourceNoteId) {
-    const [note] = await db.select().from(notes).where(eq(notes.id, item.sourceNoteId));
-    const key = item.sourceAnchor ?? null;
-    const nextBody = note && key ? toggleTaskLine(note.bodyMd, key, done) : null;
-    if (!note || nextBody === null) {
-      // 锚丢了：条目状态照记，但明确标出已脱离原文，不静默消失
-      await db.update(calendarItems).set({ linkState: "detached" }).where(eq(calendarItems.id, item.id));
-      detached = true;
-    } else if (nextBody !== note.bodyMd) {
-      const version = note.version + 1;
-      const [written] = await db.update(notes).set({ bodyMd: nextBody, version, updatedBy: actorId, updatedAt: new Date() }).where(and(eq(notes.id, note.id), eq(notes.version, note.version))).returning();
-      if (written) {
-        // 5 分钟内的连续勾选合并成一条历史，否则版本列表会被待办淹掉（设计 16 §4.3）
-        await recordNoteVersion(db, {
-          noteId: note.id,
-          version,
-          previousVersion: note.version,
-          title: written.title,
-          bodyMd: written.bodyMd,
-          editorId: actorId,
-          source: source === "mcp" ? "mcp" : "task_toggle",
-        });
-        await writeNoteFile({ ...written, noteId: written.id });
-        // 回写不触发 note.rewrite_links（防环）。向量由 notes 触发器排队，已有索引的篇会再等 5 分钟。
+  const result = await db.transaction(async tx => {
+    let written: typeof notes.$inferSelect | null = null;
+    let noteWritten = false;
+    let detached = false;
+    if (item.source === "note" && item.sourceNoteId) {
+      // 与改期一样锁住来源篇，版本保存和日历状态一起提交；并发编辑不能吞掉勾选回写。
+      const [note] = await tx.select().from(notes).where(eq(notes.id, item.sourceNoteId)).for("update");
+      const key = taskKey(item.sourceAnchor, item.title);
+      const matches = note ? parseTaskLines(note.bodyMd, item.timezone).filter(t => t.key === key) : [];
+      const nextBody = note && !note.trashedAt && matches.length === 1 ? toggleTaskLine(note.bodyMd, key, done) : null;
+      if (!note || nextBody === null) detached = true;
+      else {
         noteWritten = true;
+        if (nextBody !== note.bodyMd) {
+          [written] = await tx.update(notes).set({ bodyMd: nextBody, version: note.version + 1, updatedBy: actorId, updatedAt: new Date() }).where(eq(notes.id, note.id)).returning();
+          await recordNoteVersion(tx, { noteId: note.id, version: written.version, previousVersion: note.version, title: written.title, bodyMd: written.bodyMd, editorId: actorId, source: source === "mcp" ? "mcp" : "task_toggle" });
+        }
       }
-    } else noteWritten = true;
-  }
-  return { status: saved.status, occurrenceStart: null, noteWritten, detached, noteId: item.sourceNoteId };
+    }
+    const [saved] = await tx.update(calendarItems).set({ status: done ? "done" : "open", doneAt: done ? new Date() : null, doneBy: done ? actorId : null, updatedBy: actorId, updatedAt: new Date(), ...(detached ? { linkState: "detached" } : {}) }).where(eq(calendarItems.id, item.id)).returning();
+    return { saved, written, noteWritten, detached };
+  });
+  if (result.written) await writeNoteFile({ ...result.written, noteId: result.written.id });
+  await rescheduleReminders(result.saved.id);
+  return { status: result.saved.status, occurrenceStart: null, noteWritten: result.noteWritten, detached: result.detached, noteId: item.sourceNoteId };
 }

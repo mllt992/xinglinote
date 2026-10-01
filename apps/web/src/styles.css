@@ -421,3 +421,16 @@ html[data-mode="dark"] {
   font-size: 10px; line-height: 1.4; color: #fff; background-color: currentColor;
 }
 .cm-ySelectionInfo { color: inherit; }
+
+/* 公开阅读在手机上保持单栏，长链接/代码/表格不撑开页面（#72）。 */
+.public-reading { min-width: 0; overflow-wrap: anywhere; }
+.public-reading > *, .public-reading main, .public-reading article { min-width: 0; }
+.public-reading img, .public-reading svg, .public-reading video { max-width: 100%; height: auto; }
+.public-reading pre, .public-reading table { max-width: 100%; overflow-x: auto; }
+@media (max-width: 767px) {
+  .public-reading { font-size: 16px; }
+  .public-reading .markdown { font-size: 16px; }
+  .public-reading h1 { overflow-wrap: anywhere; font-size: 1.875rem; }
+  .public-reading .markdown table { min-width: 0; }
+  .public-reading button, .public-reading select { min-height: 44px; }
+}

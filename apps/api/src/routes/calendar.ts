@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, count, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, isNull, lt, lte } from "drizzle-orm";
 import { z } from "zod";
 import { canReadNote, type NbMemberRole, type WsRole } from "@kb/core";
 import { AppError, fail } from "@kb/shared";
@@ -15,7 +15,7 @@ import { assertUserStorage, textBytes } from "../lib/quota.ts";
 import { limit } from "../lib/rate-limit.ts";
 import { secureToken } from "../lib/tokens.ts";
 import { writeNoteFile } from "../lib/files.ts";
-import { completeCalendarItem, DEFAULT_TZ, localDayKey, occurrencesOf, rescheduleReminders, wallParts, wallToUtc } from "../lib/calendar.ts";
+import { completeCalendarItem, DEFAULT_TZ, localDayKey, localDayWindow, rescheduleNoteCalendarItem, occurrencesOf, rescheduleReminders, wallParts, wallToUtc } from "../lib/calendar.ts";
 import { itemsToTemplate, MAX_TEMPLATE_ITEMS, planTemplate, type TemplateItem } from "../lib/calendar-template.ts";
 import { assertPublicUrl, buildIcs, syncSubscription } from "../lib/ics.ts";
 import { aiChatProvider, chatAi, usageMeta } from "../lib/ai.ts";
@@ -127,6 +127,7 @@ async function loadItem(c: Parameters<typeof currentUser>[0], id: string, mode: 
     const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, item.workspaceId));
     if (ws?.frozen) throw fail("FORBIDDEN", "工作区已冻结，暂时只读");
     if (role === "viewer") throw fail("FORBIDDEN", "只读成员不能修改日历");
+    if (item.source === "note" && item.sourceNoteId) await noteAccess(item.sourceNoteId, user.id, "edit");
   }
   return { user, role, item };
 }
@@ -354,6 +355,13 @@ calendarRoutes.post("/calendar/items/:id/reschedule", async c => {
     return ok(c, { scope: "following", item: itemDto(created) }, 201);
   }
 
+  if (item.source === "note" && item.sourceNoteId) {
+    const wantedEnd = end ?? (item.startsAt && item.endsAt ? new Date(start.getTime() + item.endsAt.getTime() - item.startsAt.getTime()) : null);
+    const saved = await rescheduleNoteCalendarItem(item, user.id, start, wantedEnd);
+    await audit(item.workspaceId, user.id, "calendar.item.reschedule", item.id, { scope: "one", startsAt: start, noteWritten: true });
+    return ok(c, { scope: "one", item: itemDto(saved), noteWritten: true });
+  }
+
   const [saved] = await db.update(calendarItems).set({
     startsAt: item.startsAt ? start : null,
     endsAt: end ?? (item.startsAt && item.endsAt ? new Date(start.getTime() + (item.endsAt.getTime() - item.startsAt.getTime())) : null),
@@ -435,23 +443,22 @@ calendarRoutes.put("/calendar/items/:id/reminders", async c => {
 
 calendarRoutes.get("/workspaces/:id/today", async c => {
   const workspaceId = c.req.param("id");
-  const { user, role } = await workspaceContext(c, workspaceId);
+  const { user, role, ws } = await workspaceContext(c, workspaceId);
   const now = new Date();
   const w = wallParts(now, DEFAULT_TZ);
-  const from = new Date(Date.UTC(w.y, w.m - 1, w.d) - 12 * 3600_000);
-  const to = new Date(from.getTime() + 48 * 3600_000);
+  const { from, to } = localDayWindow(now, DEFAULT_TZ);
   const rows = await db.select().from(calendarItems).where(and(eq(calendarItems.workspaceId, workspaceId), isNull(calendarItems.trashedAt)));
   const { kept, noteById } = await readableItems(workspaceId, user.id, role, rows);
   const overrides = kept.length ? await db.select().from(calendarOverrides).where(inArray(calendarOverrides.itemId, kept.map(r => r.id))) : [];
   const byItem = new Map<string, Array<typeof calendarOverrides.$inferSelect>>();
   for (const o of overrides) byItem.set(o.itemId, [...(byItem.get(o.itemId) ?? []), o]);
-  const today = kept.flatMap(row => occurrencesOf(row, byItem.get(row.id) ?? [], from, to).map(o => itemDto(row, row.sourceNoteId ? noteById.get(row.sourceNoteId)?.title : null, o)));
+  const today = kept.flatMap(row => occurrencesOf(row, byItem.get(row.id) ?? [], from, new Date(to.getTime() - 1)).map(o => itemDto(row, row.sourceNoteId ? noteById.get(row.sourceNoteId)?.title : null, o)));
   const overdue = kept.filter(r => r.status === "open" && r.dueAt && r.dueAt < from && !r.rrule).map(r => itemDto(r, r.sourceNoteId ? noteById.get(r.sourceNoteId)?.title : null));
   const visible = await visibleNotebookIds(workspaceId, user.id, role);
   const touched = (await db.select({ id: notes.id, title: notes.title, notebookId: notes.notebookId, updatedAt: notes.updatedAt })
-    .from(notes).where(and(eq(notes.workspaceId, workspaceId), isNull(notes.trashedAt), gte(notes.updatedAt, from))))
+    .from(notes).where(and(eq(notes.workspaceId, workspaceId), isNull(notes.trashedAt), gte(notes.updatedAt, from), lt(notes.updatedAt, to))))
     .filter(n => visible.has(n.notebookId));
-  return ok(c, { date: `${w.y}-${String(w.m).padStart(2, "0")}-${String(w.d).padStart(2, "0")}`, timezone: DEFAULT_TZ, items: today, overdue, notes: touched });
+  return ok(c, { date: `${w.y}-${String(w.m).padStart(2, "0")}-${String(w.d).padStart(2, "0")}`, timezone: DEFAULT_TZ, canEdit: role !== "viewer" && !ws.frozen, items: today, overdue, notes: touched });
 });
 
 // ── ICS 订阅（入）：只读，且 URL 必须过 SSRF 校验 ──────────────────────────

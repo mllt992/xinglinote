@@ -127,3 +127,33 @@ test("「此后全部」的截断：rrule_until 之后不再展开实例", () =>
   // 提醒也不该再排到截断点之后
   assert.equal(nextOccurrence(item, new Date(base.getTime() + 30 * 86400_000)), null);
 });
+
+test("今天窗口严格按当地日切，兼容夏令时", async () => {
+  const { localDayWindow } = await import('./calendar.ts');
+  const sh = localDayWindow(new Date('2026-10-01T10:00:00Z'), SH);
+  assert.equal(sh.from.toISOString(), '2026-09-30T16:00:00.000Z');
+  assert.equal(sh.to.toISOString(), '2026-10-01T16:00:00.000Z');
+  const dst = localDayWindow(new Date('2026-03-08T12:00:00Z'), NY);
+  assert.equal(dst.to.getTime() - dst.from.getTime(), 23 * 3600_000);
+});
+test("改期精确回写目标行，保留状态、锚点与其它元数据", async () => {
+  const { rescheduleTaskLine } = await import('./calendar.ts');
+  const source = '# 待办\r\n- [ ] 买菜 @2026-10-01 !高 +@alice ^tk-1234abcd\r\n- [x] 无关 @2026-10-01 ^tk-5678abcd';
+  const body = rescheduleTaskLine(source, '^tk-1234abcd', new Date('2026-10-03T16:00:00Z'), null, SH)!;
+  assert.equal(body, source.replace('买菜 @2026-10-01', '买菜 @2026-10-04'));
+  assert.equal(parseTaskLines(body, SH)[0].dueAt?.toISOString(), '2026-10-03T16:00:00.000Z');
+});
+test("无日期任务新增日期，歧义锚和代码块拒绝回写", async () => {
+  const { rescheduleTaskLine } = await import('./calendar.ts');
+  const when = new Date('2026-10-03T16:00:00Z');
+  assert.equal(rescheduleTaskLine('- [ ] 买菜 ^tk-1234abcd', '^tk-1234abcd', when, null, SH), '- [ ] 买菜 ^tk-1234abcd @2026-10-04');
+  assert.equal(rescheduleTaskLine('```\n- [ ] 买菜 ^tk-1234abcd\n```', '^tk-1234abcd', when, null, SH), null);
+  assert.equal(rescheduleTaskLine('- [ ] A ^tk-1234abcd\n- [ ] B ^tk-1234abcd', '^tk-1234abcd', when, null, SH), null);
+});
+test("定时任务改期保留时长，跨日区间不静默丢失结束日", async () => {
+  const { rescheduleTaskLine } = await import('./calendar.ts');
+  const source = '- [ ] 开会 @2026-10-01 09:00-10:00 ^tk-1234abcd';
+  const start = new Date('2026-10-02T01:00:00Z');
+  assert.equal(rescheduleTaskLine(source, '^tk-1234abcd', start, new Date('2026-10-02T02:00:00Z'), SH), source.replace('2026-10-01', '2026-10-02'));
+  assert.equal(rescheduleTaskLine(source, '^tk-1234abcd', start, new Date('2026-10-03T02:00:00Z'), SH), null);
+});

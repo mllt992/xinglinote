@@ -14,6 +14,9 @@ import { Tooltip, TooltipProvider } from "./ui/tooltip";
 import { useToast } from "./ui/toast";
 import { BatchBar, SaveTemplateDialog, TemplatePanel, type BatchPayload } from "./calendar-batch";
 import { CalendarItemEditor, type EditorTarget } from "./calendar-item-editor";
+import { MobileCapture } from "./mobile-capture";
+import { MobileCalendarItem } from "./mobile-calendar-item";
+import { reschedulePresetDate, type ReschedulePreset } from "../lib/mobile-capture";
 
 export type CalendarItem = {
   id: string;
@@ -114,16 +117,16 @@ export function CalendarPage() {
 
   const [items, setItems] = useState<CalendarItem[]>([]);
   const [footprints, setFootprints] = useState<Footprint[]>([]);
-  const [panel, setPanel] = useState<InboxData>({ inbox: [], groups: [], overdue: 0, me: "", workspaceKind: "personal", canEdit: true });
+  const [panel, setPanel] = useState<InboxData>({ inbox: [], groups: [], overdue: 0, me: "", workspaceKind: "personal", canEdit: false });
   // 右栏默认常驻（设计 16 §3.3）：收件箱要能随手接住想法、随手拖上历，藏起来等于没有。
   // 开合状态粘在本地——每次进日历都要重新点开一次，比默认关还烦。
   const [panelTab, setPanelTab] = useState<"tasks" | "sync" | "templates" | null>(() => {
-    try { return localStorage.getItem(PANEL_KEY) === "off" ? null : "tasks"; } catch { return "tasks"; }
+    try { return narrow || localStorage.getItem(PANEL_KEY) === "off" ? null : "tasks"; } catch { return "tasks"; }
   });
   useEffect(() => {
     // 只记「待办面板开着没」，模板与订阅是临时性的，不该被记住
-    try { localStorage.setItem(PANEL_KEY, panelTab === "tasks" ? "on" : "off"); } catch { /* 隐私模式忽略 */ }
-  }, [panelTab]);
+    try { if (!narrow) localStorage.setItem(PANEL_KEY, panelTab === "tasks" ? "on" : "off"); } catch { /* 隐私模式忽略 */ }
+  }, [panelTab, narrow]);
   const [pushReady, setPushReady] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [saveTemplate, setSaveTemplate] = useState(false);
@@ -295,7 +298,8 @@ export function CalendarPage() {
     try {
       await api(`/api/v1/workspaces/${wsId}/calendar/items`, { method: "POST", body: JSON.stringify({ kind: "task", title }) });
       await load();
-    } catch (e) { toast.error("记不下来", (e as Error).message); }
+      return true;
+    } catch (e) { toast.error("记不下来", (e as Error).message); return false; }
   }
 
   /** 从日历拖回收件箱：清掉期限，条目落回「还没排期」。 */
@@ -478,7 +482,7 @@ export function CalendarPage() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (e.defaultPrevented || el?.closest("input,textarea,select,button,[role=button],[contenteditable=true]")) return;
       if (e.metaKey || e.ctrlKey) {
         if (e.key.toLowerCase() === "z" && undoStack.current.length) {
           e.preventDefault();
@@ -551,7 +555,30 @@ export function CalendarPage() {
     : `${cursor.getUTCFullYear()}年${cursor.getUTCMonth() + 1}月${cursor.getUTCDate()}日`;
 
   return <TooltipProvider delayDuration={300}><SelectionCtx.Provider value={selection}><div className="flex h-full min-h-0 flex-col bg-background">
-    <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-4">
+    <header className={cn("shrink-0 border-b border-border", narrow ? "space-y-1 p-2" : "flex h-14 items-center gap-2 px-4")}>
+      {narrow ? <>
+        <div className="flex min-w-0 items-center gap-1">
+          <Button variant="ghost" className="min-h-11 px-2" onClick={() => nav(`/w/${wsId}/today`)}>今天页</Button>
+          <h1 className="min-w-0 flex-1 truncate text-center text-sm font-semibold">{title}</h1>
+          <Button variant="ghost" size="icon" className="size-11" aria-label="待办面板" onClick={() => setPanelTab(t => t === "tasks" ? null : "tasks")}><Inbox /></Button>
+          <Button className="min-h-11 px-2" disabled={!panel.canEdit} onClick={() => openCreate(cursor, { kind: "event" })}><Plus />日程</Button>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button className="size-11" variant="ghost" size="icon" aria-label="上一段" onClick={() => setCursor(addDays(cursor, view === "month" ? -30 : view === "week" ? -7 : view === "agenda" ? -14 : -1))}>‹</Button>
+          <Button className="min-h-11 px-2" variant="outline" onClick={() => setCursor(atMidnight(civil(new Date(), tz)))}>今天</Button>
+          <Button className="size-11" variant="ghost" size="icon" aria-label="下一段" onClick={() => setCursor(addDays(cursor, view === "month" ? 30 : view === "week" ? 7 : view === "agenda" ? 14 : 1))}>›</Button>
+          <label className="ml-auto text-xs text-muted-foreground">视图 <select aria-label="日历视图" className="min-h-11 rounded-lg border border-border bg-background px-2 text-sm text-foreground" value={view} onChange={e => setView(e.target.value as View)}>{VIEWS.map(v => <option key={v.id} value={v.id}>{v.label === "议程" ? "议程" : `${v.label}视图`}</option>)}</select></label>
+          <DropdownMenu><DropdownMenuTrigger asChild><Button className="size-11" variant="ghost" size="icon" aria-label="更多"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="[&_[role=menuitem]]:min-h-11">
+            <DropdownMenuItem onSelect={() => nav(`/w/${wsId}`)}>返回笔记</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setPanelTab("sync")}>订阅与导出</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setPanelTab("templates")}>日历模板</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void openDiary()} disabled={!panel.canEdit}>写今天的日记</DropdownMenuItem>
+            <DropdownMenuSeparator />
+            {(["task", "event", "note"] as const).map(layer => <DropdownMenuItem key={layer} onSelect={e => { e.preventDefault(); toggleLayer(layer); }}>{layers.has(layer) ? "✓ " : ""}{{ task: "任务", event: "日程", note: "笔记足迹" }[layer]}</DropdownMenuItem>)}
+            <p className="p-2 text-xs text-muted-foreground">时区 {tz}</p>
+          </DropdownMenuContent></DropdownMenu>
+        </div>
+      </> : <>
       <Button variant="ghost" size="sm" onClick={() => nav(`/w/${wsId}`)}><ChevronRight className="rotate-180" />笔记</Button>
       <MiniMonthJump title={title} cursor={cursor} today={today} onPick={d => setCursor(d)} />
       <div className="ml-4 inline-flex rounded-lg bg-muted p-1">
@@ -592,6 +619,7 @@ export function CalendarPage() {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      </>}
     </header>
 
     {quick.open && <QuickAddBar wsId={wsId} state={quick} setState={setQuick} inputRef={quickRef} onCreated={() => { void load(); setQuick({ open: false, text: "", preview: null }); }} />}
@@ -608,16 +636,18 @@ export function CalendarPage() {
     <div className="flex min-h-0 flex-1">
       <div className="min-w-0 flex-1 overflow-auto">
         {loading ? <GridSkeleton view={view} />
-          : view === "month" && narrow ? <MonthCompact cursor={cursor} today={today} byDay={byDay} notesByDay={notesByDay} onToggle={toggleDone} onPick={setCursor} onDiary={openDiary} onCreate={() => openCreate(cursor)} tz={tz} />
+          : view === "month" && narrow ? <MonthCompact canEdit={panel.canEdit} onOpen={openItem} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} onReschedule={(item, preset) => void reschedule(item, reschedulePresetDate(preset, new Date(), tz, item.startsAt ?? item.dueAt))} cursor={cursor} today={today} byDay={byDay} notesByDay={notesByDay} onToggle={toggleDone} onPick={setCursor} onDiary={openDiary} onCreate={() => openCreate(cursor)} tz={tz} />
           : view === "month" ? <MonthGrid start={start} cursor={cursor} today={today} byDay={byDay} notesByDay={notesByDay} showFootprint={layers.has("note")} onDrop={reschedule} onToggle={toggleDone} onDiary={openDiary} onCreate={openCreate} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />
-          : view === "agenda" ? <AgendaList start={start} days={14} today={today} byDay={byDay} notesByDay={notesByDay} onToggle={toggleDone} onDiary={() => void openDiary()} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />
+          : view === "agenda" ? <AgendaList mobile={narrow} canEdit={panel.canEdit} onOpen={openItem} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} onCreate={() => openCreate(cursor, { kind: "event" })} onReschedule={(item, preset) => void reschedule(item, reschedulePresetDate(preset, new Date(), tz, item.startsAt ?? item.dueAt))} start={start} days={14} today={today} byDay={byDay} notesByDay={notesByDay} onToggle={toggleDone} onDiary={() => void openDiary()} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />
           : <TimeGrid start={start} days={view === "week" ? 7 : 1} today={today} byDay={byDay} notesByDay={notesByDay} onDrop={reschedule} onToggle={toggleDone} onResize={resizeItem} onCreate={createEvent} focusKey={focusKey} setFocusKey={setFocusKey} tz={tz} />}
       </div>
-      {panelTab === "tasks" && <TaskPanel narrow={narrow} data={panel} members={members} onToggle={toggleDone} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} onCapture={captureToInbox} onDropBack={dropBackToInbox} onReschedule={(i, t) => void reschedule(i, t)} onRemind={setReminder} onAssign={assignTo} pushReady={pushReady} tz={tz} />}
+      {panelTab === "tasks" && <TaskPanel onClose={() => setPanelTab(null)} narrow={narrow} data={panel} members={members} onToggle={toggleDone} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} onCapture={captureToInbox} onDropBack={dropBackToInbox} onReschedule={(i, t) => void reschedule(i, t)} onRemind={setReminder} onAssign={assignTo} pushReady={pushReady} tz={tz} />}
       {panelTab === "templates" && <TemplatePanel wsId={wsId} narrow={narrow} canEdit={panel.canEdit} today={today} onApplied={() => void load()} onClose={() => setPanelTab(null)} />}
       {panelTab === "sync" && <CalendarSyncPanel wsId={wsId} narrow={narrow} onClose={() => setPanelTab(null)} onChanged={() => void load()} />}
     </div>
 
+
+    {narrow && !panelTab && <MobileCapture wsId={wsId} date={today} timezone={tz} canEdit={panel.canEdit && !loading} onCreated={() => void load()} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} />}
 
     <Dialog open={!!scopeAsk} onOpenChange={open => { if (!open) setScopeAsk(null); }}>
       <DialogContent>
@@ -900,7 +930,7 @@ function MonthCell({ day, dayKeyStr, outside, isToday, notes, onDrop, onDiary, o
   </ContextMenu>;
 }
 
-function MonthCompact(props: { cursor: Date; today: string; byDay: Map<string, CalendarItem[]>; notesByDay: Map<string, Footprint[]>; onToggle: (i: CalendarItem, done: boolean) => void; onPick: (d: Date) => void; onDiary: (d: Date) => void; onCreate: () => void; tz: string }) {
+function MonthCompact(props: { canEdit: boolean; onOpen: (item: CalendarItem) => void; onOpenNote: (id: string) => void; onReschedule: (item: CalendarItem, preset: ReschedulePreset) => void; cursor: Date; today: string; byDay: Map<string, CalendarItem[]>; notesByDay: Map<string, Footprint[]>; onToggle: (i: CalendarItem, done: boolean) => void; onPick: (d: Date) => void; onDiary: (d: Date) => void; onCreate: () => void; tz: string }) {
   const first = new Date(Date.UTC(props.cursor.getUTCFullYear(), props.cursor.getUTCMonth(), 1));
   const cells = Array.from({ length: 42 }, (_, i) => addDays(mondayOf(first), i));
   const key = dayKey(props.cursor);
@@ -917,7 +947,7 @@ function MonthCompact(props: { cursor: Date; today: string; byDay: Map<string, C
           onClick={() => props.onPick(d)}
           aria-label={`${d.getUTCMonth() + 1}月${d.getUTCDate()}日，${count} 项`}
           className={cn(
-            "flex aspect-square flex-col items-center justify-center rounded-lg text-xs tabular-nums",
+            "flex min-h-11 aspect-square flex-col items-center justify-center rounded-lg text-xs tabular-nums",
             d.getUTCMonth() !== props.cursor.getUTCMonth() && "text-muted-foreground/40",
             k === props.today && "bg-destructive font-semibold text-destructive-foreground",
             k === key && k !== props.today && "bg-foreground text-background",
@@ -932,10 +962,10 @@ function MonthCompact(props: { cursor: Date; today: string; byDay: Map<string, C
     <div className="flex-1 space-y-1 p-3">
       <div className="flex items-center gap-2">
         <h2 className="text-sm font-semibold">{props.cursor.getUTCMonth() + 1}月{props.cursor.getUTCDate()}日</h2>
-        <Button size="sm" variant="ghost" className="ml-auto" onClick={props.onCreate}><Plus />新建</Button>
-        <Button size="sm" variant="ghost" onClick={() => props.onDiary(props.cursor)}><PenLine />写日记</Button>
+        <Button size="sm" variant="ghost" className="ml-auto min-h-11" disabled={!props.canEdit} onClick={props.onCreate}><Plus />新建</Button>
+        <Button size="sm" variant="ghost" className="min-h-11" disabled={!props.canEdit} onClick={() => props.onDiary(props.cursor)}><PenLine />写日记</Button>
       </div>
-      {list.map(it => <ItemChip key={`${it.id}:${it.occurrenceStart}`} item={it} tz={props.tz} onToggle={props.onToggle} />)}
+      {list.map(it => <MobileCalendarItem key={`${it.id}:${it.occurrenceStart}`} item={it} timezone={props.tz} canEdit={props.canEdit} onToggle={props.onToggle} onOpen={props.onOpen} onOpenNote={props.onOpenNote} onReschedule={props.onReschedule} />)}
       {notes.map(n => <div key={n.id} className="flex items-center gap-1.5 px-1.5 text-xs text-muted-foreground"><FileText className="size-3" />{n.title}</div>)}
       {!list.length && !notes.length && <p className="py-6 text-center text-xs text-muted-foreground">这天没有安排。</p>}
     </div>
@@ -1150,20 +1180,22 @@ function HourSlot({ onDrop }: { onDrop: (p: DropPayload) => void }) {
 
 // ── 议程 ────────────────────────────────────────────────────────────────
 
-function AgendaList(props: { start: Date; days: number; today: string; byDay: Map<string, CalendarItem[]>; notesByDay: Map<string, Footprint[]>; onToggle: (i: CalendarItem, done: boolean) => void; onDiary: () => void; focusKey: string | null; setFocusKey: (k: string | null) => void; tz: string }) {
+function AgendaList(props: { start: Date; days: number; today: string; byDay: Map<string, CalendarItem[]>; notesByDay: Map<string, Footprint[]>; onToggle: (i: CalendarItem, done: boolean) => Promise<void> | void; onDiary: () => void; focusKey: string | null; setFocusKey: (k: string | null) => void; tz: string; mobile: boolean; canEdit: boolean; onOpen: (item: CalendarItem) => void; onOpenNote: (id: string) => void; onCreate: () => void; onReschedule: (item: CalendarItem, preset: ReschedulePreset) => void }) {
   const days = Array.from({ length: props.days }, (_, i) => addDays(props.start, i)).filter(d => (props.byDay.get(dayKey(d))?.length ?? 0) > 0 || (props.notesByDay.get(dayKey(d))?.length ?? 0) > 0);
-  if (!days.length) return <Empty title="这两周没有安排" text="按 N 快速添加，或者从右侧待办里拖一条过来。" action={<Button size="sm" variant="outline" onClick={props.onDiary}><PenLine />写今天的日记</Button>} />;
+  if (!days.length) return <Empty title="这两周没有安排" text={props.mobile ? "在底部随手记，或新建一个日程。" : "按 N 快速添加，或者从右侧待办里拖一条过来。"} action={props.canEdit && <Button className="min-h-11" variant="outline" onClick={props.onCreate}><Plus />新建日程</Button>} />;
   return <div className="divide-y divide-border">
     {days.map(d => {
       const key = dayKey(d);
-      return <section key={key} className="flex gap-4 px-5 py-3">
-        <div className="w-20 shrink-0">
-          <div className={cn("text-2xl font-semibold tabular-nums", key === props.today && "text-destructive")}>{d.getUTCDate()}</div>
-          <div className="text-xs text-muted-foreground">{WEEK_LABELS[(d.getUTCDay() + 6) % 7]}</div>
+      return <section key={key} className="flex flex-col gap-2 px-3 py-3 md:flex-row md:gap-4 md:px-5">
+        <div className="flex items-baseline gap-2 md:block md:w-20 md:shrink-0">
+          <div className={cn("text-xl font-semibold tabular-nums", key === props.today && "text-destructive")}>{d.getUTCMonth() + 1}月{d.getUTCDate()}日</div>
+          <div className="text-xs text-muted-foreground">{WEEK_LABELS[(d.getUTCDay() + 6) % 7]}{key === props.today ? " · 今天" : ""}</div>
         </div>
-        <div className="min-w-0 flex-1 space-y-1">
-          {(props.byDay.get(key) ?? []).map(it => <ItemChip key={`${it.id}:${it.occurrenceStart}`} item={it} tz={props.tz} onToggle={props.onToggle} focused={props.focusKey === `${it.id}:${it.occurrenceStart}`} onFocus={() => props.setFocusKey(`${it.id}:${it.occurrenceStart}`)} />)}
-          {(props.notesByDay.get(key) ?? []).map(n => <div key={n.id} className="flex items-center gap-1.5 px-1.5 text-xs text-muted-foreground"><FileText className="size-3" />{n.title}</div>)}
+        <div className="min-w-0 flex-1 space-y-2">
+          {(props.byDay.get(key) ?? []).map(it => props.mobile
+            ? <MobileCalendarItem key={`${it.id}:${it.occurrenceStart}`} item={it} timezone={props.tz} canEdit={props.canEdit} onToggle={props.onToggle} onOpen={props.onOpen} onOpenNote={props.onOpenNote} onReschedule={props.onReschedule} />
+            : <ItemChip key={`${it.id}:${it.occurrenceStart}`} item={it} tz={props.tz} onToggle={props.onToggle} focused={props.focusKey === `${it.id}:${it.occurrenceStart}`} onFocus={() => props.setFocusKey(`${it.id}:${it.occurrenceStart}`)} />)}
+          {(props.notesByDay.get(key) ?? []).map(n => <button key={n.id} className="flex min-h-11 w-full items-center gap-2 rounded px-2 text-left text-sm text-muted-foreground hover:bg-muted" onClick={() => props.onOpenNote(n.id)}><FileText className="size-4 shrink-0" /><span className="truncate">{n.title}</span></button>)}
         </div>
       </section>;
     })}
@@ -1172,11 +1204,11 @@ function AgendaList(props: { start: Date; days: number; today: string; byDay: Ma
 
 // ── 右侧待办面板 ─────────────────────────────────────────────────────────
 
-function TaskPanel({ narrow, data, members, onToggle, onOpenNote, onCapture, onDropBack, onReschedule, onRemind, onAssign, pushReady, tz }: {
-  narrow: boolean; data: InboxData; members: Member[];
+function TaskPanel({ narrow, onClose, data, members, onToggle, onOpenNote, onCapture, onDropBack, onReschedule, onRemind, onAssign, pushReady, tz }: {
+  narrow: boolean; onClose: () => void; data: InboxData; members: Member[];
   onToggle: (i: CalendarItem, done: boolean) => void;
   onOpenNote: (id: string) => void;
-  onCapture: (title: string) => Promise<void>;
+  onCapture: (title: string) => Promise<boolean>;
   onDropBack: (p: DropPayload) => void;
   onReschedule: (i: CalendarItem, target: Date) => void;
   onRemind: (i: CalendarItem, offsetMin: number | null, channel: ReminderChannel) => void;
@@ -1184,8 +1216,10 @@ function TaskPanel({ narrow, data, members, onToggle, onOpenNote, onCapture, onD
   pushReady: boolean;
   tz: string;
 }) {
+  const selection = useContext(SelectionCtx);
   const [filter, setFilter] = useState<"mine" | "all" | "overdue" | "week">("all");
   const [capture, setCapture] = useState("");
+  const [capturing, setCapturing] = useState(false);
   const drop = useDropTarget(onDropBack);
   const now = Date.now();
   // 「本周」按当地民用周算（周一起），不是「往后七天」——用户问的是这一周还剩什么
@@ -1202,6 +1236,7 @@ function TaskPanel({ narrow, data, members, onToggle, onOpenNote, onCapture, onD
     return true;
   };
   const inbox = data.inbox.filter(keep);
+  const mobileRow = (item: CalendarItem) => <MobileCalendarItem key={`${item.id}:${item.occurrenceStart}`} item={item} timezone={tz} canEdit={data.canEdit} onToggle={onToggle} onOpen={i => selection?.open(i)} onOpenNote={onOpenNote} onReschedule={(i, preset) => onReschedule(i, reschedulePresetDate(preset, new Date(), tz, i.startsAt ?? i.dueAt))} />;
 
   return <aside
     {...drop.handlers}
@@ -1214,11 +1249,12 @@ function TaskPanel({ narrow, data, members, onToggle, onOpenNote, onCapture, onD
     )}
   >
     {narrow && <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-border" aria-hidden />}
-    <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border px-3">
+    <div className="flex min-h-11 shrink-0 flex-wrap items-center gap-1 border-b border-border px-3">
       <span className="text-sm font-semibold">待办</span>
+      {narrow && <Button variant="ghost" className="size-11" size="icon" aria-label="关闭待办面板" onClick={onClose}><X /></Button>}
       <div className="ml-auto inline-flex rounded-md bg-muted p-0.5 text-xs">
         {([["all", "全部"], ["mine", "我的"], ["week", "本周"], ["overdue", "逾期"]] as const).map(([id, label]) =>
-          <button key={id} onClick={() => setFilter(id)} className={cn("rounded px-2 py-0.5", filter === id ? "bg-background shadow-sm" : "text-muted-foreground")}>
+          <button key={id} onClick={() => setFilter(id)} className={cn("rounded px-2 py-0.5", narrow && "min-h-11 min-w-11", filter === id ? "bg-background shadow-sm" : "text-muted-foreground")}>
             {label}{id === "overdue" && data.overdue > 0 && <span className="ml-1 text-destructive">{data.overdue}</span>}
           </button>)}
       </div>
@@ -1231,18 +1267,20 @@ function TaskPanel({ narrow, data, members, onToggle, onOpenNote, onCapture, onD
           {/* 收件箱是唯一允许「和笔记无关」的地方，所以录入必须一行一条、零摩擦 */}
           {data.canEdit && <Input
             value={capture}
+            disabled={capturing}
+            maxLength={200}
             onChange={e => setCapture(e.target.value)}
             onKeyDown={async e => {
-              if (e.key !== "Enter" || !capture.trim()) return;
+              if (e.key !== "Enter" || e.nativeEvent.isComposing || capturing || !capture.trim()) return;
               const title = capture.trim();
-              setCapture("");
-              await onCapture(title);
+              setCapturing(true);
+              try { if (await onCapture(title)) setCapture(""); } finally { setCapturing(false); }
             }}
             placeholder="随手记一条，回车即存"
-            className="mb-1.5 h-8 text-xs"
+            className={cn("mb-1.5 h-8 text-xs", narrow && "min-h-11 text-base")}
           />}
           <div className="space-y-0.5 rounded-lg border border-border bg-background p-1.5">
-            {inbox.map(i => <PanelRow key={i.id} item={i} tz={tz} data={data} members={members} onToggle={onToggle} onReschedule={onReschedule} onRemind={onRemind} onAssign={onAssign} pushReady={pushReady} />)}
+            {inbox.map(i => narrow ? mobileRow(i) : <PanelRow key={i.id} item={i} tz={tz} data={data} members={members} onToggle={onToggle} onReschedule={onReschedule} onRemind={onRemind} onAssign={onAssign} pushReady={pushReady} />)}
             {!inbox.length && <p className="px-1.5 py-2 text-xs text-muted-foreground">这里接住随手记。也可以在笔记里写 <code className="rounded bg-muted px-1">- [ ] 事情</code>，它会自动出现在下面。</p>}
           </div>
         </section>
@@ -1252,10 +1290,10 @@ function TaskPanel({ narrow, data, members, onToggle, onOpenNote, onCapture, onD
           return <section key={g.noteId}>
             <h3 className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
               <Star className="size-3.5" /><span className="truncate">{g.noteTitle}</span>
-              <button className="ml-auto rounded p-0.5 hover:bg-muted" onClick={() => onOpenNote(g.noteId)} aria-label="跳到原文"><ChevronRight className="size-3.5" /></button>
+              <button className={cn("ml-auto rounded p-0.5 hover:bg-muted", narrow && "grid size-11 place-items-center")} onClick={() => onOpenNote(g.noteId)} aria-label="跳到原文"><ChevronRight className="size-3.5" /></button>
             </h3>
             <div className="space-y-0.5 rounded-lg border border-border bg-background p-1.5">
-              {rows.map(i => <PanelRow key={`${i.id}:${i.occurrenceStart}`} item={i} tz={tz} data={data} members={members} onToggle={onToggle} onReschedule={onReschedule} onRemind={onRemind} onAssign={onAssign} pushReady={pushReady} />)}
+              {rows.map(i => narrow ? mobileRow(i) : <PanelRow key={`${i.id}:${i.occurrenceStart}`} item={i} tz={tz} data={data} members={members} onToggle={onToggle} onReschedule={onReschedule} onRemind={onRemind} onAssign={onAssign} pushReady={pushReady} />)}
             </div>
           </section>;
         })}
@@ -1496,119 +1534,138 @@ function CalendarSyncPanel({ wsId, narrow, onClose, onChanged }: { wsId: string;
 
 // ── 今天 ────────────────────────────────────────────────────────────────
 
-type TodayData = { date: string; timezone: string; items: CalendarItem[]; overdue: CalendarItem[]; notes: Array<{ id: string; title: string; updatedAt: string }> };
+type TodayData = { date: string; timezone: string; canEdit: boolean; items: CalendarItem[]; overdue: CalendarItem[]; notes: Array<{ id: string; title: string; updatedAt: string }> };
 
 export function TodayPage() {
   const { wsId = "" } = useParams();
   const nav = useNavigate();
   const toast = useToast();
+  const narrow = useNarrow();
   const [data, setData] = useState<TodayData | null>(null);
   const [review, setReview] = useState<ReviewData | null>(null);
   const [onThisDay, setOnThisDay] = useState<OnThisDayData | null>(null);
   const [error, setError] = useState("");
   const [editor, setEditor] = useState<EditorTarget | null>(null);
-
+  const [scopeAsk, setScopeAsk] = useState<{ item: CalendarItem; target: Date } | null>(null);
+  const pending = useRef(new Set<string>());
+  const loadSequence = useRef(0);
+  const undoRef = useRef<(() => Promise<void>) | null>(null);
+  const tz = data?.timezone ?? "Asia/Shanghai";
+  const canEdit = data?.canEdit === true;
   const load = useCallback(async () => {
-    try { setData(await api<TodayData>(`/api/v1/workspaces/${wsId}/today`)); setError(""); }
-    catch (e) { setError((e as Error).message); }
+    const sequence = ++loadSequence.current;
+    try { const result = await api<TodayData>(`/api/v1/workspaces/${wsId}/today`); if (sequence === loadSequence.current) { setData(result); setError(""); } }
+    catch (e) { if (sequence === loadSequence.current) setError((e as Error).message); }
   }, [wsId]);
-  useEffect(() => { void load(); }, [load]);
-
-  // 回看是加分项，拉不到就整段不出现，别把今天页一起拖垮
+  useEffect(() => { setData(null); void load(); return () => { loadSequence.current++; }; }, [load]);
   useEffect(() => {
-    api<ReviewData>(`/api/v1/workspaces/${wsId}/calendar/review`).then(setReview).catch(() => {});
-    api<OnThisDayData>(`/api/v1/workspaces/${wsId}/calendar/on-this-day`).then(setOnThisDay).catch(() => {});
+    const refresh = () => { if (document.visibilityState === "visible") void load(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    const interval = window.setInterval(refresh, 30_000);
+    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); window.clearInterval(interval); };
+  }, [load]);
+  useEffect(() => {
+    let cancelled = false;
+    setReview(null); setOnThisDay(null);
+    api<ReviewData>(`/api/v1/workspaces/${wsId}/calendar/review`).then(r => { if (!cancelled) setReview(r); }).catch(() => {});
+    api<OnThisDayData>(`/api/v1/workspaces/${wsId}/calendar/on-this-day`).then(r => { if (!cancelled) setOnThisDay(r); }).catch(() => {});
+    return () => { cancelled = true; };
   }, [wsId]);
+
+  function saved(label: string, undo?: () => Promise<unknown>) {
+    const revert = undo ? async () => {
+      undoRef.current = null;
+      try { await undo(); await load(); toast.success("已撤销"); } catch (e) { toast.error("撤销失败", (e as Error).message); }
+    } : null;
+    undoRef.current = revert;
+    toast.toast({ title: label, duration: 8000, description: revert ? <button className="min-h-11 underline underline-offset-2" onClick={() => { if (undoRef.current === revert) void revert(); }}>撤销</button> : undefined });
+  }
+  useEffect(() => {
+    const undo = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      if (target.closest("input,textarea,[contenteditable=true]")) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && undoRef.current) { event.preventDefault(); void undoRef.current(); }
+    };
+    window.addEventListener("keydown", undo);
+    return () => window.removeEventListener("keydown", undo);
+  }, []);
 
   async function toggle(item: CalendarItem, done: boolean) {
+    if (!canEdit || pending.current.has(item.id)) return;
+    pending.current.add(item.id);
+    const body = (value: boolean) => JSON.stringify({ done: value, occurrenceStart: item.recurring ? item.occurrenceStart : undefined });
     try {
-      const r = await api<{ noteWritten: boolean; detached: boolean }>(`/api/v1/calendar/items/${item.id}/complete`, { method: "POST", body: JSON.stringify({ done, occurrenceStart: item.recurring ? item.occurrenceStart : undefined }) });
+      const r = await api<{ noteWritten: boolean; detached: boolean }>(`/api/v1/calendar/items/${item.id}/complete`, { method: "POST", body: body(done) });
       if (r.detached) toast.error("已脱离原文", "笔记里找不到这一行了，条目状态照记，但不再同步。");
-      else if (r.noteWritten && item.sourceNoteTitle) toast.success(`已同步到《${item.sourceNoteTitle}》`);
+      saved(r.noteWritten ? `已同步到《${item.sourceNoteTitle ?? "来源笔记"}》` : done ? "已完成" : "已恢复为未完成", () => api(`/api/v1/calendar/items/${item.id}/complete`, { method: "POST", body: body(item.status === "done") }));
       await load();
     } catch (e) { toast.error("操作失败", (e as Error).message); }
+    finally { pending.current.delete(item.id); }
   }
 
-  async function openDiary() {
+  async function doReschedule(item: CalendarItem, target: Date, scope: "one" | "following") {
+    if (!canEdit || pending.current.has(item.id)) return;
+    pending.current.add(item.id);
+    const before = item.startsAt ?? item.dueAt;
+    const payload = (startsAt: string, mode: "one" | "following") => JSON.stringify({ startsAt, occurrenceStart: item.recurring ? item.occurrenceStart : undefined, scope: mode });
     try {
-      const r = await api<{ noteId: string }>(`/api/v1/workspaces/${wsId}/calendar/diary`, { method: "POST", body: JSON.stringify({}) });
-      nav(`/w/${wsId}/n/${r.noteId}`);
-    } catch (e) { toast.error("打不开日记", (e as Error).message); }
+      await api(`/api/v1/calendar/items/${item.id}/reschedule`, { method: "POST", body: payload(wallToIso(target, tz), scope) });
+      saved(`已改到 ${target.getUTCMonth() + 1}月${target.getUTCDate()}日`, scope === "one" && before ? () => api(`/api/v1/calendar/items/${item.id}/reschedule`, { method: "POST", body: payload(before, "one") }) : undefined);
+      await load();
+    } catch (e) { toast.error("改期失败", (e as Error).message); }
+    finally { pending.current.delete(item.id); }
   }
-
-  const tz = data?.timezone ?? "Asia/Shanghai";
-  const tasks = (data?.items ?? []).filter(i => i.kind === "task");
-  const events = (data?.items ?? []).filter(i => i.kind === "event");
+  function reschedule(item: CalendarItem, preset: ReschedulePreset) {
+    const target = reschedulePresetDate(preset, new Date(), tz, item.startsAt ?? item.dueAt);
+    if (item.recurring) setScopeAsk({ item, target }); else return doReschedule(item, target, "one");
+  }
+  async function openDiary() {
+    try { const r = await api<{ noteId: string }>(`/api/v1/workspaces/${wsId}/calendar/diary`, { method: "POST", body: JSON.stringify({}) }); nav(`/w/${wsId}/n/${r.noteId}`); }
+    catch (e) { toast.error("打不开日记", (e as Error).message); }
+  }
+  const tasks = (data?.items ?? []).filter(i => i.kind === "task" && i.status !== "cancelled").sort((a, b) => Number(a.status === "done") - Number(b.status === "done"));
+  const events = (data?.items ?? []).filter(i => i.kind === "event" && i.status !== "cancelled").sort((a, b) => Number(b.allDay) - Number(a.allDay) || (a.startsAt ?? "").localeCompare(b.startsAt ?? ""));
+  const openNote = (id: string) => nav(`/w/${wsId}/n/${id}`);
+  const row = (item: CalendarItem) => <MobileCalendarItem key={`${item.id}:${item.occurrenceStart}`} item={item} timezone={tz} canEdit={canEdit} onToggle={toggle} onOpen={i => setEditor({ mode: "edit", item: i })} onOpenNote={openNote} onReschedule={reschedule} />;
   const [y, m, d] = (data?.date ?? "").split("-");
-
-  return <div className="flex h-full min-h-0 flex-col bg-background">
-    <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-4">
-      <Button variant="ghost" size="sm" onClick={() => nav(`/w/${wsId}`)}><ChevronRight className="rotate-180" />笔记</Button>
-      <h1 className="ml-1 text-base font-semibold tracking-[-.02em]">{data ? `${y}年${Number(m)}月${Number(d)}日` : "今天"}</h1>
-      <div className="ml-auto flex items-center gap-1">
-        <span className="mr-2 text-xs text-muted-foreground">{tz}</span>
-        <Button variant="outline" size="sm" onClick={() => void openDiary()}><PenLine />写今天的日记</Button>
-        <Button variant="ghost" size="sm" onClick={() => nav(`/w/${wsId}/calendar`)}><CalendarDays />日历</Button>
-      </div>
+  return <div className="flex h-full min-h-0 min-w-0 flex-col bg-background">
+    <header className="flex min-h-14 shrink-0 flex-wrap items-center gap-1 border-b border-border px-2 py-1 md:gap-2 md:px-4">
+      <Button variant="ghost" className="min-h-11 px-2" onClick={() => nav(`/w/${wsId}`)}><ChevronRight className="rotate-180" />笔记</Button>
+      <h1 className="min-w-0 flex-1 text-base font-semibold tracking-tight">{data ? narrow ? `${Number(m)}月${Number(d)}日 · 今天` : `${y}年${Number(m)}月${Number(d)}日` : "今天"}</h1>
+      <span className="hidden text-xs text-muted-foreground md:inline">{tz}</span>
+      {!narrow && <Button variant="outline" className="min-h-11" disabled={!canEdit} onClick={() => void openDiary()}><PenLine />写今天的日记</Button>}
+      <Button variant="ghost" className="min-h-11 px-2" onClick={() => nav(`/w/${wsId}/calendar`)}><CalendarDays />日历</Button>
     </header>
-
-    {error && <div className="flex items-center gap-3 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-sm">
-      <span className="flex-1">加载失败：{error}</span><Button size="sm" variant="outline" onClick={() => void load()}><RotateCcw />重试</Button>
-    </div>}
-
+    {error && <div className="flex items-center gap-2 border-b border-destructive/30 bg-destructive/10 p-3 text-sm"><span className="min-w-0 flex-1">加载失败：{error}</span><Button className="min-h-11" variant="outline" onClick={() => void load()}><RotateCcw />重试</Button></div>}
     <ScrollArea className="min-h-0 flex-1">
-      <div className="mx-auto grid max-w-4xl gap-5 p-5 md:grid-cols-2">
-        {/* 逾期停在最前面，但不自动搬到今天：让人看见自己欠了什么 */}
-        {!!data?.overdue.length && <section className="md:col-span-2 rounded-xl border border-destructive/40 bg-destructive/5 p-3">
+      {!data && !error ? <GridSkeleton view="agenda" /> : <div className="mx-auto grid max-w-4xl gap-4 p-3 md:grid-cols-2 md:p-5">
+        {!!data?.overdue.length && <section className="rounded-xl border border-destructive/40 bg-destructive/5 p-3 md:col-span-2">
           <h2 className="mb-2 text-sm font-semibold text-destructive">逾期 {data.overdue.length}</h2>
-          <div className="space-y-0.5">{data.overdue.map(i => <ItemChip key={i.id} item={i} tz={tz} onToggle={toggle} onOpen={item => setEditor({ mode: "edit", item })} />)}</div>
+          <div className="space-y-2">{data.overdue.map(row)}</div>
         </section>}
-
         <section className="rounded-xl border border-border p-3">
-          <h2 className="mb-2 flex items-center gap-1.5 text-sm font-semibold"><Inbox className="size-4" />今天要做</h2>
-          {tasks.length ? <div className="space-y-0.5">{tasks.map(i => <ItemChip key={`${i.id}:${i.occurrenceStart}`} item={i} tz={tz} onToggle={toggle} onOpen={item => setEditor({ mode: "edit", item })} />)}</div>
-            : <p className="text-xs text-muted-foreground">今天没有待办。</p>}
+          <div className="mb-2 flex items-center justify-between gap-2"><h2 className="flex items-center gap-2 text-sm font-semibold"><CalendarDays className="size-4" />今天的日程</h2><Button className="min-h-11 px-2" size="sm" variant="ghost" disabled={!canEdit} onClick={() => setEditor({ mode: "create", date: data?.date ?? dayKey(civil(new Date(), tz)), kind: "event" })}><Plus />新建日程</Button></div>
+          {events.length ? <div className="space-y-2">{events.map(row)}</div> : <p className="py-2 text-sm text-muted-foreground">今天没有日程。</p>}
         </section>
-
         <section className="rounded-xl border border-border p-3">
-          <h2 className="mb-2 flex items-center gap-1.5 text-sm font-semibold"><CalendarDays className="size-4" />今天的日程</h2>
-          {events.length ? <div className="space-y-0.5">{events.map(i => <ItemChip key={`${i.id}:${i.occurrenceStart}`} item={i} tz={tz} onToggle={toggle} onOpen={item => setEditor({ mode: "edit", item })} />)}</div>
-            : <p className="text-xs text-muted-foreground">今天没有日程。</p>}
+          <h2 className="mb-3 flex min-h-11 items-center gap-2 text-sm font-semibold"><Inbox className="size-4" />今天要做</h2>
+          {tasks.length ? <div className="space-y-2">{tasks.map(row)}</div> : <p className="py-2 text-sm text-muted-foreground">今天没有待办。{canEdit ? "在底部记一条就能开始。" : ""}</p>}
         </section>
-
         <section className="rounded-xl border border-border p-3 md:col-span-2">
-          <h2 className="mb-2 flex items-center gap-1.5 text-sm font-semibold"><FileText className="size-4" />今天写过的笔记</h2>
-          {data?.notes.length ? <div className="space-y-0.5">
-            {data.notes.map(n => <button key={n.id} onClick={() => nav(`/w/${wsId}/n/${n.id}`)} className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs hover:bg-muted">
-              <FileText className="size-3 shrink-0 text-muted-foreground" />
-              <span className="truncate">{n.title}</span>
-              <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">{fmtHM(civil(n.updatedAt, tz))}</span>
-            </button>)}
-          </div> : <p className="text-xs text-muted-foreground">今天还没动过笔记。<button className="underline underline-offset-2" onClick={() => void openDiary()}>写点什么</button>。</p>}
+          <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold"><FileText className="size-4" />今天写过的笔记</h2>
+          {data?.notes.length ? <div>{data.notes.map(n => <button key={n.id} onClick={() => openNote(n.id)} className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-muted"><FileText className="size-4 shrink-0 text-muted-foreground" /><span className="truncate">{n.title}</span><span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">{fmtHM(civil(n.updatedAt, tz))}</span></button>)}</div> : <p className="text-sm text-muted-foreground">今天还没动过笔记。{canEdit && <button className="min-h-11 underline underline-offset-2" onClick={() => void openDiary()}>写点什么</button>}</p>}
         </section>
-
         {review && <WeekReview review={review} />}
-        {onThisDay?.years.length ? <OnThisDay years={onThisDay.years} tz={tz} onOpenNote={id => nav(`/w/${wsId}/n/${id}`)} onOpenItem={item => setEditor({ mode: "edit", item })} /> : null}
-      </div>
+        {onThisDay?.years.length ? <OnThisDay years={onThisDay.years} tz={tz} onOpenNote={openNote} onOpenItem={item => setEditor({ mode: "edit", item })} /> : null}
+      </div>}
     </ScrollArea>
-
-    <CalendarItemEditor
-      target={editor}
-      wsId={wsId}
-      tz={tz}
-      canEdit
-      onClose={() => setEditor(null)}
-      onSaved={() => { setEditor(null); void load(); }}
-      onDelete={async item => {
-        setEditor(null);
-        try {
-          await api(`/api/v1/calendar/items/${item.id}`, { method: "DELETE" });
-          toast.success(`已删除「${item.title}」`);
-          await load();
-        } catch (e) { toast.error("删除失败", (e as Error).message); }
-      }}
-      onOpenNote={id => nav(`/w/${wsId}/n/${id}`)}
-    />
+    {data && <MobileCapture wsId={wsId} date={data.date} timezone={tz} canEdit={canEdit} onCreated={() => void load()} onOpenNote={openNote} />}
+    <Dialog open={!!scopeAsk} onOpenChange={open => { if (!open) setScopeAsk(null); }}><DialogContent className="[&>button]:min-h-11 [&>button]:min-w-11"><DialogHeader><DialogTitle>这是重复条目</DialogTitle><DialogDescription>「{scopeAsk?.item.title}」的改期要作用到哪些？</DialogDescription></DialogHeader><div className="flex flex-wrap justify-end gap-2"><Button className="min-h-11" variant="ghost" onClick={() => setScopeAsk(null)}>取消</Button><Button className="min-h-11" variant="outline" onClick={() => { const ask = scopeAsk; setScopeAsk(null); if (ask) void doReschedule(ask.item, ask.target, "following"); }}>此后全部</Button><Button className="min-h-11" onClick={() => { const ask = scopeAsk; setScopeAsk(null); if (ask) void doReschedule(ask.item, ask.target, "one"); }}>仅此一次</Button></div></DialogContent></Dialog>
+    <CalendarItemEditor target={editor} wsId={wsId} tz={tz} canEdit={canEdit} onClose={() => setEditor(null)} onSaved={() => { setEditor(null); void load(); }} onDelete={async item => {
+      try { await api(`/api/v1/calendar/items/${item.id}`, { method: "DELETE" }); setEditor(null); saved(`已删除「${item.title}」`, () => api(`/api/v1/calendar/items/${item.id}/restore`, { method: "POST" })); await load(); }
+      catch (e) { toast.error("删除失败", (e as Error).message); }
+    }} onOpenNote={openNote} />
   </div>;
 }
 
