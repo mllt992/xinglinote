@@ -121,3 +121,14 @@ test('DOCX XML 对象树在 Mammoth 前按节点和深度限额拒绝',async()=>
   assert.equal(result.files.length,0);assert.ok(result.report.some(r=>r.status==='failed'&&/XML 结构/.test(r.message)));
  }
 });
+
+test('DOCX XML 主部件不能靠 .bin 名称绕过结构预检',async()=>{
+ const entries=readMigrationZip(wordExportFixture());
+ for(const entry of entries){
+  if(entry.path==='[Content_Types].xml'||entry.path==='_rels/.rels')entry.bytes=Buffer.from(entry.bytes.toString('utf8').replaceAll('word/document.xml','word/payload.bin'));
+  if(entry.path==='word/document.xml')entry.path='word/payload.bin';
+  if(entry.path==='word/_rels/document.xml.rels')entry.path='word/_rels/payload.bin.rels';
+ }
+ const result=await prepareMigration([{path:'renamed.docx',bytes:makeZip(entries.map(e=>({path:e.path,data:e.bytes})))}]);
+ assert.equal(result.files.length,0);assert.ok(result.report.some(r=>r.status==='failed'&&/后缀/.test(r.message)));
+});

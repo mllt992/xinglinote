@@ -85,13 +85,33 @@ export async function prepareMigration(sources: MigrationEntry[], requested: Mig
         if(docxEntries.some(e=>/\.(?:xml|rels)$/i.test(e.path)&&e.bytes.length>MIGRATION_LIMITS.pageBytes))throw fail('QUOTA','DOCX XML 结构超过单篇限制');
         if(docxEntries.filter(e=>/\.(?:xml|rels)$/i.test(e.path)).some(e=>/<!DOCTYPE|<!ENTITY|\u0000/i.test(text(e.bytes)))) throw fail('VALIDATION','DOCX 不接受 XML 实体声明');
         let xmlBytes=0,xmlNodes=0;
+        const xmlParts=new Set<string>(),xmlExtensions=new Set<string>();
         for(const entry of docxEntries.filter(e=>/\.(?:xml|rels)$/i.test(e.path))){
           if((xmlBytes+=entry.bytes.length)>8*1024*1024)throw fail('QUOTA','DOCX XML 总量超过结构预算');
           let depth=0;
           sanitizeHtml(text(entry.bytes),{parser:{xmlMode:true},allowedTags:[],allowedAttributes:{},nonTextTags:[],textFilter:()=>'',
-            onOpenTag:()=>{if(++xmlNodes>50000||++depth>128)throw fail('QUOTA','DOCX XML 结构过大或嵌套过深');},
+            onOpenTag:(name,attrs)=>{
+              if(++xmlNodes>50000||++depth>128)throw fail('QUOTA','DOCX XML 结构过大或嵌套过深');
+              const lower=Object.fromEntries(Object.entries(attrs).map(([k,v])=>[k.toLowerCase(),v]));
+              if(entry.path==='[Content_Types].xml' && /(?:\+xml|\/xml)(?:;|$)/i.test(lower.contenttype??'')){
+                if(name.split(':').at(-1)?.toLowerCase()==='override'&&lower.partname)xmlParts.add(lower.partname.replace(/^\//,''));
+                if(name.split(':').at(-1)?.toLowerCase()==='default'&&lower.extension)xmlExtensions.add(lower.extension.toLowerCase());
+              }
+              if(/\.rels$/i.test(entry.path) && name.split(':').at(-1)?.toLowerCase()==='relationship' && lower.targetmode?.toLowerCase()!=='external'){
+                const binary=/\/(?:image|font|oleObject|package|audio|video|hyperlink)$/i.test(lower.type??'');
+                if(!binary && lower.target && !/\.(?:xml|rels)$/i.test(lower.target))throw fail('VALIDATION','DOCX XML 关系目标必须使用 .xml/.rels 后缀');
+              }
+            },
             onCloseTag:()=>{depth=Math.max(0,depth-1);},
           });
+        }
+        for(const entry of docxEntries){
+          if(/\.(?:xml|rels)$/i.test(entry.path))continue;
+          const declared=xmlParts.has(entry.path)||xmlExtensions.has(posix.extname(entry.path).slice(1).toLowerCase());
+          let offset=entry.bytes.subarray(0,3).equals(Buffer.from([0xef,0xbb,0xbf]))?3:0;
+          while(offset<entry.bytes.length&&[9,10,13,32].includes(entry.bytes[offset]!))offset++;
+          const xmlLike=entry.bytes[offset]===60 || (entry.bytes[0]===0xff&&entry.bytes[1]===0xfe) || (entry.bytes[0]===0xfe&&entry.bytes[1]===0xff);
+          if(declared||xmlLike)throw fail('VALIDATION','DOCX XML 部件必须使用 .xml/.rels 后缀');
         }
         let imageFailure: Error | null = null;
         const maxImageBytes=Math.max(1,...docxEntries.filter(e=>!/\.(?:xml|rels)$/i.test(e.path)).map(e=>e.bytes.length));
