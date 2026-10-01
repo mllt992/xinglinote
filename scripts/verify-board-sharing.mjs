@@ -78,6 +78,15 @@ try{
  const refreshed=page.waitForResponse(r=>r.url().endsWith(`/mindmaps/${map.id}/public-preview`)&&r.request().method()==='PUT');
  await more('刷新公开预览');assert.equal((await refreshed).status(),200);
  await publicPage.goto(`${base}/p/${share.token}`);await publicPage.locator('.public-board-svg text').filter({hasText:'交通路线已更新'}).first().waitFor();
+ // A 发布请求的迟到响应不能修改 SPA 已切换到 B 的发布状态。
+ const other=(await call(`/notebooks/${ids.nb}/mindmaps`,{kind:'mindmap',title:'另一张导图',data:emptyMindMap('另一张导图')})).mindMap;boardIds.push(other.id);
+ let releasePublish,markPublish;const publishGate=new Promise(r=>{releasePublish=r;}),publishStarted=new Promise(r=>{markPublish=r;});
+ await page.route(`**/api/v1/mindmaps/${map.id}/publish`,async route=>{const response=await route.fetch();markPublish();await publishGate;await route.fulfill({response});});
+ await more('从文档站隐藏');await publishStarted;
+ await page.evaluate(path=>{history.pushState({},'',path);dispatchEvent(new PopStateEvent('popstate'));},`/w/${ids.ws}/mindmaps/${other.id}`);
+ await page.getByRole('button',{name:'另一张导图',exact:true}).waitFor();releasePublish();await page.waitForTimeout(150);
+ await page.getByRole('button',{name:'更多操作',exact:true}).click();await page.getByRole('menuitem',{name:'发布到文档站',exact:true}).waitFor();assert.equal(await page.getByRole('menuitem',{name:'从文档站隐藏',exact:true}).count(),0);await page.keyboard.press('Escape');
+ await page.unroute(`**/api/v1/mindmaps/${map.id}/publish`);
  // 不调用外部服务：协议夹具检查 draw.io export 返回 SVG 走同一安全投影链。
  const drawingSvg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 100"><rect width="400" height="100" fill="white"/><text x="20" y="55">架构图协议验收</text></svg>';
  await page.route('https://embed.diagrams.net/**',route=>route.fulfill({contentType:'text/html',body:`<script>addEventListener('message',e=>{const m=JSON.parse(e.data);if(m.action==='export')parent.postMessage(JSON.stringify({event:'export',format:'svg',data:${JSON.stringify('data:image/svg+xml;base64,'+Buffer.from(drawingSvg).toString('base64'))}}),'*')});parent.postMessage(JSON.stringify({event:'init'}),'*')</script>`}));

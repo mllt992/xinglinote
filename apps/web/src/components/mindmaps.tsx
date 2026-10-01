@@ -433,11 +433,14 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
   const inFlight = useRef<Promise<void> | null>(null);
   const blocked = useRef(false);
   const source = useRef<"edit" | "import" | "ai">("edit");
+  const saveGeneration=useRef(0);
+  const liveLoaded=useRef(loaded);liveLoaded.current=loaded;
   const previewRef = useRef(refreshPreview);previewRef.current=refreshPreview;
   const latest = useRef(getLatest);
   latest.current = getLatest;
 
   const reset = useCallback((l: Loaded) => {
+    saveGeneration.current++;
     version.current = l.mindMap.version;
     lastSaved.current = JSON.stringify(l.mindMap.data);
     pending.current = null;
@@ -448,8 +451,11 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
   }, []);
 
   const save = useCallback(async (): Promise<void> => {
+    const generation=saveGeneration.current,id=loaded?.mindMap.id;
+    const stillCurrent=()=>generation===saveGeneration.current && id===liveLoaded.current?.mindMap.id;
     if (timer.current) { window.clearTimeout(timer.current); timer.current = null; }
     if (inFlight.current) { await inFlight.current; }
+    if(!stillCurrent())return;
     const data = latest.current() ?? pending.current;
     if (!data || !loaded?.canEdit || blocked.current) return;
     const body = JSON.stringify(data);
@@ -458,12 +464,14 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
     const run = (async () => {
       try {
         const d = await api<{ mindMap: Brief }>(`/api/v1/mindmaps/${loaded.mindMap.id}`, { method: "PATCH", keepalive: body.length < 60_000, body: JSON.stringify({ data, expectedVersion: version.current, source: source.current }) });
+        if(!stillCurrent())return;
         source.current = "edit";
         version.current = d.mindMap.version;
         lastSaved.current = body;
         setState("saved");
         if (loaded.mindMap.hasPublicPreview || loaded.mindMap.published) await previewRef.current(d.mindMap.version).catch(()=>toast.error("公开预览需要刷新", "源内容已保存，公开页面暂不可用。请点“刷新公开预览”。"));
       } catch (e) {
+        if(!stillCurrent())return;
         const code = (e as { code?: string }).code;
         if (code === "CONFLICT_VERSION") { blocked.current = true; setState("conflict"); toast.error("没保存上", "这张图刚被别人改过。点「重新加载」拿最新版本（你这次的改动会丢失，但之前保存的版本都在版本历史里）。"); }
         else if (code === "VALIDATION" || code === "PAYLOAD_TOO_LARGE" || code === "FORBIDDEN" || code === "NOT_FOUND") { blocked.current = true; setState("failed"); toast.error("保存失败", errMsg(e)); }
@@ -472,7 +480,8 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
     })();
     inFlight.current = run;
     await run;
-    inFlight.current = null;
+    if(inFlight.current===run)inFlight.current = null;
+    if(!stillCurrent())return;
     // 保存期间又改了：接着存。
     const again = latest.current() ?? pending.current;
     if (!blocked.current && again && JSON.stringify(again) !== lastSaved.current) {
@@ -553,12 +562,22 @@ export function MindMapPage() {
     try {const version=await saver.settle();if(version===null)throw new Error('请先处理保存冲突');await refreshPreview(version);return true;}
     catch(e){toast.error('预览刷新失败',errMsg(e));return false;}finally{setPreviewBusy(false);}
   }
+  async function openSharing(){
+    const id=loaded?.mindMap.id,generation=loadGeneration.current;
+    if(await preparePreview() && routeId.current===id && loadGeneration.current===generation)setSharing(true);
+  }
   async function publishBoard(){
     if(!loaded)return;
-    const published=!loaded.mindMap.published;
+    const id=loaded.mindMap.id,generation=loadGeneration.current,published=!loaded.mindMap.published;
+    const stillCurrent=()=>routeId.current===id && loadGeneration.current===generation;
     if(published && !await preparePreview())return;
-    if(routeId.current!==loaded.mindMap.id)return;
-    try{await api(`/api/v1/mindmaps/${loaded.mindMap.id}/publish`,{method:'POST',body:JSON.stringify({published})});setLoaded(l=>l?{...l,mindMap:{...l.mindMap,published}}:l);toast.success(published?'已发布到文档站':'已从文档站隐藏');}catch(e){toast.error('发布失败',errMsg(e));}
+    if(!stillCurrent())return;
+    try{
+      await api(`/api/v1/mindmaps/${id}/publish`,{method:'POST',body:JSON.stringify({published})});
+      if(!stillCurrent())return;
+      setLoaded(l=>l?.mindMap.id===id?{...l,mindMap:{...l.mindMap,published}}:l);
+      toast.success(published?'已发布到文档站':'已从文档站隐藏');
+    }catch(e){if(stillCurrent())toast.error('发布失败',errMsg(e));}
   }
 
   const load = useCallback(async () => {
@@ -642,7 +661,7 @@ export function MindMapPage() {
     {saver.state === "conflict" && <Button size="sm" variant="outline" className="ml-1 shrink-0" onClick={() => { setLoaded(null); void load(); }}><RotateCcw />重新加载</Button>}
   </>;
   const menu = <>
-    {canEdit && <DropdownMenuItem disabled={previewBusy} onSelect={() => void preparePreview().then(ok=>{if(ok)setSharing(true);})}><Share2 />分享与复制链接</DropdownMenuItem>}
+    {canEdit && <DropdownMenuItem disabled={previewBusy} onSelect={() => void openSharing()}><Share2 />分享与复制链接</DropdownMenuItem>}
     {canEdit && <DropdownMenuItem disabled={previewBusy} onSelect={() => void preparePreview()}><RotateCcw />刷新公开预览</DropdownMenuItem>}
     {loaded?.canPublish && <DropdownMenuItem disabled={previewBusy} onSelect={()=>void publishBoard()}><Globe2 />{loaded.mindMap.published?'从文档站隐藏':'发布到文档站'}</DropdownMenuItem>}
     <DropdownMenuItem onSelect={() => setVersionsOpen(true)}><History />版本历史</DropdownMenuItem>
