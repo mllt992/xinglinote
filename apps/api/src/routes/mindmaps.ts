@@ -1,3 +1,5 @@
+import { canPublishNotebook } from "@kb/core";
+import { sanitizeBoardSvg, projectionCurrent } from "../lib/board-projection.ts";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
@@ -64,9 +66,9 @@ mindMapRoutes.post("/notebooks/:id/mindmaps", async c => {
 
 mindMapRoutes.get("/mindmaps/:id", async c => {
   const user = await requireUser(c);
-  const { map, notebook, workspace } = await loadBoard(c.req.param("id"), user.id, "read");
+  const { map, notebook, workspace, role } = await loadBoard(c.req.param("id"), user.id, "read");
   const canEdit = await canEditNotebook(map.notebookId, user.id);
-  return ok(c, { mindMap: { ...briefBoard(map), data: readBoardData(map) }, notebook: { id: notebook.id, title: notebook.title }, workspaceId: workspace.id, canEdit, drawioUrl: env.drawioUrl });
+  return ok(c, { mindMap: { ...briefBoard(map), data: readBoardData(map) }, notebook: { id: notebook.id, title: notebook.title }, workspaceId: workspace.id, canEdit, canPublish: canPublishNotebook(role), drawioUrl: env.drawioUrl });
 });
 
 /** 改标题 / 整份数据 / 挪到同工作区的另一个笔记本。必须带上次拿到的 version，撞了回 CONFLICT_VERSION。 */
@@ -323,3 +325,23 @@ mindMapRoutes.post("/mindmaps/:id/ai/drawio", async c => {
   return ok(c, result);
 });
 
+
+/** 只保存当前版本的安全渲染投影，不改变源版本。 */
+mindMapRoutes.put("/mindmaps/:id/public-preview", async c => {
+  const user = await requireUser(c);
+  const { map } = await loadBoard(c.req.param('id'),user.id,'edit');
+  const body = z.object({ expectedVersion:z.number().int().positive(), svg:z.string().max(2_000_000) }).parse(await c.req.json());
+  const svg = sanitizeBoardSvg(body.svg);
+  const [saved] = await db.update(mindMaps).set({publicSvg:svg,publicSvgVersion:body.expectedVersion}).where(and(eq(mindMaps.id,map.id),eq(mindMaps.version,body.expectedVersion),isNull(mindMaps.trashedAt))).returning();
+  if (!saved) throw conflict();
+  return ok(c,{previewCurrent:true});
+});
+mindMapRoutes.post("/mindmaps/:id/publish", async c => {
+  const user = await requireUser(c);
+  const { map, notebook, role } = await loadBoard(c.req.param('id'),user.id,'edit');
+  if (!canPublishNotebook(role)) throw fail('FORBIDDEN','只有工作区管理员能发布导图');
+  const body=z.object({published:z.boolean()}).parse(await c.req.json());
+  if (body.published && (!notebook.sitePublished || !projectionCurrent(map))) throw fail('VALIDATION','请先上线所属文档站并刷新当前版本的公开预览');
+  await db.update(mindMaps).set({published:body.published}).where(eq(mindMaps.id,map.id));
+  return ok(c,{published:body.published});
+});

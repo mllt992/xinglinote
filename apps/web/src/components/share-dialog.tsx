@@ -11,8 +11,8 @@ import { FormError } from "./ui/form-error";
 import { assertConfirmedRevokedShare, removeConfirmedRevokedShare } from "./share-dialog-state";
 
 export type ShareDto = { id: string; token: string; targetType: string; targetId: string; headingAnchor: string | null; hasPassword: boolean; expiresAt: string | null; allowRobots: boolean; commentsEnabled: boolean; correctionsEnabled: boolean; showBacklinks: boolean; status: string; createdAt: string };
-export type ShareTarget = { kind: "note" | "folder" | "attachment" | "notebook"; id: string; title: string; bodyMd?: string };
-const typeLabel: Record<string, string> = { note: "整篇", heading: "某一节", folder: "目录", attachment: "附件", notebook: "整本" };
+export type ShareTarget = { kind: "note" | "folder" | "attachment" | "notebook" | "mindmap"; id: string; title: string; bodyMd?: string };
+const typeLabel: Record<string, string> = { mindmap: "导图 / 画板", note: "整篇", heading: "某一节", folder: "目录", attachment: "附件", notebook: "整本" };
 
 type ShareRowProps = {
   s: ShareDto; url: string; copied?: boolean; confirming?: boolean; revoking?: boolean; revokeDisabled?: boolean;
@@ -40,6 +40,7 @@ function ShareRow({ s, url, copied, confirming, revoking, revokeDisabled, onCopy
 }
 
 function shareListPath(target: ShareTarget) {
+  if (target.kind === "mindmap") return `/api/v1/mindmaps/${target.id}/shares`;
   if (target.kind === "note") return `/api/v1/notes/${target.id}/shares`;
   if (target.kind === "notebook") return `/api/v1/notebooks/${target.id}/shares`;
   if (target.kind === "folder") return `/api/v1/folders/${target.id}/shares`;
@@ -47,6 +48,7 @@ function shareListPath(target: ShareTarget) {
 }
 
 function hint(kind: ShareTarget["kind"]) {
+  if (kind === "mindmap") return "访客只会收到经过清理的可视预览，不含原始数据或未公开笔记链接。源内容变更后旧预览立即停用；编辑器会刷新预览，外部工具更新后请重新打开并刷新。";
   if (kind === "notebook") return "整本链接是实时投影，之后在这个本里新建的笔记也会出现。和发布文档站不同：这里不看是否已发布，本里所有未删除的笔记都会进去。勾选「允许搜索引擎收录」且不设密码时，会出现在广场的笔记本列表。";
   if (kind === "folder") return "目录链接是实时子树，之后在这个目录下新建的笔记也会出现在链接里。公开页和整本分享一样是 wiki 阅读壳。勾选「允许搜索引擎收录」且不设密码时，会出现在广场的笔记本列表。";
   if (kind === "attachment") return "附件只能经这条链接下载，不暴露物理路径。";
@@ -125,7 +127,7 @@ export function ShareDialog({ target, open, onOpenChange }: { target: ShareTarge
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-w-xl">
     <DialogHeader><DialogTitle className="flex items-center gap-2"><Share2 className="size-5" />分享《{target?.title}》</DialogTitle>
       <DialogDescription>{target ? hint(target.kind) : ""}</DialogDescription>
-      <p className="text-xs text-muted-foreground">这条链接<b className="font-medium">只读</b>，访客能看能评论，但不能编辑。想让人跟你一起写，用顶栏的「协作」。</p></DialogHeader>
+      <p className="text-xs text-muted-foreground">{target?.kind === "mindmap" ? "链接只读，支持缩放和节点文字搜索，不开放评论或编辑。" : <>这条链接<b className="font-medium">只读</b>，访客能看能评论，但不能编辑。想让人跟你一起写，用顶栏的「协作」。</>}</p></DialogHeader>
     <form className="rounded-xl border border-border bg-muted/30 p-4" onSubmit={e => { e.preventDefault(); void createShare(); }}>
       {target?.kind === "note" && headings.length > 0 && <select className="mb-3 h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none" value={anchor} onChange={e => setAnchor(e.target.value)}><option value="">分享整篇</option>{headings.map(h => <option key={h.anchor} value={h.anchor}>只分享这一节：{"　".repeat(Math.max(0, h.level - 1))}{h.text}</option>)}</select>}
       <div className="grid gap-3 sm:grid-cols-[1fr_150px_auto]">
@@ -134,7 +136,7 @@ export function ShareDialog({ target, open, onOpenChange }: { target: ShareTarge
         <Button type="submit" disabled={busy}>{busy ? "生成中…" : "生成并复制"}</Button>
       </div>
       {target?.kind !== "attachment" && <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs">
-        {([["commentsEnabled", "允许评论"], ["correctionsEnabled", "允许纠错建议"], ["showBacklinks", "显示反向链接"], ["allowRobots", "允许搜索引擎收录"]] as const).map(([k, label]) =>
+        {([["commentsEnabled", "允许评论"], ["correctionsEnabled", "允许纠错建议"], ["showBacklinks", "显示反向链接"], ["allowRobots", "允许搜索引擎收录"]] as const).filter(([k]) => target?.kind !== "mindmap" || k === "allowRobots").map(([k, label]) =>
           <label key={k} className="flex cursor-pointer items-center gap-1.5"><input type="checkbox" className="size-3.5 accent-current" checked={opts[k]} onChange={e => setOpts({ ...opts, [k]: e.target.checked })} />{label}</label>)}
       </div>}
       <FormError className="mt-2">{err}</FormError>

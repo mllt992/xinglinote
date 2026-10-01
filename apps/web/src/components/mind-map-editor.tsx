@@ -172,6 +172,7 @@ function outlineToChildren(items: OutlineNode[]): Array<{ data: Record<string, u
 }
 
 export type MindMapEditorHandle = {
+  getPreviewSvg: () => Promise<string>;
   getData: () => MindMapData | null;
   focusNode: (uid: string) => void;
   /** 整份替换（导入、AI 生成时用），可以撤销。 */
@@ -368,6 +369,11 @@ export const MindMapEditor = forwardRef<MindMapEditorHandle, Props>(function Min
   }, []);
 
   useImperativeHandle(ref, () => ({
+    getPreviewSvg: async () => {
+      const url = await mindRef.current?.export('svg', false, '');
+      if (typeof url !== 'string' || !url.startsWith('data:image/svg+xml')) throw new Error('导图编辑器尚未准备好');
+      return fetch(url).then(r=>r.text());
+    },
     getData,
     focusNode: uid => { const m = mindRef.current; if (m) try { m.execCommand("GO_TARGET_NODE", uid); } catch { /* 节点不在了 */ } },
     replaceData,

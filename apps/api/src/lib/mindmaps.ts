@@ -107,7 +107,7 @@ export async function loadBoard(id: string, userId: string, mode: "read" | "edit
 }
 
 export function briefBoard(map: BoardRow) {
-  return { id: map.id, kind: boardKind(map), notebookId: map.notebookId, title: map.title, version: map.version, createdAt: map.createdAt, updatedAt: map.updatedAt, updatedBy: map.updatedBy };
+  return { published: map.published, hasPublicPreview: !!map.publicSvg, previewCurrent: !!map.publicSvg && map.publicSvgVersion === map.version, id: map.id, kind: boardKind(map), notebookId: map.notebookId, title: map.title, version: map.version, createdAt: map.createdAt, updatedAt: map.updatedAt, updatedBy: map.updatedBy };
 }
 
 export async function createBoard(v: { notebookId: string; kind: BoardKind; title: string; data: BoardData; userId: string; source: string }) {

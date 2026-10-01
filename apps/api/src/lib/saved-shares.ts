@@ -1,7 +1,7 @@
 import { and, count, desc, eq } from "drizzle-orm";
 import { AppError, fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { attachments, folders, notebooks, savedShares, shareLinks, workspaces } from "../db/schema.ts";
+import { attachments, folders, mindMaps, notebooks, savedShares, shareLinks, workspaces } from "../db/schema.ts";
 import { noteAccess } from "./note-access.ts";
 import { notebookAccess } from "./notebook-access.ts";
 import {
@@ -54,6 +54,11 @@ export async function canReadViaWorkspaceAcl(userId: string, channel: SavedChann
       return true;
     }
     const share = channel.share;
+    if (share.targetType === "mindmap") {
+      const [board]=await db.select().from(mindMaps).where(eq(mindMaps.id,share.targetId));
+      if (!board || board.trashedAt) return false;
+      await notebookAccess(board.notebookId,userId,"read");return true;
+    }
     if (share.targetType === "notebook") {
       await notebookAccess(share.targetId, userId, "read");
       return true;

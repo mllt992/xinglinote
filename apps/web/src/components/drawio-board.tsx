@@ -19,7 +19,7 @@ import { useToast } from "./ui/toast";
  * 图形内容只在浏览器里处理，不经过 diagrams.net 的服务器。
  */
 
-export type DrawioBoardHandle = { getData: () => DrawioData };
+export type DrawioBoardHandle = { getData: () => DrawioData; getPreviewSvg: () => Promise<string> };
 type Props = {
   data: DrawioData;
   title: string;
@@ -65,7 +65,16 @@ export const DrawioBoard = forwardRef<DrawioBoardHandle, Props>(function DrawioB
   const origin = (() => { try { return new URL(drawioUrl, window.location.href).origin; } catch { return ""; } })();
 
   const getData = useCallback((): DrawioData => ({ format: "drawio", xml: xml.current, noteIds: noteIds.current }), []);
-  useImperativeHandle(ref, () => ({ getData }), [getData]);
+  useImperativeHandle(ref, () => ({ getData, getPreviewSvg: async () => {
+    if (status !== 'ready') throw new Error('画板编辑器尚未准备好');
+    const url=await new Promise<string|null>(resolve=>{
+      exportWaiters.current.push(resolve);
+      frame.current?.contentWindow?.postMessage(JSON.stringify({action:'export',format:'svg',border:10}),origin);
+      window.setTimeout(()=>{const i=exportWaiters.current.indexOf(resolve);if(i>=0){exportWaiters.current.splice(i,1);resolve(null);}},30_000);
+    });
+    if (!url || !url.startsWith('data:image/svg+xml')) throw new Error('画板预览生成失败');
+    return dataUrlToBlob(url).text();
+  } }), [getData,status,origin]);
 
   const post = useCallback((msg: Record<string, unknown>) => {
     frame.current?.contentWindow?.postMessage(JSON.stringify(msg), origin || "*");

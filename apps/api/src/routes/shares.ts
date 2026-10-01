@@ -6,7 +6,9 @@ import { z } from "zod";
 import { canPublishNotebook, canRequestSitePublish, hashPassword, verifyPassword } from "@kb/core";
 import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
-import { attachments, folders, notebooks, notes, notifications, shareLinks, users, workspaceMembers, workspaces } from "../db/schema.ts";
+import { attachments, folders, mindMaps, mindMapNoteLinks, notebooks, notes, notifications, shareLinks, users, workspaceMembers, workspaces } from "../db/schema.ts";
+import { loadBoard } from "../lib/mindmaps.ts";
+import { publicBoard } from "../lib/public-board.ts";
 import { ok } from "../http.ts";
 import { readStoredFile } from "../lib/blobs.ts";
 import { currentUser } from "../lib/session.ts";
@@ -107,6 +109,32 @@ async function issue(body: z.infer<typeof shareInput>, base: { workspaceId: stri
   return created;
 }
 
+shareRoutes.get('/mindmaps/:id/shares',async c=>{
+  const user=await userRequired(c); const {map}=await loadBoard(c.req.param('id'),user.id,'edit');
+  const rows=await db.select().from(shareLinks).where(and(eq(shareLinks.targetType,'mindmap'),eq(shareLinks.targetId,map.id))).orderBy(desc(shareLinks.createdAt));
+  return ok(c,{shares:rows.map(publicShare)});
+});
+shareRoutes.post('/mindmaps/:id/shares',async c=>{
+  const user=await userRequired(c); const {map,workspace}=await loadBoard(c.req.param('id'),user.id,'edit');
+  await publicBoard(map);
+  const body=shareInput.parse(await c.req.json());
+  return ok(c,publicShare(await issue({...body,commentsEnabled:false,correctionsEnabled:false},{workspaceId:workspace.id,targetType:'mindmap',targetId:map.id,createdBy:user.id})),201);
+});
+shareRoutes.get('/public/sites/:wsSlug/:nbSlug/notes/:id/boards',async c=>{
+  c.header('Cache-Control','private, no-store');
+  const {nb}=await loadLiveSite(c.req.param('wsSlug'),c.req.param('nbSlug'));
+  const [note]=await db.select({id:notes.id}).from(notes).where(and(eq(notes.id,c.req.param('id')),eq(notes.notebookId,nb.id),eq(notes.published,true),eq(notes.moderationStatus,'none'),isNull(notes.trashedAt)));
+  if(!note)throw fail('NOT_FOUND','笔记不存在');
+  const boards=await db.select({id:mindMaps.id,title:mindMaps.title,version:mindMaps.version,previewVersion:mindMaps.publicSvgVersion}).from(mindMapNoteLinks).innerJoin(mindMaps,eq(mindMaps.id,mindMapNoteLinks.mindMapId)).where(and(eq(mindMapNoteLinks.noteId,note.id),eq(mindMaps.notebookId,nb.id),eq(mindMaps.published,true),isNull(mindMaps.trashedAt)));
+  return ok(c,{boards:boards.filter(b=>b.version===b.previewVersion).map(({id,title})=>({id,title}))});
+});
+shareRoutes.get('/public/sites/:wsSlug/:nbSlug/boards/:id',async c=>{
+  c.header('Cache-Control','private, no-store');c.header('X-Robots-Tag','noindex, nofollow');
+  const {nb}=await loadLiveSite(c.req.param('wsSlug'),c.req.param('nbSlug'));
+  const [board]=await db.select().from(mindMaps).where(and(eq(mindMaps.id,c.req.param('id')),eq(mindMaps.notebookId,nb.id),eq(mindMaps.published,true),isNull(mindMaps.trashedAt)));
+  if(!board)throw fail('NOT_FOUND','导图不存在');return ok(c,await publicBoard(board));
+});
+
 shareRoutes.get("/notes/:id/shares", async (c) => {
   const { note } = await manageableNote(c, c.req.param("id"));
   const rows = await db.select().from(shareLinks).where(eq(shareLinks.targetId, note.id)).orderBy(desc(shareLinks.createdAt));
@@ -172,15 +200,17 @@ shareRoutes.get("/workspaces/:id/shares", async (c) => {
   // folders、attachments 三张表全拉出来，只为了 find 一个 title。
   const wanted = (kind: string) => mine.filter(s => (kind === "note" ? s.targetType === "note" || s.targetType === "heading" : s.targetType === kind)).map(s => s.targetId);
   const pick = async <T>(ids: string[], run: (ids: string[]) => Promise<T[]>) => (ids.length ? run(ids) : []);
-  const [ns, fs2, as, nbs] = await Promise.all([
+  const [ns, fs2, as, nbs, boards] = await Promise.all([
     pick(wanted("note"), ids => db.select({ id: notes.id, title: notes.title }).from(notes).where(inArray(notes.id, ids))),
     pick(wanted("folder"), ids => db.select({ id: folders.id, title: folders.title }).from(folders).where(inArray(folders.id, ids))),
     pick(wanted("attachment"), ids => db.select({ id: attachments.id, filename: attachments.filename }).from(attachments).where(inArray(attachments.id, ids))),
     pick(wanted("notebook"), ids => db.select({ id: notebooks.id, title: notebooks.title }).from(notebooks).where(inArray(notebooks.id, ids))),
+    pick(wanted("mindmap"), ids => db.select({id:mindMaps.id,title:mindMaps.title}).from(mindMaps).where(inArray(mindMaps.id,ids))),
   ]);
   const label = (s: typeof shareLinks.$inferSelect) => s.targetType === "folder" ? fs2.find(f => f.id === s.targetId)?.title
     : s.targetType === "attachment" ? as.find(a => a.id === s.targetId)?.filename
     : s.targetType === "notebook" ? nbs.find(n => n.id === s.targetId)?.title
+    : s.targetType === "mindmap" ? boards.find(b=>b.id===s.targetId)?.title
     : ns.find(n => n.id === s.targetId)?.title;
   return ok(c, { canManageAll: role === "owner" || role === "admin", shares: mine.map(s => ({ ...publicShare(s), targetTitle: label(s) ?? "已删除的内容", createdBy: s.createdBy, mine: s.createdBy === user.id })) });
 });
@@ -234,6 +264,7 @@ async function savedChip(userId: string | undefined, channel: Parameters<typeof 
 
 shareRoutes.get("/public/shares/:token", async (c) => {
   const share = await loadShare(c.req.param("token"));
+  c.header("Cache-Control", "private, no-store");
   if (!share.allowRobots) c.header("X-Robots-Tag", "noindex, nofollow");
   if (share.passwordHash && !shareCookieValid(getCookie(c, shareCookieName(share.token)), share.id, share.passwordHash)) {
     return ok(c, { requiresPassword: true, type: share.targetType, title: "受保护的分享" });
@@ -408,6 +439,7 @@ shareRoutes.get("/workspaces/:id/site-requests", async (c) => {
 });
 
 shareRoutes.get("/public/sites/:wsSlug/:nbSlug", async (c) => {
+  c.header("Cache-Control", "private, no-store");
   const { ws, nb } = await loadLiveSite(c.req.param("wsSlug"), c.req.param("nbSlug"));
   const payload = await renderSite(ws, nb);
   const user = await currentUser(c);

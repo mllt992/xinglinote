@@ -59,6 +59,10 @@ jobs:
         env:
           KB_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/xingli_test
         run: node --import ./apps/api/node_modules/tsx/dist/loader.mjs scripts/verify-analytics.mjs
+      - name: Board sharing and public SVG browser verification
+        env:
+          KB_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/xingli_test
+        run: node --import ./apps/api/node_modules/tsx/dist/loader.mjs scripts/verify-board-sharing.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
@@ -67,5 +71,6 @@ jobs:
             /tmp/xingli-mobile-*.png
             /tmp/xingli-migration-*.png
             /tmp/xingli-analytics-*.png
+            /tmp/xingli-boards-*.png
           if-no-files-found: ignore
           retention-days: 5
