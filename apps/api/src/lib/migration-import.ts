@@ -3,7 +3,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { AppError, fail } from '@kb/shared';
 import { db } from '../db/client.ts';
 import { attachments, backgroundJobs, folders, notebooks, notes, noteVersions, users } from '../db/schema.ts';
-import { putBlob, hashBytes } from './blobs.ts';
+import { putBlob, hashBytes, cleanupUnreferencedBlob } from './blobs.ts';
 import { assertAttachmentType } from './file-type.ts';
 import { assertUserStorage, textBytes } from './quota.ts';
 import { writeNoteFile } from './files.ts';
@@ -39,6 +39,7 @@ export async function executeMigration(nb: typeof notebooks.$inferSelect, userId
     const warnings=[...page.warnings];
     if(item.folderPath.length===8&&page.path.split('/').length-1+plan.targetFolderPath.length>8)warnings.push('目录超过 8 层，较深目录已合并到第 8 层');
     if(item.action==='skip'){skipped.push({path:page.sourcePath,title:item.title});report.push({path:page.sourcePath,title:item.title,status:'skipped',message:'同目录已存在同名笔记'});continue;}
+    const attemptedBlobs=new Set<string>();
     try {
       const committed=await db.transaction(async tx=>{
         // 同一本的导入互斥；锁定配额归属用户，使本导入每篇之间可正确累计。
@@ -108,8 +109,10 @@ export async function executeMigration(nb: typeof notebooks.$inferSelect, userId
           [note]=await tx.insert(notes).values({id:noteId,workspaceId:nb.workspaceId,notebookId:nb.id,folderId,title:item.title,bodyMd:body,aiIndex:nb.defaultAiIndex,createdBy:userId,updatedBy:userId}).returning();
           await tx.insert(noteVersions).values({noteId:note.id,version:1,title:note.title,bodyMd:body,editorId:userId,source:'import'});
         }
-        for(const asset of pending){
+        // 多个哈希按固定顺序取锁，跨笔记本导入不会因相反附件顺序互相等待。
+        for(const asset of [...pending].sort((a,b)=>a.sha.localeCompare(b.sha))){
           if(asset.existing){if(asset.existing.trashedAt)await tx.update(attachments).set({trashedAt:null}).where(eq(attachments.id,asset.id));continue;}
+          attemptedBlobs.add(asset.sha);
           const blob=await putBlob(asset.bytes,tx);
           await tx.insert(attachments).values({id:asset.id,workspaceId:nb.workspaceId,noteId,filename:asset.filename,storedName:blob.path,mime:asset.mime,bytes:asset.bytes.length,sha256:blob.sha256,createdBy:userId,extractStatus:asset.mime==='application/pdf'?'pending':'none'});
           if(asset.mime==='application/pdf')await tx.insert(backgroundJobs).values({type:'extract_pdf',payload:{attachmentId:asset.id}});
@@ -125,7 +128,9 @@ export async function executeMigration(nb: typeof notebooks.$inferSelect, userId
       catch {report.push({...result,status:'degraded',message:'正文已安全入库，磁盘镜像写入失败，可重新保存笔记修复'});}
     } catch(e) {
       if(!(e instanceof AppError))console.error("迁移单篇失败",page.sourcePath,e);
-      // 引用随数据库事务一起回滚，不再次减别人的共享引用。失败落盘的哈希文件可供下次复用。
+      // 此时事务已回滚、连接/行锁已释放；清理只删除没有任何已提交引用的物理文件。
+      // 清理失败则终止本批，不能继续放大磁盘占用或隐瞒运维错误。
+      for(const sha of attemptedBlobs)await cleanupUnreferencedBlob(sha);
       report.push({path:page.sourcePath,title:item.title,status:'failed',message:e instanceof AppError?e.message:'导入失败，本篇已回滚，请重试或检查服务器日志'});
     }
   }

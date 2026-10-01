@@ -11,7 +11,7 @@ import { env } from '../env.ts';
 import { onError } from '../http.ts';
 import { fileRoutes } from '../routes/files.ts';
 import { hashToken } from './session.ts';
-import { hashBytes, putBlob, releaseBlob } from './blobs.ts';
+import { hashBytes, putBlob, releaseBlob, retainBlob, cleanupUnreferencedBlob, blobRelPath } from './blobs.ts';
 import { userStorage } from './quota.ts';
 import { notionExportFixture, FIXTURE_PNG, wordExportFixture } from './__fixtures__/migration-export.ts';
 import { makeZip } from './zip.ts';
@@ -77,8 +77,44 @@ test('迁移真实数据库：57 页预览/确认、附件去重下载、冲突�
     const faultPreview=await call('import-files-preview',fault);const failed=await call('import-files',fault,{},faultPreview.json.data.fingerprint);
     assert.equal(failed.json.data.created.length,1);assert.ok(failed.json.data.report.some((r:{path:string;status:string})=>r.path==='事务回滚/坏页.md'&&r.status==='failed'));
     assert.equal((await db.select().from(blobStore).where(eq(blobStore.sha256,hashBytes(faultBytes)))).length,0);
+    assert.equal(await stat(join(env.dataDir,blobRelPath(hashBytes(faultBytes)))).then(()=>true,()=>false),false,'回滚的唯一哈希不能留在磁盘');
     assert.equal((await db.select().from(folders).where(and(eq(folders.workspaceId,id.ws),eq(folders.title,'事务回滚')))).length,0);
     assert.equal((await db.select().from(notes).where(and(eq(notes.workspaceId,id.ws),eq(notes.title,'坏页')))).length,0);
+    // 反复唯一内容失败、且失败发生在后一个附件：先落盘的文件也必须被清理。
+    for(let iteration=0;iteration<4;iteration++){
+      const later=Buffer.from(`fail later ${suffix} ${iteration}`);
+      let earlier=Buffer.from('');
+      for(let candidate=0;candidate<10000;candidate++){earlier=Buffer.from(`first ${suffix} ${iteration} ${candidate}`);if(hashBytes(earlier)<hashBytes(later))break;}
+      assert.ok(hashBytes(earlier)<hashBytes(later));
+      const payload=[{path:`回滚-${iteration}.md`,bytes:Buffer.from('[先写](first.txt) [后失败](fail.txt)')},{path:'first.txt',bytes:earlier},{path:'fail.txt',bytes:later}];
+      const pre=await call('import-files-preview',payload);const result=await call('import-files',payload,{},pre.json.data.fingerprint);
+      assert.equal(result.json.data.created.length,0);
+      for(const bytes of [earlier,later]){
+        assert.equal((await db.select().from(blobStore).where(eq(blobStore.sha256,hashBytes(bytes)))).length,0);
+        assert.equal(await stat(join(env.dataDir,blobRelPath(hashBytes(bytes)))).then(()=>true,()=>false),false,'每次失败都应归还物理磁盘占用');
+      }
+    }
+    // 回滚释放哈希锁后，清理与另一个成功上传者竞争同一哈希；不能删掉胜出的引用。
+    const racingBytes=Buffer.from(`concurrent committed hash ${suffix}`),racingSha=hashBytes(racingBytes);
+    let written!:()=>void,finish!:()=>void;
+    const isWritten=new Promise<void>(resolve=>{written=resolve;}),canFinish=new Promise<void>(resolve=>{finish=resolve;});
+    const failingTransaction=db.transaction(async tx=>{await putBlob(racingBytes,tx);written();await canFinish;throw new Error('intentional rollback');});
+    const rolledBack=assert.rejects(failingTransaction,/intentional rollback/);
+    await isWritten;
+    const successfulUpload=putBlob(racingBytes);
+    finish();await rolledBack;
+    await Promise.all([successfulUpload,cleanupUnreferencedBlob(racingSha)]);
+    assert.equal((await db.select().from(blobStore).where(eq(blobStore.sha256,racingSha)))[0]!.refcount,1);
+    assert.deepEqual(await readFile(join(env.dataDir,blobRelPath(racingSha))),racingBytes);
+    await releaseBlob(racingSha);
+    // refcount=0 墓碑不能被 retain 复活；模拟物理回收后、删墓碑前进程退出。
+    await putBlob(racingBytes);
+    await db.update(blobStore).set({refcount:0}).where(eq(blobStore.sha256,racingSha));
+    await rm(join(env.dataDir,blobRelPath(racingSha)),{force:true});
+    assert.equal(await retainBlob(racingSha),false);
+    await putBlob(racingBytes);
+    assert.deepEqual(await readFile(join(env.dataDir,blobRelPath(racingSha))),racingBytes);
+    await releaseBlob(racingSha);
     const otherFormats=[{path:'word.docx',bytes:wordExportFixture()},{path:'文章.html',bytes:Buffer.from('<title>文章</title><h1>你好</h1><script>bad()</script><p>导入正文</p>')}];
     const otherPreview=await call('import-files-preview',otherFormats);const other=await call('import-files',otherFormats,{},otherPreview.json.data.fingerprint);assert.equal(other.json.data.created.length,2,JSON.stringify(other.json));
     const rootNote=importedNotes.find(n=>n.title==='合成知识库')!;
