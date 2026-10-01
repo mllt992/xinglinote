@@ -33,5 +33,5 @@ export function renderPublicMeta(html: string, meta: PublicMeta, publicUrl: stri
   const tags = `<title>${title}</title>\n<meta name="description" content="${description}">\n<meta property="og:type" content="article">\n<meta property="og:site_name" content="${PUBLIC_BRAND}">\n<meta property="og:title" content="${title}">\n<meta property="og:description" content="${description}">\n<meta property="og:image" content="${escapeMeta(image)}">\n<meta property="og:image:width" content="1200">\n<meta property="og:image:height" content="630">\n<meta property="og:url" content="${escapeMeta(canonical)}">\n<meta name="twitter:card" content="summary_large_image">\n<meta name="twitter:title" content="${title}">\n<meta name="twitter:description" content="${description}">\n<meta name="twitter:image" content="${escapeMeta(image)}">\n<meta name="robots" content="${meta.allowRobots ? "index, follow" : "noindex, nofollow"}">`;
   return html.replace(/<title\b[^>]*>[\s\S]*?<\/title\s*>/gi, "")
     .replace(/<meta\b[^>]*(?:name|property)\s*=\s*["'](?:description|robots|og:[^"']*|twitter:[^"']*)["'][^>]*>/gi, "")
-    .replace(/<\/head\s*>/i, `${tags}\n</head>`);
+    .replace(/<\/head\s*>/i, () => `${tags}\n</head>`);
 }

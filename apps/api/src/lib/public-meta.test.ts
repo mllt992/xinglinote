@@ -51,3 +51,14 @@ test("公开 HTML 每次重验，不响应旧 ETag；失败关闭为中性元数
     assert.equal(malformed.status, 404);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("元数据中的美元替换序列保持原文，不插入 HTML 模板", () => {
+  const values = ["price $& markup", "prefix $`", "suffix $'", "literal $$", "$1"];
+  for (const value of values) {
+    const html = renderPublicMeta(template, { title: value, description: value, allowRobots: false }, "https://notes.example.test", "/p/token");
+    assert.equal((html.match(/<head>/g) ?? []).length, 1);
+    assert.equal((html.match(/<\/head>/g) ?? []).length, 1);
+    assert.ok(html.includes(`<title>${value.replaceAll("&", "&amp;").replaceAll("'", "&#39;")}</title>`));
+    assert.ok(!html.includes('content="prefix <html>'));
+  }
+});
