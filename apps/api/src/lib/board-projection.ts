@@ -37,6 +37,8 @@ export function sanitizeBoardSvg(raw: string) {
           continue;
         }
         if (key === 'xmlns' || key === 'xmlns:xlink') continue;
+        // SVG presentation 属性走 CSS 词法：先拒绝转义/控制符，不能只匹配字面 url。
+        if (/[\\\u0000-\u001f\u007f]/.test(value)) continue;
         if (/url\s*\(/i.test(value) && !LOCAL_URL.test(value)) continue;
         if (/[<>]|javascript:|expression\s*\(|data:/i.test(value)) continue;
         safe[key] = value;

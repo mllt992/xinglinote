@@ -15,7 +15,7 @@ assert.equal(process.env.DATABASE_URL,process.env.KB_TEST_DATABASE_URL);
 assert.ok(process.env.KB_TEST_DATABASE_URL && new URL(process.env.KB_TEST_DATABASE_URL).pathname.endsWith('_test'));
 const ids={user:randomUUID(),ws:randomUUID(),nb:randomUUID(),note:randomUUID(),secret:randomUUID()};
 const token=randomBytes(32).toString('base64url'),suffix=randomUUID().slice(0,8),base='http://127.0.0.1:12153';
-const boardIds=[];let browser,server;
+const boardIds=[];let browser,server,page;
 const call=async(path,body,method=body?'POST':'GET')=>{
  const r=await fetch(base+'/api/v1'+path,{method,headers:{cookie:`kb_session=${token}`,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
  const j=await r.json();assert.ok(r.ok,JSON.stringify(j));return j.data;
@@ -34,7 +34,7 @@ try{
  const map=(await call(`/notebooks/${ids.nb}/mindmaps`,{kind:'mindmap',title:'家庭旅行地图',data})).mindMap;boardIds.push(map.id);
  browser=await chromium.launch({executablePath:process.env.KB_CHROMIUM_EXECUTABLE,headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
  const owner=await browser.newContext({viewport:{width:1280,height:900}});await owner.addCookies([{name:'kb_session',value:token,url:base}]);
- const page=await owner.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ page=await owner.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
  const more=async(label)=>{await page.getByRole('button',{name:'更多操作',exact:true}).click();await page.getByRole('menuitem',{name:label,exact:true}).click();};
  await page.goto(`${base}/w/${ids.ws}/mindmaps/${map.id}`);
  await page.locator('svg').filter({hasText:'交通路线'}).first().waitFor();
@@ -91,6 +91,9 @@ try{
  await call(`/shares/${share.id}`,undefined,'DELETE');assert.equal((await visitor.request.get(`${base}/api/v1/public/shares/${share.token}`)).status(),404);
  assert.deepEqual(errors,[]);
  console.log(JSON.stringify({realMindmapSvg:true,passwordGate:true,privateSourcesExcluded:true,zoomAndSearch:true,mobile375:true,siteTreeAndInline:true,sourceVersionInvalidation:true,drawioEmbedProtocolFixture:true,revocation:true},null,2));
+}catch(error){
+ if(page){console.error((await page.locator('body').innerText()).slice(-2500));await page.screenshot({path:'/tmp/xingli-boards-failure.png',fullPage:true}).catch(()=>{});}
+ throw error;
 }finally{
  await browser?.close();if(server&&server.exitCode===null){const exit=once(server,'exit');server.kill('SIGTERM');await exit;}
  if(boardIds.length){await db.delete(shareLinks).where(inArray(shareLinks.targetId,boardIds));await db.delete(mindMaps).where(inArray(mindMaps.id,boardIds));}

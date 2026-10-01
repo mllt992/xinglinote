@@ -28,3 +28,8 @@ test('公开 SVG 的嵌入图复核魔数与总解码像素，不放行伪装 HT
  const png=Buffer.alloc(24);Buffer.from([137,80,78,71,13,10,26,10]).copy(png);png.writeUInt32BE(5000,16);png.writeUInt32BE(5000,20);
  assert.throws(()=>sanitizeBoardSvg(encode('image/png',png)),/总像素/);
 });
+
+test('SVG 展示属性不能用 CSS 转义或实体隐藏远程 URL',()=>{
+ const raw=String.raw`<svg><rect fill="u\72l(https://example.invalid/fill#id)"/><g clip-path="\75rl(https://example.invalid/clip#id)"><text>safe</text></g><circle stroke="u&#92;72l(https://example.invalid/encoded#id)"/><path fill="u&#x0009;rl(https://example.invalid/control#id)"/></svg>`;
+ const clean=sanitizeBoardSvg(raw);assert.ok(!clean.includes('example.invalid'));assert.ok(clean.includes('safe'));
+});

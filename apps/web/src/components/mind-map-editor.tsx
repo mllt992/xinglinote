@@ -372,7 +372,9 @@ export const MindMapEditor = forwardRef<MindMapEditorHandle, Props>(function Min
     getPreviewSvg: async () => {
       const url = await mindRef.current?.export('svg', false, '');
       if (typeof url !== 'string' || !url.startsWith('data:image/svg+xml')) throw new Error('导图编辑器尚未准备好');
-      return fetch(url).then(r=>r.text());
+      // data: URL 不走 fetch，避免被 connect-src CSP 拦截。
+      const comma=url.indexOf(','),head=url.slice(0,comma),body=url.slice(comma+1);
+      return /;base64/i.test(head) ? new TextDecoder().decode(Uint8Array.from(atob(body),c=>c.charCodeAt(0))) : decodeURIComponent(body);
     },
     getData,
     focusNode: uid => { const m = mindRef.current; if (m) try { m.execCommand("GO_TARGET_NODE", uid); } catch { /* 节点不在了 */ } },
