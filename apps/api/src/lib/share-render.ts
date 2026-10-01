@@ -2,7 +2,9 @@ import { and, eq, isNull } from "drizzle-orm";
 import { buildNoteTree, fail, type NoteTreeNode } from "@kb/shared";
 import { sliceHeadingSection, slugifyHeading } from "@kb/shared/markdown";
 import { db } from "../db/client.ts";
-import { attachments, folders, notebooks, notes, shareLinks, users, workspaces } from "../db/schema.ts";
+import { attachments, folders, mindMaps, notebooks, notes, shareLinks, users, workspaces } from "../db/schema.ts";
+import { publicBoard } from "./public-board.ts";
+import { projectionCurrent } from "./board-projection.ts";
 import { folderSubtree, notebookSubtree } from "./share-target.ts";
 
 export const GONE_SHARE = "分享不存在或已失效";
@@ -63,6 +65,10 @@ export async function loadLiveShare(token: string) {
 }
 
 export async function shareChannelTitle(share: typeof shareLinks.$inferSelect): Promise<string> {
+  if (share.targetType === 'mindmap') {
+    const [board]=await db.select({title:mindMaps.title}).from(mindMaps).where(eq(mindMaps.id,share.targetId));
+    return board?.title ?? '导图';
+  }
   if (share.targetType === "attachment") {
     const [file] = await db.select({ filename: attachments.filename }).from(attachments).where(eq(attachments.id, share.targetId));
     return file?.filename ?? "附件";
@@ -86,6 +92,12 @@ export async function shareAuthorName(share: typeof shareLinks.$inferSelect): Pr
 
 export async function shareTargetLive(share: typeof shareLinks.$inferSelect): Promise<boolean> {
   if (!shareEffective(share)) return false;
+  if (share.targetType === 'mindmap') {
+    const [board]=await db.select().from(mindMaps).where(eq(mindMaps.id,share.targetId));
+    if (!board || !projectionCurrent(board)) return false;
+    const [nb]=await db.select().from(notebooks).where(eq(notebooks.id,board.notebookId));
+    return !!nb && !nb.trashedAt;
+  }
   if (share.targetType === "attachment") {
     const [file] = await db.select({ trashedAt: attachments.trashedAt, noteId: attachments.noteId }).from(attachments).where(eq(attachments.id, share.targetId));
     if (!file || file.trashedAt) return false;
@@ -113,6 +125,12 @@ export async function renderShare(share: typeof shareLinks.$inferSelect, noteId?
     correctionsEnabled: share.correctionsEnabled,
     showBacklinks: share.showBacklinks,
   };
+
+  if (share.targetType === 'mindmap') {
+    const [board]=await db.select().from(mindMaps).where(eq(mindMaps.id,share.targetId));
+    if (!board) throw goneShare();
+    return {...common,title:board.title,board:await publicBoard(board),commentsEnabled:false,correctionsEnabled:false};
+  }
 
   if (share.targetType === "attachment") {
     const [file] = await db.select().from(attachments).where(eq(attachments.id, share.targetId));
@@ -211,7 +229,9 @@ export async function renderSite(ws: { name: string }, nb: typeof notebooks.$inf
   collect(tree);
   const noteById = new Map(publicNotes.map(note => [note.id, note]));
   const orderedNotes = orderedIds.map(id => noteById.get(id)).filter((note): note is typeof publicNotes[number] => !!note);
+  const boards = await db.select({id:mindMaps.id,title:mindMaps.title,kind:mindMaps.kind,updatedAt:mindMaps.updatedAt,version:mindMaps.version,publicSvgVersion:mindMaps.publicSvgVersion}).from(mindMaps).where(and(eq(mindMaps.notebookId,nb.id),eq(mindMaps.published,true),isNull(mindMaps.trashedAt)));
   return {
+    boards: boards.filter(b=>b.publicSvgVersion===b.version).map(({id,title,kind,updatedAt})=>({id,title,kind,updatedAt})),
     workspace: ws.name,
     notebook: nb.title,
     notebookId: nb.id,

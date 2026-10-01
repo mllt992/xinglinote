@@ -1,7 +1,8 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db/client.ts";
-import { notes } from "../db/schema.ts";
+import { mindMaps, notes } from "../db/schema.ts";
 import { loadLiveShare, loadLiveSite, renderShare } from "./share-render.ts";
+import { publicBoard } from "./public-board.ts";
 import { neutralMeta, publicExcerpt, type PublicMeta } from "./public-meta.ts";
 
 /** 爬虫与浏览器同一响应，始终不读取会话；解锁浏览器也不把秘密标题写进可缓存 HTML。 */
@@ -16,6 +17,12 @@ export async function loadPublicMeta(pathname: string): Promise<PublicMeta> {
       description: "bodyMd" in data ? publicExcerpt(data.bodyMd) : "星璃笔记 · 分享附件",
       allowRobots: share.allowRobots,
     };
+  }
+  if (parts[0] === 's' && parts.length === 5 && parts[3] === 'boards') {
+    const {nb}=await loadLiveSite(parts[1],parts[2]);
+    const [board]=await db.select().from(mindMaps).where(and(eq(mindMaps.id,parts[4]),eq(mindMaps.notebookId,nb.id),eq(mindMaps.published,true),isNull(mindMaps.trashedAt)));
+    if(!board)return neutralMeta();await publicBoard(board);
+    return {title:`${board.title} · ${nb.title}`,description:'星璃笔记 · 只读导图与画板',allowRobots:false};
   }
   if (parts[0] === "s" && (parts.length === 3 || parts.length === 4)) {
     const { nb } = await loadLiveSite(parts[1], parts[2]);

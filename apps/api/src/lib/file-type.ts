@@ -42,7 +42,7 @@ function looksLikeMarkup(bytes: Uint8Array) {
   return head.startsWith("<!doctype html") || head.startsWith("<html") || head.startsWith("<svg") || head.startsWith("<?xml");
 }
 
-function imageDimensions(mime:string,bytes:Uint8Array):{width:number;height:number}|null{
+export function imageDimensions(mime:string,bytes:Uint8Array):{width:number;height:number}|null{
   const b=Buffer.from(bytes.buffer,bytes.byteOffset,bytes.byteLength);
   if(mime==="image/png"&&b.length>=24)return{width:b.readUInt32BE(16),height:b.readUInt32BE(20)};
   if(mime==="image/gif"&&b.length>=10)return{width:b.readUInt16LE(6),height:b.readUInt16LE(8)};

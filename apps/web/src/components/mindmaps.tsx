@@ -1,9 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  ArrowLeft, ChevronDown, Copy, FileUp, FolderInput, History, MoreHorizontal, Network, PenTool, Pencil, Plus, RotateCcw, Search, Sparkles, Trash2,
+  ArrowLeft, Share2, Globe2, ChevronDown, Copy, FileUp, FolderInput, History, MoreHorizontal, Network, PenTool, Pencil, Plus, RotateCcw, Search, Sparkles, Trash2,
 } from "lucide-react";
 import { drawioText, type BoardKind, type DrawioData, type MindMapData } from "@kb/shared";
+import { ShareDialog } from "./share-dialog";
 import { api } from "../api";
 import { AppNav, saveLastWorkspace } from "./app-nav";
 import { NotificationBell } from "./notifications";
@@ -25,7 +26,7 @@ const MindMapEditor = lazy(() => import("./mind-map-editor").then(m => ({ defaul
 const MindMapPreview = lazy(() => import("./mind-map-editor").then(m => ({ default: m.MindMapPreview })));
 const DrawioBoard = lazy(() => import("./drawio-board").then(m => ({ default: m.DrawioBoard })));
 
-type Brief = { id: string; notebookId: string; kind: BoardKind; title: string; version: number; createdAt: string; updatedAt: string };
+type Brief = { published?: boolean; hasPublicPreview?: boolean; previewCurrent?: boolean; id: string; notebookId: string; kind: BoardKind; title: string; version: number; createdAt: string; updatedAt: string };
 type NotebookRow = { id: string; title: string; canEdit: boolean };
 type BoardData = MindMapData | DrawioData;
 
@@ -414,7 +415,7 @@ function VersionsDialog({ open, onOpenChange, mapId, kind, canEdit, beforeRestor
   </Dialog>;
 }
 
-type Loaded = { mindMap: Brief & { data: BoardData }; notebook: { id: string; title: string }; workspaceId: string; canEdit: boolean; drawioUrl: string };
+type Loaded = { mindMap: Brief & { data: BoardData }; notebook: { id: string; title: string }; workspaceId: string; canEdit: boolean; canPublish?: boolean; drawioUrl: string };
 type SaveState = "saved" | "dirty" | "saving" | "conflict" | "failed";
 const SAVE_LABEL: Record<SaveState, string> = { saved: "已保存", dirty: "有改动未保存", saving: "正在保存…", conflict: "未保存：别人刚改过这张图", failed: "保存失败，稍后自动重试" };
 
@@ -422,7 +423,7 @@ const SAVE_LABEL: Record<SaveState, string> = { saved: "已保存", dirty: "有�
  * 自动保存：约 0.8 秒防抖，带版本号防覆盖。导图和画板共用：调用方把最新数据交给 schedule。
  * 卸载 / 离开页面时把没存的立刻发出去（keepalive 保证页面关了请求也能到）。
  */
-function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null) {
+function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null, refreshPreview: (version: number) => Promise<void>) {
   const toast = useToast();
   const [state, setState] = useState<SaveState>("saved");
   const version = useRef(0);
@@ -432,10 +433,14 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null)
   const inFlight = useRef<Promise<void> | null>(null);
   const blocked = useRef(false);
   const source = useRef<"edit" | "import" | "ai">("edit");
+  const saveGeneration=useRef(0);
+  const liveLoaded=useRef(loaded);liveLoaded.current=loaded;
+  const previewRef = useRef(refreshPreview);previewRef.current=refreshPreview;
   const latest = useRef(getLatest);
   latest.current = getLatest;
 
   const reset = useCallback((l: Loaded) => {
+    saveGeneration.current++;
     version.current = l.mindMap.version;
     lastSaved.current = JSON.stringify(l.mindMap.data);
     pending.current = null;
@@ -446,8 +451,11 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null)
   }, []);
 
   const save = useCallback(async (): Promise<void> => {
+    const generation=saveGeneration.current,id=loaded?.mindMap.id;
+    const stillCurrent=()=>generation===saveGeneration.current && id===liveLoaded.current?.mindMap.id;
     if (timer.current) { window.clearTimeout(timer.current); timer.current = null; }
     if (inFlight.current) { await inFlight.current; }
+    if(!stillCurrent())return;
     const data = latest.current() ?? pending.current;
     if (!data || !loaded?.canEdit || blocked.current) return;
     const body = JSON.stringify(data);
@@ -456,11 +464,14 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null)
     const run = (async () => {
       try {
         const d = await api<{ mindMap: Brief }>(`/api/v1/mindmaps/${loaded.mindMap.id}`, { method: "PATCH", keepalive: body.length < 60_000, body: JSON.stringify({ data, expectedVersion: version.current, source: source.current }) });
+        if(!stillCurrent())return;
         source.current = "edit";
         version.current = d.mindMap.version;
         lastSaved.current = body;
         setState("saved");
+        if (loaded.mindMap.hasPublicPreview || loaded.mindMap.published) await previewRef.current(d.mindMap.version).catch(()=>toast.error("公开预览需要刷新", "源内容已保存，公开页面暂不可用。请点“刷新公开预览”。"));
       } catch (e) {
+        if(!stillCurrent())return;
         const code = (e as { code?: string }).code;
         if (code === "CONFLICT_VERSION") { blocked.current = true; setState("conflict"); toast.error("没保存上", "这张图刚被别人改过。点「重新加载」拿最新版本（你这次的改动会丢失，但之前保存的版本都在版本历史里）。"); }
         else if (code === "VALIDATION" || code === "PAYLOAD_TOO_LARGE" || code === "FORBIDDEN" || code === "NOT_FOUND") { blocked.current = true; setState("failed"); toast.error("保存失败", errMsg(e)); }
@@ -469,7 +480,8 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null)
     })();
     inFlight.current = run;
     await run;
-    inFlight.current = null;
+    if(inFlight.current===run)inFlight.current = null;
+    if(!stillCurrent())return;
     // 保存期间又改了：接着存。
     const again = latest.current() ?? pending.current;
     if (!blocked.current && again && JSON.stringify(again) !== lastSaved.current) {
@@ -502,11 +514,11 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null)
   /** 先把没存的存掉，返回当前服务端版本号；冲突 / 失败返回 null。 */
   const settle = useCallback(async (): Promise<number | null> => {
     await saveRef.current();
-    return blocked.current ? null : version.current;
+    return blocked.current || JSON.stringify(latest.current()) !== lastSaved.current ? null : version.current;
   }, []);
   const dirty = () => !!timer.current || !!inFlight.current;
 
-  return { state, version, reset, schedule, save, settle, hint, dirty, blocked };
+  return { state, version, savedData: lastSaved, reset, schedule, save, settle, hint, dirty, blocked };
 }
 
 /** 编辑页：思维导图 / 画板共用外壳（标题、保存状态、版本历史、复制、移动、删除）。 */
@@ -525,16 +537,59 @@ export function MindMapPage() {
   const [mountKey, setMountKey] = useState(0);
   const editor = useRef<MindMapEditorHandle | null>(null);
   const board = useRef<DrawioBoardHandle | null>(null);
-  const saver = useBoardSaver(loaded, () => loaded?.mindMap.kind === "drawio" ? board.current?.getData() ?? null : editor.current?.getData() ?? null);
+  const routeId=useRef(mindMapId);routeId.current=mindMapId;
+  const loadGeneration=useRef(0);
+  const [sharing,setSharing]=useState(false);
+  const [previewBusy,setPreviewBusy]=useState(false);
+  const refreshPreview=async(version:number)=>{
+    if(!loaded || routeId.current!==loaded.mindMap.id)throw new Error("当前导图已经切换");
+    const generation=loadGeneration.current;
+    setLoaded(l=>l&&l.mindMap.id===loaded.mindMap.id?{...l,mindMap:{...l.mindMap,previewCurrent:false}}:l);
+    const current=()=>loaded.mindMap.kind==='drawio' ? board.current?.getData() : editor.current?.getData();
+    const snapshot=JSON.stringify(current());
+    if(snapshot!==saver.savedData.current || version!==saver.version.current)throw new Error('请等待源内容保存');
+    const svg=await (loaded.mindMap.kind==='drawio' ? board.current?.getPreviewSvg() : editor.current?.getPreviewSvg());
+    if(!svg)throw new Error('编辑器尚未准备好');
+    if(generation!==loadGeneration.current || routeId.current!==loaded.mindMap.id)throw new Error('当前导图已经切换');
+    if(snapshot!==JSON.stringify(current()) || version!==saver.version.current)throw new Error('编辑期间预览已变化，请重试');
+    await api(`/api/v1/mindmaps/${loaded.mindMap.id}/public-preview`,{method:'PUT',body:JSON.stringify({expectedVersion:version,svg})});
+    if(generation!==loadGeneration.current || routeId.current!==loaded.mindMap.id)throw new Error('当前导图已经切换');
+    setLoaded(current=>current && current.mindMap.id===loaded.mindMap.id ? {...current,mindMap:{...current.mindMap,previewCurrent:true,hasPublicPreview:true}} : current);
+  };
+  const saver = useBoardSaver(loaded, () => loaded?.mindMap.kind === "drawio" ? board.current?.getData() ?? null : editor.current?.getData() ?? null, refreshPreview);
+  async function preparePreview(){
+    setPreviewBusy(true);
+    try {const version=await saver.settle();if(version===null)throw new Error('请先处理保存冲突');await refreshPreview(version);return true;}
+    catch(e){toast.error('预览刷新失败',errMsg(e));return false;}finally{setPreviewBusy(false);}
+  }
+  async function openSharing(){
+    const id=loaded?.mindMap.id,generation=loadGeneration.current;
+    if(await preparePreview() && routeId.current===id && loadGeneration.current===generation)setSharing(true);
+  }
+  async function publishBoard(){
+    if(!loaded)return;
+    const id=loaded.mindMap.id,generation=loadGeneration.current,published=!loaded.mindMap.published;
+    const stillCurrent=()=>routeId.current===id && loadGeneration.current===generation;
+    if(published && !await preparePreview())return;
+    if(!stillCurrent())return;
+    try{
+      await api(`/api/v1/mindmaps/${id}/publish`,{method:'POST',body:JSON.stringify({published})});
+      if(!stillCurrent())return;
+      setLoaded(l=>l?.mindMap.id===id?{...l,mindMap:{...l.mindMap,published}}:l);
+      toast.success(published?'已发布到文档站':'已从文档站隐藏');
+    }catch(e){if(stillCurrent())toast.error('发布失败',errMsg(e));}
+  }
 
   const load = useCallback(async () => {
-    setFailed(false);
+    const generation=++loadGeneration.current;
+    setSharing(false);setFailed(false);
     try {
       const d = await api<Loaded>(`/api/v1/mindmaps/${mindMapId}`);
+      if(generation!==loadGeneration.current || routeId.current!==d.mindMap.id)return;
       saver.reset(d);
       setLoaded(d);
       setMountKey(k => k + 1);
-    } catch (e) { setFailed(true); toast.error("打不开这张图", errMsg(e)); }
+    } catch (e) { if(generation!==loadGeneration.current)return;setFailed(true); toast.error("打不开这张图", errMsg(e)); }
   }, [mindMapId, toast]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { if (wsId) saveLastWorkspace(wsId); }, [wsId]);
@@ -601,10 +656,14 @@ export function MindMapPage() {
       <button className="block max-w-full truncate text-sm font-semibold hover:underline disabled:no-underline" disabled={!canEdit} onClick={() => void rename()} title={canEdit ? "点击重命名" : undefined}>{loaded?.mindMap.title ?? label}</button>
       {loaded && <p className="truncate text-[11px] text-muted-foreground">{label} · {loaded.notebook.title}{canEdit ? "" : " · 只读"}</p>}
     </div>
+    {loaded?.mindMap.hasPublicPreview && !loaded.mindMap.previewCurrent && <span className="text-xs text-amber-700" role="status">公开预览待刷新</span>}
     {loaded && canEdit && <span className="ml-1 hidden shrink-0 text-xs text-muted-foreground md:inline" aria-live="polite" data-testid="save-state">{SAVE_LABEL[saver.state]}</span>}
     {saver.state === "conflict" && <Button size="sm" variant="outline" className="ml-1 shrink-0" onClick={() => { setLoaded(null); void load(); }}><RotateCcw />重新加载</Button>}
   </>;
   const menu = <>
+    {canEdit && <DropdownMenuItem disabled={previewBusy} onSelect={() => void openSharing()}><Share2 />分享与复制链接</DropdownMenuItem>}
+    {canEdit && <DropdownMenuItem disabled={previewBusy} onSelect={() => void preparePreview()}><RotateCcw />刷新公开预览</DropdownMenuItem>}
+    {loaded?.canPublish && <DropdownMenuItem disabled={previewBusy} onSelect={()=>void publishBoard()}><Globe2 />{loaded.mindMap.published?'从文档站隐藏':'发布到文档站'}</DropdownMenuItem>}
     <DropdownMenuItem onSelect={() => setVersionsOpen(true)}><History />版本历史</DropdownMenuItem>
     {canEdit && <DropdownMenuItem onSelect={() => void duplicate()}><Copy />复制一份</DropdownMenuItem>}
     {canEdit && <DropdownMenuItem onSelect={() => void openMove()}><FolderInput />移到其他笔记本</DropdownMenuItem>}
@@ -626,6 +685,7 @@ export function MindMapPage() {
           <div className="mt-3 flex justify-center gap-2"><Button variant="outline" onClick={() => void load()}><RotateCcw />重试</Button><Button variant="ghost" onClick={() => nav(mindMapPath(wsId))}>回到列表</Button></div></div></div>
         : opening}
     </main>
+    {loaded && <ShareDialog target={{kind:'mindmap',id:loaded.mindMap.id,title:loaded.mindMap.title}} open={sharing} onOpenChange={setSharing} />}
     {loaded && <VersionsDialog open={versionsOpen} onOpenChange={setVersionsOpen} mapId={loaded.mindMap.id} kind={loaded.mindMap.kind} canEdit={canEdit}
       beforeRestore={() => saver.settle()} onRestored={map => {
         const next: Loaded = { ...loaded, mindMap: { ...loaded.mindMap, ...map } };
