@@ -1,5 +1,6 @@
 import { and,eq,isNull } from "drizzle-orm";
 import { z } from "zod";
+import { migrationPath } from "./migration-zip.ts";
 import { db } from "../db/client.ts";
 import { folders,notebooks,notes } from "../db/schema.ts";
 import { importFolderPath,norm,parseFront,resolveTargetFolderSegs } from "./import-plan-path.ts";
@@ -7,7 +8,7 @@ import { importFolderPath,norm,parseFront,resolveTargetFolderSegs } from "./impo
 export { importFolderPath,norm,parseFront,resolveTargetFolderSegs } from "./import-plan-path.ts";
 
 export const importInput=z.object({
-  files:z.array(z.object({path:z.string().max(500),content:z.string().max(2000000)})).min(1).max(500),
+  files:z.array(z.object({path:z.string().max(500).transform(migrationPath),content:z.string().max(2000000)})).min(1).max(500),
   mode:z.enum(["skip","rename","overwrite"]).default("rename"),
   createFolders:z.boolean().default(true),
   /** 挂到已有文件夹下；null/省略 = 笔记本根。相对路径（zip 目录）再叠在它下面。 */
@@ -15,7 +16,7 @@ export const importInput=z.object({
 });
 export type ImportInput=z.infer<typeof importInput>;
 
-export type PlanItem={sourcePath:string;folderPath:string[];folderKey:string;title:string;originalTitle:string;action:"create"|"rename"|"overwrite"|"skip";body:string};
+export type PlanItem={targetIndex?:number;targetId?:string;targetVersion?:number;sourcePath:string;folderPath:string[];folderKey:string;title:string;originalTitle:string;action:"create"|"rename"|"overwrite"|"skip";body:string};
 
 /** 先把整批算成一份计划：要建哪些目录、哪些新建、哪些撞名、撞名按 mode 怎么处置。 */
 export async function planImport(nb:typeof notebooks.$inferSelect,input:ImportInput){
@@ -37,11 +38,12 @@ export async function planImport(nb:typeof notebooks.$inferSelect,input:ImportIn
   const takeSet=(key:string)=>{
     if(!takenTitles.has(key)){
       const id=existingKey.get(key)??null;
-      takenTitles.set(key,new Set(liveNotes.filter(n=>(n.folderId??null)===id).map(n=>norm(n.title))));
+      takenTitles.set(key,new Set((key&&!existingKey.has(key)?[]:liveNotes.filter(n=>(n.folderId??null)===id)).map(n=>norm(n.title))));
     }
     return takenTitles.get(key)!;
   };
   const items:PlanItem[]=[];
+  const earlier=new Map<string,number>();
   for(const file of input.files){
     const parts=file.path.split(/[\\/]/).filter(p=>p&&p!=="."&&p!=="..");
     const name=parts.pop()??"未命名";
@@ -56,6 +58,7 @@ export async function planImport(nb:typeof notebooks.$inferSelect,input:ImportIn
     }
     const taken=takeSet(key);
     let finalTitle=title;
+    const target=liveNotes.find(n=>(n.folderId??null)===(existingKey.get(key)??null)&&norm(n.title)===norm(title)&&(!key||existingKey.has(key)));
     let action:PlanItem["action"]="create";
     if(taken.has(norm(title))){
       if(input.mode==="skip")action="skip";
@@ -63,7 +66,9 @@ export async function planImport(nb:typeof notebooks.$inferSelect,input:ImportIn
       else{action="rename";for(let i=2;taken.has(norm(finalTitle));i++)finalTitle=title+" "+i;}
     }
     if(action==="create"||action==="rename")taken.add(norm(finalTitle));
-    items.push({sourcePath:file.path,folderPath:dirs,folderKey:key,title:finalTitle,originalTitle:title,action,body:front.body});
+    const collisionKey=key+"\0"+norm(finalTitle),targetIndex=earlier.get(collisionKey);
+    if(action!=="skip")earlier.set(collisionKey,items.length);
+    items.push({targetIndex,targetId:target?.id,targetVersion:target?.version,sourcePath:file.path,folderPath:dirs,folderKey:key,title:finalTitle,originalTitle:title,action,body:front.body});
   }
   return{items,newFolders,existingKey,targetFolderPath:targetSegs};
 }

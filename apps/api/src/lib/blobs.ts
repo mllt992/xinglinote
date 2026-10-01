@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { and, eq, lte, sql } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import { blobStore } from "../db/schema.ts";
 import { env } from "../env.ts";
@@ -22,49 +22,72 @@ async function writeAtomic(abs: string, bytes: Buffer) {
   await mkdir(dirname(abs), { recursive: true });
   if (await exists(abs)) return;
   const tmp = `${abs}.${crypto.randomUUID()}.tmp`;
-  await writeFile(tmp, bytes);
   try {
+    await writeFile(tmp, bytes);
     await rename(tmp, abs);
   } catch {
-    await rm(tmp, { force: true }).catch(() => {});
     if (!await exists(abs)) throw new Error(`写入 blob 失败：${abs}`);
+  } finally {
+    await rm(tmp, { force: true });
   }
 }
 
-/**
- * 登记一份物理文件引用。相同 sha256 只落盘一次，refcount +1。
- * 先 upsert 再补写文件：release 把行删了但文件还在时，下一次 put 仍能复用。
- */
-export async function putBlob(bytes: Buffer): Promise<BlobRef> {
+type BlobTransaction = Pick<typeof db, "insert" | "execute">;
+
+/** 跨进程统一哈希锁；写入、回收、补偿必须走同一把事务锁。 */
+async function lockBlob(tx: Pick<typeof db, "execute">, sha256: string) {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`blob:${sha256}`}, 0))`);
+}
+
+/** 仅在调用方事务结束后调用，不能在持有其它连接/行锁时再借连接。 */
+export async function cleanupUnreferencedBlob(sha256: string) {
+  await db.transaction(async tx => {
+    await lockBlob(tx, sha256);
+    const [row] = await tx.select({ refcount: blobStore.refcount }).from(blobStore).where(eq(blobStore.sha256, sha256));
+    // 并发上传已提交则保留；其尚未提交时本锁会等它提交/回滚后才检查。
+    if (row && row.refcount > 0) return;
+    await rm(absPath(blobRelPath(sha256)), { force: true });
+    if (row) await tx.delete(blobStore).where(eq(blobStore.sha256, sha256));
+  });
+}
+
+/** 相同内容只落盘一次。传入事务时，调用方负责回滚后的无引用物理文件清理。 */
+export async function putBlob(bytes: Buffer, transaction?: BlobTransaction): Promise<BlobRef> {
   const sha256 = hashBytes(bytes);
   const path = blobRelPath(sha256);
-  await db.insert(blobStore).values({ sha256, bytes: bytes.length, refcount: 1, path })
-    .onConflictDoUpdate({ target: blobStore.sha256, set: { refcount: sql`${blobStore.refcount} + 1` } });
-  await writeAtomic(absPath(path), bytes);
-  return { sha256, path, bytes: bytes.length };
+  const write = async (tx: BlobTransaction) => {
+    await lockBlob(tx, sha256);
+    await tx.insert(blobStore).values({ sha256, bytes: bytes.length, refcount: 1, path })
+      .onConflictDoUpdate({ target: blobStore.sha256, set: { refcount: sql`${blobStore.refcount} + 1` } });
+    await writeAtomic(absPath(path), bytes);
+    return { sha256, path, bytes: bytes.length };
+  };
+  if (transaction) return write(transaction);
+  try { return await db.transaction(write); }
+  catch (error) { await cleanupUnreferencedBlob(sha256); throw error; }
 }
 
-/** 再挂一条引用（圈子帖公开到广场复制附件时）。没有 blob 行则返回 false，调用方走老拷贝。 */
+/** 再挂一条引用（圈子帖公开到广场复制附件时）。没有 blob 行则返回 false。 */
 export async function retainBlob(sha256: string) {
-  const [row] = await db.update(blobStore)
-    .set({ refcount: sql`${blobStore.refcount} + 1` })
-    .where(eq(blobStore.sha256, sha256))
-    .returning();
-  return !!row;
+  return db.transaction(async tx => {
+    await lockBlob(tx, sha256);
+    const [row] = await tx.update(blobStore)
+      .set({ refcount: sql`${blobStore.refcount} + 1` })
+      .where(and(eq(blobStore.sha256, sha256), gt(blobStore.refcount, 0))).returning();
+    return !!row;
+  });
 }
 
-/** refcount 减到 0 就删行并试图删文件。删不掉只是留垃圾，比误删正在用的副本安全。 */
+/** 先提交 refcount=0 墓碑，再排他清理；删除文件后崩溃不能复活正引用。 */
 export async function releaseBlob(sha256: string) {
-  const [row] = await db.update(blobStore)
-    .set({ refcount: sql`${blobStore.refcount} - 1` })
-    .where(eq(blobStore.sha256, sha256))
-    .returning();
-  if (!row || row.refcount > 0) return;
-  const gone = await db.delete(blobStore)
-    .where(and(eq(blobStore.sha256, sha256), lte(blobStore.refcount, 0)))
-    .returning();
-  if (!gone.length) return;
-  await rm(absPath(row.path), { force: true }).catch(() => {});
+  const unused = await db.transaction(async tx => {
+    await lockBlob(tx, sha256);
+    const [row] = await tx.update(blobStore)
+      .set({ refcount: sql`${blobStore.refcount} - 1` })
+      .where(and(eq(blobStore.sha256, sha256), gt(blobStore.refcount, 0))).returning();
+    return !row || row.refcount <= 0;
+  });
+  if (unused) await cleanupUnreferencedBlob(sha256);
 }
 
 /**

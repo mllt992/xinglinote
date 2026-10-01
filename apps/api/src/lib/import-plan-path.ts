@@ -8,7 +8,9 @@ export function parseFront(raw:string){
   const m=raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
   if(!m)return{title:null as string|null,body:raw};
   const line=m[1].split(/\r?\n/).map(l=>l.match(/^title:\s*(.+)$/)).find(Boolean);
-  const title=line?.[1]?.trim().replace(/^["']|["']$/g,"")||null;
+  const rawTitle=line?.[1]?.trim();
+  let title=rawTitle?.replace(/^["']|["']$/g,"")||null;
+  if(rawTitle?.startsWith('"')){try{const parsed:unknown=JSON.parse(rawTitle);if(typeof parsed==="string")title=parsed;}catch{/* 兼容简单 YAML 标量 */}}
   return{title,body:raw.slice(m[0].length).replace(/^\s*\n/,"")};
 }
 

@@ -3,6 +3,8 @@ import { fail } from "@kb/shared";
 import { db } from "../db/client.ts";
 import { attachments, instanceSettings, notes, postAssets, users } from "../db/schema.ts";
 
+type QuotaReader = Pick<typeof db, "select">;
+
 export const MIN_QUOTA_BYTES = 1_048_576;
 export const MAX_QUOTA_BYTES = 1_099_511_627_776;
 export const DEFAULT_QUOTA_BYTES = 1_073_741_824;
@@ -21,8 +23,8 @@ export function textBytes(title: string, body: string) {
   return Buffer.byteLength(title, "utf8") + Buffer.byteLength(body, "utf8");
 }
 
-async function defaultQuota() {
-  const [settings] = await db.select({ defaultQuota: instanceSettings.defaultUserStorageBytes }).from(instanceSettings);
+async function defaultQuota(reader: QuotaReader) {
+  const [settings] = await reader.select({ defaultQuota: instanceSettings.defaultUserStorageBytes }).from(instanceSettings);
   return settings?.defaultQuota ?? DEFAULT_QUOTA_BYTES;
 }
 
@@ -42,20 +44,20 @@ function pack(used: { noteBytes: number; attachmentBytes: number }, quota: numbe
   };
 }
 
-export async function userStorage(userId: string): Promise<StorageUsage> {
-  const map = await userStorageMany([userId]);
+export async function userStorage(userId: string, reader: QuotaReader = db): Promise<StorageUsage> {
+  const map = await userStorageMany([userId],reader);
   const usage = map.get(userId);
   if (!usage) throw fail("NOT_FOUND", "用户不存在");
   return usage;
 }
 
 /** 列表页一次算完一页人的用量，避免 20 次 userStorage。 */
-export async function userStorageMany(userIds: string[]): Promise<Map<string, StorageUsage>> {
+export async function userStorageMany(userIds: string[], reader: QuotaReader = db): Promise<Map<string, StorageUsage>> {
   const out = new Map<string, StorageUsage>();
   if (!userIds.length) return out;
-  const fallback = await defaultQuota();
-  const rows = await db.select({ id: users.id, quota: users.storageQuotaBytes }).from(users).where(inArray(users.id, userIds));
-  const noteRows = await db
+  const fallback = await defaultQuota(reader);
+  const rows = await reader.select({ id: users.id, quota: users.storageQuotaBytes }).from(users).where(inArray(users.id, userIds));
+  const noteRows = await reader
     .select({
       userId: notes.createdBy,
       bytes: sql<number>`coalesce(sum(octet_length(${notes.title}) + octet_length(${notes.bodyMd})), 0)::bigint`,
@@ -63,7 +65,7 @@ export async function userStorageMany(userIds: string[]): Promise<Map<string, St
     .from(notes)
     .where(and(inArray(notes.createdBy, userIds), isNull(notes.trashedAt)))
     .groupBy(notes.createdBy);
-  const fileRows = await db
+  const fileRows = await reader
     .select({
       userId: attachments.createdBy,
       bytes: sql<number>`coalesce(sum(${attachments.bytes}), 0)::bigint`,
@@ -71,7 +73,7 @@ export async function userStorageMany(userIds: string[]): Promise<Map<string, St
     .from(attachments)
     .where(and(inArray(attachments.createdBy, userIds), isNull(attachments.trashedAt)))
     .groupBy(attachments.createdBy);
-  const postRows = await db
+  const postRows = await reader
     .select({
       userId: postAssets.createdBy,
       bytes: sql<number>`coalesce(sum(${postAssets.bytes}), 0)::bigint`,
@@ -91,9 +93,9 @@ export async function userStorageMany(userIds: string[]): Promise<Map<string, St
   return out;
 }
 
-export async function assertUserStorage(userId: string, additionalBytes: number) {
-  if (additionalBytes <= 0) return userStorage(userId);
-  const usage = await userStorage(userId);
+export async function assertUserStorage(userId: string, additionalBytes: number, reader: QuotaReader = db) {
+  if (additionalBytes <= 0) return userStorage(userId,reader);
+  const usage = await userStorage(userId,reader);
   if (usage.usedBytes + additionalBytes > usage.quotaBytes) {
     throw fail("QUOTA", `存储空间不足：还剩 ${formatBytes(usage.remainingBytes)}，本次需要 ${formatBytes(additionalBytes)}。可到「存储与服务」申请扩容`);
   }

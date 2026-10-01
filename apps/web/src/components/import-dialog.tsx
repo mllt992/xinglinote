@@ -1,137 +1,124 @@
-import{useEffect,useMemo,useState}from'react';import{FileDown,Folder,FolderTree,Upload}from'lucide-react';import{flattenFolders,folderTitlePath,type TreeFolder}from'@kb/shared';import{api}from'../api';import{Button}from'./ui/button';import{Badge}from'./ui/badge';import{Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle}from'./ui/dialog';import{useToast}from'./ui/toast';import{cn}from'../lib/utils';import{readMarkdownZip}from'../lib/zip';import{takeInputFiles}from'../lib/file-input';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { FileDown, Folder, FolderTree, Upload } from 'lucide-react';
+import { flattenFolders, folderTitlePath, type TreeFolder } from '@kb/shared';
+import { Button } from './ui/button';
+import { Badge } from './ui/badge';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog';
+import { useToast } from './ui/toast';
+import { cn } from '../lib/utils';
+import { takeInputFiles } from '../lib/file-input';
 
-type Mode="skip"|"rename"|"overwrite";
-type PlanItem={sourcePath:string;folder:string;title:string;originalTitle:string;action:"create"|"rename"|"overwrite"|"skip"};
-type Plan={targetFolder:string|null;newFolders:string[];items:PlanItem[];summary:Record<Mode|"create",number>};
-const MODES:Array<{v:Mode;title:string;desc:string}>=[
-  {v:"rename",title:"改名保留",desc:"撞名的另存为「标题 2」，两份都在。"},
-  {v:"skip",title:"跳过",desc:"撞名的不导入，保留库里现有的。"},
-  {v:"overwrite",title:"覆盖",desc:"用导入的正文覆盖同名笔记，旧内容进版本历史。"},
+type Mode = 'skip' | 'rename' | 'overwrite';
+type Source = 'auto' | 'notion' | 'yuque' | 'generic';
+type ReportItem = { path: string; title?: string; status: 'success' | 'skipped' | 'degraded' | 'failed'; message: string };
+type PlanItem = { sourcePath: string; folder: string; title: string; originalTitle: string; action: 'create' | 'rename' | 'overwrite' | 'skip'; attachments: number; warnings: string[] };
+type Plan = { fingerprint: string; source: Source; targetFolder: string | null; newFolders: string[]; items: PlanItem[]; summary: Record<Mode | 'create', number>; report: ReportItem[] };
+type Result = { created: unknown[]; overwritten: unknown[]; skipped: unknown[]; foldersCreated: string[]; report: ReportItem[] };
+const MODES: Array<{ v: Mode; title: string; desc: string }> = [
+  { v: 'rename', title: '改名保留', desc: '另存为「标题 2」，两份都在' },
+  { v: 'skip', title: '跳过', desc: '保留库里已有的同名笔记' },
+  { v: 'overwrite', title: '覆盖', desc: '覆盖同名笔记，旧正文进版本历史' },
 ];
-const actionLabel:Record<PlanItem["action"],string>={create:"新建",rename:"改名",overwrite:"覆盖",skip:"跳过"};
+const actionLabel = { create: '新建', rename: '改名', overwrite: '覆盖', skip: '跳过' };
+const reportLabel = { success: '成功', skipped: '跳过', degraded: '降级', failed: '失败' };
 
-/** 导入向导：先算一份计划给人看，确认后才写库（规格 06 的 3.2）。 */
-export function ImportDialog({
-  notebookId,notebookTitle,folders=[],activeFolderId=null,open,onOpenChange,onDone,
-}:{
-  notebookId?:string;notebookTitle?:string;folders?:TreeFolder[];activeFolderId?:string|null;
-  open:boolean;onOpenChange:(v:boolean)=>void;onDone:()=>void;
-}){
-  const toast=useToast();
-  const[files,setFiles]=useState<Array<{path:string;content:string}>>([]);
-  const[mode,setMode]=useState<Mode>("rename");const[createFolders,setCreateFolders]=useState(true);
-  const[targetFolderId,setTargetFolderId]=useState<string|null>(null);
-  const[plan,setPlan]=useState<Plan|null>(null);const[busy,setBusy]=useState(false);
-  const[progress,setProgress]=useState<string|null>(null);
-  const folderRows=useMemo(()=>flattenFolders(folders,"name"),[folders]);
-  const targetLabel=targetFolderId?folderTitlePath(folders,targetFolderId," / ")||"所选文件夹":"笔记本根目录";
+/** 上传原文件并先预览，只有明确确认后才写入；关闭/换文件使旧预览失效。 */
+export function ImportDialog({ notebookId, notebookTitle, folders = [], activeFolderId = null, open, onOpenChange, onDone }: {
+  notebookId?: string; notebookTitle?: string; folders?: TreeFolder[]; activeFolderId?: string | null;
+  open: boolean; onOpenChange: (value: boolean) => void; onDone: () => void;
+}) {
+  const toast = useToast();
+  const [files, setFiles] = useState<File[]>([]);
+  const [mode, setMode] = useState<Mode>('rename');
+  const [source, setSource] = useState<Source>('auto');
+  const [createFolders, setCreateFolders] = useState(true);
+  const [targetFolderId, setTargetFolderId] = useState<string | null>(null);
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const [report, setReport] = useState<ReportItem[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [html, setHtml] = useState('');
+  const request = useRef(0), abort = useRef<AbortController | null>(null), executing = useRef(false), wasOpen = useRef(false);
+  const fileInput = useRef<HTMLInputElement>(null), directoryInput = useRef<HTMLInputElement>(null);
+  const folderRows = useMemo(() => flattenFolders(folders, 'name'), [folders]);
+  const targetLabel = targetFolderId ? folderTitlePath(folders, targetFolderId, ' / ') || '所选文件夹' : '笔记本根目录';
 
-  useEffect(()=>{
-    if(!open)return;
-    setTargetFolderId(activeFolderId && folders.some(f=>f.id===activeFolderId)?activeFolderId:null);
-  },[open,activeFolderId,folders]);
+  useEffect(() => {
+    if (open && !wasOpen.current) setTargetFolderId(activeFolderId && folderRows.some(({ folder }) => folder.id === activeFolderId) ? activeFolderId : null);
+    wasOpen.current = open;
+    if (!open && !executing.current) { request.current++; abort.current?.abort(); setFiles([]); setPlan(null); setReport(null); setHtml(''); setBusy(false); }
+  }, [open, activeFolderId, folderRows]);
+  useEffect(() => () => { request.current++; abort.current?.abort(); }, []);
 
-  function reset(){setFiles([]);setPlan(null);setProgress(null);}
-  function body(payload:Array<{path:string;content:string}>,m:Mode,foldersFlag:boolean,folderId:string|null){
-    return JSON.stringify({files:payload,mode:m,createFolders:foldersFlag,targetFolderId:folderId});
+  async function upload<T>(endpoint: string, selected: File[], options: { mode: Mode; source: Source; createFolders: boolean; targetFolderId: string | null }, fingerprint?: string, signal?: AbortSignal): Promise<T> {
+    const body = new FormData();
+    for (const file of selected) body.append('files', file, file.name);
+    body.set('paths', JSON.stringify(selected.map(file => file.webkitRelativePath || file.name)));
+    body.set('options', JSON.stringify(options));
+    if (fingerprint) body.set('fingerprint', fingerprint);
+    const response = await fetch(`/api/v1/notebooks/${notebookId}/${endpoint}`, { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'fetch' }, body, signal });
+    const result = await response.json();
+    if (!result.ok) throw new Error(result.error?.message || '导入请求失败');
+    return result.data as T;
   }
-  async function pick(all:File[]){
-    if(!notebookId){toast.error("没法导入","请先选中一个笔记本再导入。");return;}
-    setBusy(true);setProgress("正在读取文件…");
-    try{
-      const payload:Array<{path:string;content:string}>=[];
-      for(let i=0;i<all.length;i++){
-        const file=all[i]!;
-        setProgress(`读取文件 ${i+1}/${all.length}：${file.name}`);
-        payload.push(...(/\.zip$/i.test(file.name)?await readMarkdownZip(file):[{path:file.name,content:await file.text()}]));
-      }
-      if(!payload.length)throw new Error("没找到 .md 文件");
-      if(payload.length>500)throw new Error(`一次最多 500 篇，这次有 ${payload.length} 篇`);
-      setFiles(payload);await preview(payload,mode,createFolders,targetFolderId);
-    }catch(e){setPlan(null);toast.error("读取文件失败",(e as Error).message||"文件读不出来，请换个文件再试。")}finally{setBusy(false);setProgress(null)}
+  async function preview(selected = files, m = mode, dirs = createFolders, folderId = targetFolderId, origin = source) {
+    if (!notebookId || !selected.length || executing.current) return;
+    const version = ++request.current;
+    abort.current?.abort(); const controller = new AbortController(); abort.current = controller;
+    setFiles(selected); setPlan(null); setReport(null); setBusy(true);
+    try {
+      if (selected.reduce((n, file) => n + file.size, 0) > 100 * 1024 * 1024) throw new Error('一次最多上传 100 MB');
+      const next = await upload<Plan>('import-files-preview', selected, { mode: m, source: origin, createFolders: dirs, targetFolderId: folderId }, undefined, controller.signal);
+      if (version === request.current) setPlan(next);
+    } catch (e) { if (version === request.current && !controller.signal.aborted) toast.error('导入预览失败', (e as Error).message); }
+    finally { if (version === request.current) setBusy(false); }
   }
-  async function preview(payload=files,m=mode,foldersFlag=createFolders,folderId=targetFolderId){
-    if(!notebookId||!payload.length)return;
-    setBusy(true);setProgress("正在计算导入计划…");
-    try{setPlan(await api<Plan>(`/api/v1/notebooks/${notebookId}/import-preview`,{method:"POST",body:body(payload,m,foldersFlag,folderId)}));}
-    catch(e){setPlan(null);toast.error("导入预览失败",(e as Error).message||"服务器没有返回导入计划，请稍后再试。")}finally{setBusy(false);setProgress(null)}
-  }
-  function pickFolder(id:string|null){
-    setTargetFolderId(id);
-    if(files.length)void preview(files,mode,createFolders,id);
-  }
-  /** 导入可能要跑几十秒。确认之后立刻放人走，剩下的在后台跑完再用通知汇报。 */
-  async function run(){
-    if(!notebookId||!files.length)return;
-    const payload=files;const m=mode;const foldersFlag=createFolders;const folderId=targetFolderId;
-    const n=payload.length;
-    reset();onOpenChange(false);
-    toast.toast({title:"正在导入…",description:`共 ${n} 篇 → ${targetLabel}。完成后会通知你。`});
-    try{
-      const d=await api<{created:Array<{title:string}>;overwritten:Array<{title:string}>;skipped:Array<{title:string}>;foldersCreated:string[]}>(`/api/v1/notebooks/${notebookId}/import-markdown`,{method:"POST",body:body(payload,m,foldersFlag,folderId)});
-      const parts=[`新建 ${d.created.length} 篇`];
-      if(d.overwritten.length)parts.push(`覆盖 ${d.overwritten.length} 篇`);
-      if(d.skipped.length)parts.push(`跳过 ${d.skipped.length} 篇`);
-      if(d.foldersCreated.length)parts.push(`建了 ${d.foldersCreated.length} 个目录`);
-      const detail:string[]=[];
-      if(d.skipped.length && d.skipped.length<=5)detail.push(`跳过：${d.skipped.map(x=>x.title).join("、")}`);
-      if(d.overwritten.length && d.overwritten.length<=5)detail.push(`覆盖：${d.overwritten.map(x=>x.title).join("、")}`);
-      toast.success("导入完成", [parts.join("，"), ...detail].filter(Boolean).join("。"));
+  async function run() {
+    if (!plan || !files.length || !notebookId || executing.current) return;
+    executing.current = true; setRunning(true); setBusy(true);
+    try {
+      const result = await upload<Result>('import-files', files, { mode, source, createFolders, targetFolderId }, plan.fingerprint);
+      setReport(result.report); setPlan(null);
+      const failures = result.report.filter(item => item.status === 'failed').length;
+      const summary = `新建 ${result.created.length} 篇，覆盖 ${result.overwritten.length} 篇，跳过 ${result.skipped.length} 篇${failures ? `，失败 ${failures} 项` : ''}`;
+      toast.toast({ title: failures ? '导入结束，请查看失败清单' : '导入完成', description: summary });
       onDone();
-    }catch(e){toast.error("导入失败",(e as Error).message||"服务器出错，请稍后再试。")}
+    } catch (e) { setPlan(null); toast.error('导入未完成，请重新预览', (e as Error).message); }
+    finally { executing.current = false; setRunning(false); setBusy(false); }
   }
-
-  return <Dialog open={open} onOpenChange={v=>{if(!v)reset();onOpenChange(v)}}><DialogContent className="max-h-[86vh] max-w-2xl overflow-auto">
-    <DialogHeader><DialogTitle className="flex items-center gap-2"><Upload className="size-5"/>导入到《{notebookTitle??"笔记本"}》</DialogTitle>
-      <DialogDescription>选 .md 或整包 .zip。会先算一份计划给你看，确认后才写进库。默认同名改名保留。</DialogDescription></DialogHeader>
-
+  const pickFolder = (id: string | null) => { setTargetFolderId(id); if (files.length) void preview(files, mode, createFolders, id); };
+  const reportRows = report ?? plan?.report;
+  return <Dialog open={open} onOpenChange={value => { if (!executing.current) onOpenChange(value); }}><DialogContent className="max-h-[86vh] max-w-2xl overflow-auto">
+    <DialogHeader><DialogTitle className="flex items-center gap-2"><Upload className="size-5"/>迁移导入到《{notebookTitle ?? '笔记本'}》</DialogTitle>
+      <DialogDescription>支持 Notion Markdown & CSV、语雀 Markdown 目录、Obsidian ZIP、DOCX、HTML。先预览再确认；图片附件请随 ZIP 或目录一起选择。</DialogDescription></DialogHeader>
     <div className="grid gap-4">
-      <div>
-        <p className="mb-1.5 text-xs font-medium text-muted-foreground">放到哪个文件夹<span className="font-normal">（默认当前侧栏选中的文件夹）</span></p>
-        <div className="max-h-40 space-y-0.5 overflow-y-auto rounded-lg border p-1.5">
-          <button type="button" onClick={()=>pickFolder(null)} className={cn("flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm",targetFolderId===null?"bg-muted font-medium":"hover:bg-muted/60")}>
-            <Folder className="size-3.5 shrink-0"/>笔记本根目录
-          </button>
-          {folderRows.map(({folder,depth})=>(
-            <button key={folder.id} type="button" onClick={()=>pickFolder(folder.id)} style={{paddingLeft:8+depth*14}}
-              className={cn("flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-sm",targetFolderId===folder.id?"bg-muted font-medium":"hover:bg-muted/60")}>
-              <Folder className="size-3.5 shrink-0"/><span className="truncate">{folder.title}</span>
-            </button>
-          ))}
-        </div>
-        <p className="mt-1 text-[11px] text-muted-foreground">当前目标：{targetLabel}。勾选下方「按 zip 目录建文件夹」时，相对路径会挂在此目录下。</p>
+      <label className="flex items-center gap-2 text-sm">来源<select aria-label="导入来源" disabled={busy} value={source} className="rounded-md border bg-background px-2 py-1" onChange={e => { const next = e.target.value as Source; setSource(next); void preview(files, mode, createFolders, targetFolderId, next); }}>
+        <option value="auto">自动识别</option><option value="notion">Notion 官方导出</option><option value="yuque">语雀 Markdown 导出</option><option value="generic">通用 / Obsidian / Word / HTML</option>
+      </select></label>
+      <div><p className="mb-1.5 text-xs font-medium text-muted-foreground">目标文件夹</p>
+        <div className="max-h-32 space-y-0.5 overflow-y-auto rounded-lg border p-1.5">
+          <button type="button" disabled={busy} onClick={() => pickFolder(null)} className={cn('flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm', targetFolderId === null ? 'bg-muted font-medium' : 'hover:bg-muted/60')}><Folder className="size-3.5"/>笔记本根目录</button>
+          {folderRows.map(({ folder, depth }) => <button key={folder.id} type="button" disabled={busy} onClick={() => pickFolder(folder.id)} style={{ paddingLeft: 8 + depth * 14 }} className={cn('flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-sm', targetFolderId === folder.id ? 'bg-muted font-medium' : 'hover:bg-muted/60')}><Folder className="size-3.5 shrink-0"/><span className="truncate">{folder.title}</span></button>)}
+        </div><p className="mt-1 text-xs text-muted-foreground">当前目标：{targetLabel}</p>
       </div>
-
       <div className="flex flex-wrap items-center gap-3">
-        <Button variant="outline" disabled={busy} onClick={()=>document.getElementById("import-wizard-input")?.click()}><FileDown/>选择文件</Button>
-        <input id="import-wizard-input" type="file" multiple accept=".md,.markdown,.zip,text/markdown,application/zip" className="hidden" onChange={e=>{const list=takeInputFiles(e.target);if(list.length)void pick(list)}}/>
-        {files.length>0&&<span className="text-sm text-muted-foreground">已选 {files.length} 篇</span>}
-        <label className="ml-auto flex cursor-pointer items-center gap-2 text-xs"><input type="checkbox" className="size-3.5 accent-current" checked={createFolders} onChange={e=>{setCreateFolders(e.target.checked);void preview(files,mode,e.target.checked,targetFolderId)}}/><FolderTree className="size-3.5"/>按 zip 里的目录建文件夹</label>
+        <Button variant="outline" disabled={busy || !notebookId} onClick={() => fileInput.current?.click()}><FileDown/>选择文件 / ZIP</Button>
+        <Button variant="outline" disabled={busy || !notebookId} onClick={() => directoryInput.current?.click()}><FolderTree/>选择导出目录</Button>
+        <input ref={fileInput} type="file" multiple accept=".md,.markdown,.zip,.csv,.docx,.html,.htm,.png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.mp4,.webm" className="hidden" onChange={e => { const selected = takeInputFiles(e.target); if (selected.length) void preview(selected); }}/>
+        <input ref={directoryInput} type="file" multiple {...{ webkitdirectory: '' }} className="hidden" onChange={e => { const selected = takeInputFiles(e.target); if (selected.length) void preview(selected); }}/>
+        {files.length > 0 && <span className="text-xs text-muted-foreground">已选 {files.length} 个源文件</span>}
       </div>
-
-      <div><p className="mb-1.5 text-xs font-medium text-muted-foreground">同名笔记怎么处理</p>
-        <div className="grid gap-2 md:grid-cols-3">{MODES.map(o=><button key={o.v} type="button" onClick={()=>{setMode(o.v);void preview(files,o.v,createFolders,targetFolderId)}} className={`rounded-lg border p-3 text-left transition ${mode===o.v?"border-foreground bg-muted":"hover:bg-muted/50"}`}><span className="text-sm font-medium">{o.title}</span><span className="mt-1 block text-xs text-muted-foreground">{o.desc}</span></button>)}</div></div>
-
-      {progress&&<p className="text-xs text-muted-foreground">{progress}</p>}
-
-      {plan&&<div className="rounded-xl border">
-        <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3 text-sm">
-          <b>计划</b>
-          <Badge>新建 {plan.summary.create}</Badge>
-          {plan.summary.rename>0&&<Badge>改名 {plan.summary.rename}</Badge>}
-          {plan.summary.overwrite>0&&<Badge>覆盖 {plan.summary.overwrite}</Badge>}
-          {plan.summary.skip>0&&<Badge>跳过 {plan.summary.skip}</Badge>}
-          {plan.targetFolder&&<span className="text-xs text-muted-foreground">目标：{plan.targetFolder}</span>}
-          {plan.newFolders.length>0&&<span className="text-xs text-muted-foreground">将新建目录：{plan.newFolders.join("、")}</span>}
-        </div>
-        <div className="max-h-64 divide-y overflow-auto">{plan.items.map(item=><div key={item.sourcePath} className="flex items-center gap-3 px-4 py-2 text-sm">
-          <Badge>{actionLabel[item.action]}</Badge>
-          <span className="min-w-0 flex-1 truncate">{item.folder?`${item.folder} / `:""}{item.title}{item.action==="rename"&&<span className="text-muted-foreground">（原名 {item.originalTitle}）</span>}</span>
-          <span className="hidden truncate text-xs text-muted-foreground sm:block">{item.sourcePath}</span>
-        </div>)}</div>
+      <details><summary className="cursor-pointer text-sm">或粘贴文章 HTML</summary><textarea aria-label="文章 HTML" className="mt-2 h-28 w-full rounded-md border bg-background p-2 font-mono text-xs" placeholder="粘贴 HTML 源码，脚本会被移除，远程图片只保留链接" disabled={busy} value={html} onChange={e => setHtml(e.target.value)}/><Button variant="outline" size="sm" disabled={busy || !html.trim() || !notebookId} onClick={() => void preview([new File([html], '网页摘录.html', { type: 'text/html' })])}>预览 HTML</Button></details>
+      <label className="flex items-center gap-2 text-xs"><input type="checkbox" className="size-3.5 accent-current" disabled={busy} checked={createFolders} onChange={e => { setCreateFolders(e.target.checked); void preview(files, mode, e.target.checked, targetFolderId); }}/><FolderTree className="size-3.5"/>保留包内目录层级，放在目标目录下</label>
+      <div><p className="mb-1.5 text-xs font-medium text-muted-foreground">同名笔记</p><div className="grid gap-2 md:grid-cols-3">{MODES.map(option => <button key={option.v} type="button" disabled={busy} onClick={() => { setMode(option.v); void preview(files, option.v); }} className={cn('rounded-lg border p-3 text-left', mode === option.v ? 'border-foreground bg-muted' : 'hover:bg-muted/50')}><span className="text-sm font-medium">{option.title}</span><span className="mt-1 block text-xs text-muted-foreground">{option.desc}</span></button>)}</div></div>
+      {busy && <p role="status" className="text-sm text-muted-foreground">{running ? '正在导入，完成后会显示逐项报告…' : '正在安全解析文件并计算预览，不会写入笔记…'}</p>}
+      {plan && <div className="rounded-xl border"><div className="flex flex-wrap items-center gap-2 border-b px-4 py-3 text-sm"><b>计划</b><Badge>新建 {plan.summary.create}</Badge>{(['rename','overwrite','skip'] as const).filter(key => plan.summary[key] > 0).map(key => <Badge key={key}>{actionLabel[key]} {plan.summary[key]}</Badge>)}{plan.newFolders.length > 0 && <span className="w-full text-xs text-muted-foreground">将新建目录：{plan.newFolders.join('、')}</span>}</div>
+        <div className="max-h-64 divide-y overflow-auto">{plan.items.map((item, index) => <div key={`${item.sourcePath}-${index}`} className="space-y-1 px-4 py-2 text-sm"><div className="flex items-center gap-2"><Badge>{actionLabel[item.action]}</Badge><span className="min-w-0 flex-1 break-all">{item.folder ? `${item.folder} / ` : ''}{item.title}</span>{item.attachments > 0 && <span className="text-xs text-muted-foreground">{item.attachments} 附件</span>}</div><p className="break-all text-xs text-muted-foreground">{item.sourcePath}</p>{item.warnings.map((warning, i) => <p key={i} className="text-xs text-amber-700 dark:text-amber-400">降级：{warning}</p>)}</div>)}</div>
+        {!plan.items.length && <p className="p-4 text-sm text-muted-foreground">未找到可导入正文，请查看下方报告</p>}
       </div>}
-
-      <div className="flex justify-end gap-2"><Button variant="ghost" onClick={()=>{reset();onOpenChange(false)}}>取消</Button><Button disabled={busy||!plan||plan.items.every(i=>i.action==="skip")} onClick={run}>{busy?"处理中…":`确认导入${plan?` ${plan.items.filter(i=>i.action!=="skip").length} 篇`:""}`}</Button></div>
+      {!!reportRows?.length && <div className="rounded-xl border"><p className="border-b px-4 py-2 text-sm font-medium">{report ? '导入报告' : '预览提示'}{report && `：成功 ${report.filter(i => i.status === 'success').length}，跳过 ${report.filter(i => i.status === 'skipped').length}，降级 ${report.filter(i => i.status === 'degraded').length}，失败 ${report.filter(i => i.status === 'failed').length}`}</p><div className="max-h-64 divide-y overflow-auto">{reportRows.map((item,index) => <div key={index} className="px-4 py-2 text-xs"><Badge>{reportLabel[item.status]}</Badge><span className="ml-2 break-all">{item.path}</span><p className="mt-1 text-muted-foreground">{item.message}</p></div>)}</div></div>}
+      <p className="text-xs text-muted-foreground">每批最多 500 篇 / 100 MB。远程图片不自动下载；不支持的块和缺失资源会列入报告。更深的目录会合并到第 8 层。</p>
+      <div className="flex justify-end gap-2"><Button variant="ghost" disabled={running} onClick={() => onOpenChange(false)}>{report ? '关闭' : '取消'}</Button>{!report && <Button disabled={busy || !plan || !plan.items.length} onClick={run}>确认导入{plan ? ` ${plan.items.filter(item => item.action !== 'skip').length} 篇` : ''}</Button>}{report && <Button variant="outline" onClick={() => { setReport(null); void preview(); }}>重新预览</Button>}</div>
     </div>
   </DialogContent></Dialog>;
 }
