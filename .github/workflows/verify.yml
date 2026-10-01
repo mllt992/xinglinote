@@ -11,7 +11,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
@@ -63,6 +63,20 @@ jobs:
         env:
           KB_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/xingli_test
         run: node --import ./apps/api/node_modules/tsx/dist/loader.mjs scripts/verify-board-sharing.mjs
+      - name: PWA offline privacy and home onboarding browser verification
+        env:
+          KB_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/xingli_test
+        run: node --import ./apps/api/node_modules/tsx/dist/loader.mjs scripts/verify-pwa-onboarding.mjs
+      - name: Clean disposable Linux home installation
+        timeout-minutes: 12
+        run: node scripts/verify-home-setup.mjs && node scripts/verify-home-compose.mjs
+      - name: Clean up disposable home stack
+        if: always()
+        run: |
+          if [ -f .env.home ]; then
+            docker compose --project-name "xingli-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --env-file .env.home -f compose.home.yml down --volumes --remove-orphans
+            rm -f .env.home
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
@@ -72,5 +86,6 @@ jobs:
             /tmp/xingli-migration-*.png
             /tmp/xingli-analytics-*.png
             /tmp/xingli-boards-*.png
+            /tmp/xingli-pwa-*.png
           if-no-files-found: ignore
           retention-days: 5

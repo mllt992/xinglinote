@@ -1,3 +1,4 @@
+import { AdminHealth, AdminSafetyNotice } from "./admin-health";
 import { useEffect, useState, type ReactNode, type SelectHTMLAttributes } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
@@ -381,9 +382,10 @@ export function AdminPage() {
       <Button variant="ghost" onClick={() => nav("/app")}><ChevronRight className="rotate-180" />返回工作区</Button>
       <div className="ml-auto flex items-center gap-2.5 font-semibold tracking-[-0.03em]">
         <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground"><Sparkles className="size-3.5" /></span>
-        <span>Knowledge</span>
+        <span>{String(overview?.settings.instanceName ?? "星璃笔记")}</span>
       </div>
     </header>
+    <AdminSafetyNotice />
 
     <div className={cn("mx-auto flex flex-col gap-6 px-5 py-8 lg:flex-row lg:gap-10", tab === "index" ? "max-w-[88rem]" : "max-w-6xl")}>
       <aside className="shrink-0 lg:w-52">
@@ -419,6 +421,7 @@ export function AdminPage() {
         {!error && loading && <div className="grid gap-3 sm:grid-cols-2">{[0, 1, 2, 3].map(i => <div key={i} className="h-28 animate-pulse rounded-xl border bg-muted/60" />)}</div>}
 
         {!error && !loading && tab === "overview" && <div className="space-y-6">
+          <AdminHealth />
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <Stat icon={<Users className="size-4" />} label="用户" value={overview?.userCount ?? 0} hint={`${overview?.adminCount ?? 0} 名管理员`} />
             <Stat icon={<LayoutGrid className="size-4" />} label="工作区" value={overview?.workspaceCount ?? 0} hint="含个人工作区" />

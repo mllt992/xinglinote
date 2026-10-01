@@ -23,6 +23,7 @@ import { applyModeration } from "../../api/src/lib/moderation.ts";
 import { executeAgentReply } from "../../api/src/lib/agents.ts";
 import { cleanupExpiredMcpUploads } from "../../api/src/lib/mcp-upload.ts";
 import { AppError } from "@kb/shared";
+import { writeWorkerHeartbeat } from "../../api/src/lib/worker-heartbeat.ts";
 function shouldRetry(e:unknown){
   const msg=e instanceof Error?e.message:String(e);
   if(/实例关了 AI|智能体已停用|密文解不开|模型没有返回文字|找不到这个模型|请检查 Key/.test(msg))return false;
@@ -189,6 +190,17 @@ async function safeTick(){
 }
 console.log(`knowledge worker started (${interval}ms)`);
 await schedule();
+// 独立心跳覆盖长任务，但数据库不可达时不刷新；同一时间最多一个探测。
+let heartbeatBusy = false;
+async function heartbeat() {
+  if (heartbeatBusy) return;
+  heartbeatBusy = true;
+  try { await db.execute(sql`SELECT 1`); await writeWorkerHeartbeat(env.dataDir); }
+  catch (error) { console.error("worker heartbeat failed:", error); }
+  finally { heartbeatBusy = false; }
+}
+await heartbeat();
+setInterval(() => void heartbeat(), 15000);
 setInterval(()=>void safeTick(),interval);
 setInterval(()=>void scheduleBackups().catch(e=>console.error("backup schedule failed:",e)),5*60*1000);
 setInterval(()=>void schedule().catch(e=>console.error("schedule failed:",e)),86400000);

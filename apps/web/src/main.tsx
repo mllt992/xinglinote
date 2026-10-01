@@ -31,3 +31,8 @@ createRoot(document.getElementById("root")!).render(
     </BrowserRouter>
   </StrictMode>,
 );
+
+// 离线壳与推送共用一个 worker；无需通知权限，也不会缓存私有接口。
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  void navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(error => console.warn("离线功能不可用", error));
+}

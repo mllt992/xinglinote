@@ -1,0 +1,66 @@
+# 家用独立路径：不叠加 docker-compose.yml；不发布数据库端口。
+name: xinglinote-home
+x-app: &app
+  build:
+    context: .
+    args:
+      NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+  env_file: [.env.home]
+  environment:
+    NODE_ENV: production
+    DATABASE_URL: postgres://${POSTGRES_USER:?请先运行 home-setup.sh}:${POSTGRES_PASSWORD:?请先运行 home-setup.sh}@db:5432/${POSTGRES_DB:?请先运行 home-setup.sh}
+    DATA_DIR: /data
+    API_PORT: '12099'
+  volumes: [kbdata:/data]
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?请先运行 home-setup.sh}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请先运行 home-setup.sh}
+      POSTGRES_DB: ${POSTGRES_DB:?请先运行 home-setup.sh}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  migrate:
+    <<: *app
+    command: [migrate]
+    depends_on:
+      db: {condition: service_healthy}
+    healthcheck: {disable: true}
+    restart: 'no'
+  api:
+    <<: *app
+    command: [api]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    ports: ['127.0.0.1:${KB_LOCAL_PORT:-12099}:12099']
+    restart: unless-stopped
+  worker:
+    <<: *app
+    command: [worker]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck: {disable: true}
+    restart: unless-stopped
+  caddy:
+    profiles: [tls]
+    image: caddy:2
+    environment:
+      KB_DOMAIN: ${KB_DOMAIN:-localhost}
+    ports: ['80:80', '443:443']
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on: [api]
+    restart: unless-stopped
+volumes:
+  pgdata:
+  kbdata:
+  caddydata:
+  caddyconfig:

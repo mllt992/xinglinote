@@ -14,6 +14,7 @@ import { userStorageMany } from "../lib/quota.ts";
 import { assignStorage, pendingOf, storageDto } from "../lib/service-requests.ts";
 import { userAvatarUrl } from "../lib/user-avatar.ts";
 import { env } from "../env.ts";
+import { instanceHealth, testInstanceSmtp } from "../lib/instance-health.ts";
 
 function pageQuery(c: { req: { query: (k: string) => string | undefined } }) {
   const page = Math.max(1, Number(c.req.query("page") ?? 1) || 1);
@@ -52,6 +53,14 @@ async function admin(c: Parameters<typeof currentUser>[0]) {
   return u;
 }
 
+adminRoutes.get("/admin/health", async c => {
+  c.header("Cache-Control", "private, no-store"); const actor = await admin(c);
+  return ok(c, await instanceHealth(actor.id));
+});
+adminRoutes.post("/admin/health/smtp", async c => {
+  c.header("Cache-Control", "private, no-store"); await admin(c);
+  return ok(c, await testInstanceSmtp());
+});
 adminRoutes.get("/admin/overview", async c => {
   await admin(c);
   const [{ value: userCount }] = await db.select({ value: count() }).from(users);
@@ -71,7 +80,7 @@ adminRoutes.get("/admin/overview", async c => {
 });
 adminRoutes.patch("/admin/settings", async c => {
   await admin(c);
-  const body = z.object({ allowOpenRegistration: z.boolean().optional(), allowCodeRegistration: z.boolean().optional(), requireEmailVerification: z.boolean().optional(), allowUserCreateWorkspace: z.boolean().optional(), squareEnabled: z.boolean().optional(), aiEnabled: z.boolean().optional(), defaultUserStorageBytes: z.number().int().min(1048576).max(1099511627776).optional(), allowStorageRequests: z.boolean().optional(),
+  const body = z.object({ instanceName: z.string().trim().min(1).max(60).optional(), allowOpenRegistration: z.boolean().optional(), allowCodeRegistration: z.boolean().optional(), requireEmailVerification: z.boolean().optional(), allowUserCreateWorkspace: z.boolean().optional(), squareEnabled: z.boolean().optional(), aiEnabled: z.boolean().optional(), defaultUserStorageBytes: z.number().int().min(1048576).max(1099511627776).optional(), allowStorageRequests: z.boolean().optional(),
     mcpImageMaxBytes: z.number().int().min(262144).max(26214400).optional(), smtpHost:z.string().nullable().optional(),smtpPort:z.number().int().min(1).max(65535).nullable().optional(),smtpUser:z.string().nullable().optional(),smtpPassword:z.string().nullable().optional(),smtpFrom:z.string().nullable().optional(),smtpSecure:z.boolean().optional(),
     moderationEnabled: z.boolean().optional(), moderationSquare: z.boolean().optional(), moderationCircle: z.boolean().optional(), moderationArticle: z.boolean().optional(),
     moderationBaseUrl: z.string().url().nullable().optional(), moderationModel: z.string().max(120).nullable().optional(), moderationApiKey: z.string().max(400).nullable().optional(),

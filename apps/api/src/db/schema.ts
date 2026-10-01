@@ -13,6 +13,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 export const instanceSettings = pgTable("instance_settings", {
+  instanceName: text("instance_name").notNull().default("星璃笔记"),
   id: integer("id").primaryKey().default(1),
   allowOpenRegistration: boolean("allow_open_registration").notNull().default(false),
   allowEmailRegistration: boolean("allow_email_registration").notNull().default(true),

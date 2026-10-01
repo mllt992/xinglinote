@@ -1,9 +1,22 @@
-/**
- * 只干推送这一件事：不缓存、不接管导航、不做离线（那是另一个话题，做不好比不做更糟）。
- * 载荷是 lib/push.ts 里 pushToUser 发的 JSON：{title, body, href, tag}。
- */
-self.addEventListener("install", () => self.skipWaiting());
-self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));
+/** 只缓存公开的离线壳与品牌文件；不存私有 API、SPA HTML 或附件。 */
+const CACHE = "xingli-offline-v1";
+const SHELL = ["/offline.html", "/offline.js", "/offline.css", "/manifest.webmanifest", "/brand/xingli-mark.svg", "/brand/icon-192.png", "/brand/icon-512.png"];
+self.addEventListener("install", event => event.waitUntil((async () => {
+  const cache = await caches.open(CACHE); await cache.addAll(SHELL); await self.skipWaiting();
+})()));
+self.addEventListener("activate", event => event.waitUntil((async () => {
+  for (const name of await caches.keys()) if (name.startsWith("xingli-offline-") && name !== CACHE) await caches.delete(name);
+  await self.clients.claim();
+})()));
+self.addEventListener("fetch", event => {
+  const url = new URL(event.request.url);
+  if (event.request.method !== "GET" || url.origin !== self.location.origin) return;
+  if (SHELL.includes(url.pathname) && !url.search) {
+    event.respondWith(fetch(event.request).catch(async () => (await caches.match(url.pathname)) || Response.error()));
+  } else if (event.request.mode === "navigate" && (url.pathname === "/app" || /^\/w\/[^/]+(?:\/n\/[^/]+|\/today)?$/.test(url.pathname))) {
+    event.respondWith(fetch(event.request).catch(async () => (await caches.match("/offline.html")) || Response.error()));
+  }
+});
 
 self.addEventListener("push", event => {
   let data = {};
