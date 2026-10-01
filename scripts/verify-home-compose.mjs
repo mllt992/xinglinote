@@ -30,12 +30,13 @@ try{
  const fields=page.locator('form input');assert.equal(await fields.count(),4);
  await fields.nth(0).fill('干净安装验收');await fields.nth(1).fill('composesmoke');await fields.nth(2).fill('compose-smoke@example.invalid');await fields.nth(3).fill('Fixture-'+randomBytes(20).toString('hex'));
  const registered=page.waitForResponse(r=>r.url().endsWith('/api/v1/auth/register')&&r.request().method()==='POST');await page.getByRole('button',{name:'创建账号',exact:true}).click();
- const register=await registered,registration=await register.json();assert.equal(register.status(),201);assert.equal(registration.data.isFirst,true);
+ const register=await registered;assert.equal(register.status(),201);
  await page.waitForURL('**/admin?welcome=1');await page.getByRole('heading',{name:'第一小时清单',exact:true}).waitFor();
  const session=(await context.cookies()).find(c=>c.name==='kb_session');assert.ok(session);const cookie=`kb_session=${session.value}`;
  await page.screenshot({path:'/tmp/xingli-pwa-clean-install.png',fullPage:true});
  const get=async path=>{const r=await fetch(base+'/api/v1'+path,{headers:{cookie,'x-requested-with':'fetch'}});const j=await r.json();assert.ok(r.ok,JSON.stringify(j));return j.data;};
  const me=await get('/me');assert.equal(me.instanceRole,'admin');assert.ok(me.personalWorkspaceId);
+ await run('docker',[...compose,'exec','-T','db','sh','-c',`test "$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) || ':' || count(*) FILTER (WHERE role_instance = 'admin') FROM users")" = "1:1"`],10000);
  const codeResponse=await fetch(base+'/api/v1/admin/registration-codes',{method:'POST',headers:{cookie,'content-type':'application/json','x-requested-with':'fetch'},body:JSON.stringify({quantity:1,maxUses:1,expiresInDays:1,note:'一次性 CI 验收'})});
  const codes=await codeResponse.json();assert.equal(codeResponse.status,201);assert.equal(codes.data.codes.length,1);
  let health;for(let i=0;i<20;i++){health=await get('/admin/health');if(health.checks.find(c=>c.key==='worker')?.status==='ok')break;await new Promise(r=>setTimeout(r,1000));}
