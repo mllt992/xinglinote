@@ -32,7 +32,7 @@ try {
  await page.screenshot({path:'/tmp/xingli-pwa-admin-375.png',fullPage:true});
  phase='trusted device consent';await page.goto(base+'/settings/account');await page.getByRole('button',{name:'开启可信设备暂存',exact:true}).click();await page.getByRole('button',{name:'这是我的设备，开启',exact:true}).click();
  phase='read note snapshot';await page.goto(`${base}/w/${ids.ws}/n/${ids.note}`);
- await page.locator('[placeholder="无标题"]:visible').waitFor();
+ await page.getByRole('textbox',{name:'笔记标题',exact:true}).waitFor();assert.equal(await page.getByPlaceholder('无标题').count(),1,'不能保留第二个旧标题输入');
  await page.waitForFunction(id=>JSON.parse(localStorage.getItem(`xingli.device.v1:snapshots:${id}`)||'[]').some(x=>x.title==='地铁上的星璃'),ids.user);
  phase='Today snapshot';await page.goto(`${base}/w/${ids.ws}/today`);
  await page.waitForFunction(id=>JSON.parse(localStorage.getItem(`xingli.device.v1:snapshots:${id}`)||'[]').some(x=>x.kind==='today'),ids.user);
@@ -40,21 +40,21 @@ try {
  await context.setOffline(true);await page.goto(base+'/app');await page.getByRole('button',{name:'笔记 · 地铁上的星璃',exact:true}).click();
  assert.equal(await page.locator('#body').textContent(),'只读快照正文');await page.getByRole('button',{name:/^今天 · 今天/}).click();await page.locator('#body').waitFor();
  await page.screenshot({path:'/tmp/xingli-pwa-offline-375.png',fullPage:true});
- await context.setOffline(false);await page.goto(`${base}/w/${ids.ws}/n/${ids.note}`);await page.locator('[placeholder="无标题"]:visible').waitFor();
- await context.setOffline(true);await page.locator('[placeholder="无标题"]:visible').fill('断网时的新标题');
+ await context.setOffline(false);await page.goto(`${base}/w/${ids.ws}/n/${ids.note}`);await page.getByRole('textbox',{name:'笔记标题',exact:true}).waitFor();
+ await context.setOffline(true);await page.getByRole('textbox',{name:'笔记标题',exact:true}).fill('断网时的新标题');
  await page.waitForFunction(({user,note})=>Object.keys(localStorage).filter(k=>k.startsWith(`xingli.device.v1:draft:${user}:${note}:`)).some(k=>JSON.parse(localStorage.getItem(k)||'null')?.title==='断网时的新标题'),ids);
  await page.reload();await page.getByRole('heading',{name:'星璃笔记',exact:true}).waitFor();
  await context.setOffline(false);await page.goto(`${base}/w/${ids.ws}/n/${ids.note}`);await page.getByText('有本机未同步草稿',{exact:true}).waitFor();
- await page.getByRole('button',{name:'恢复到编辑器',exact:true}).click();assert.equal(await page.locator('[placeholder="无标题"]:visible').inputValue(),'断网时的新标题');
- await page.locator('[placeholder="无标题"]:visible').press('Control+s');
+ await page.getByRole('button',{name:'恢复到编辑器',exact:true}).click();assert.equal(await page.getByRole('textbox',{name:'笔记标题',exact:true}).inputValue(),'断网时的新标题');
+ await page.getByRole('textbox',{name:'笔记标题',exact:true}).press('Control+s');
  await page.waitForFunction(({user,note})=>!Object.keys(localStorage).some(k=>k.startsWith(`xingli.device.v1:draft:${user}:${note}:`)),ids);
  const cached=await page.evaluate(async()=>{const keys=[];for(const name of await caches.keys())for(const req of await (await caches.open(name)).keys())keys.push(new URL(req.url).pathname);return keys;});
  assert.ok(cached.includes('/offline.html'));assert.ok(cached.every(path=>!path.startsWith('/api/')&&!path.startsWith('/w/')&&!path.startsWith('/p/')));
  // 两个已打开标签的独有输入分支：A 保存/确认后，关闭的 B 仍可恢复。
- const second=await context.newPage();await second.goto(`${base}/w/${ids.ws}/n/${ids.note}`);await second.locator('[placeholder="无标题"]:visible').waitFor();
- await context.setOffline(true);await second.locator('[placeholder="无标题"]:visible').fill('标签 B 不应丢失');await page.locator('[placeholder="无标题"]:visible').fill('标签 A 已保存');
+ const second=await context.newPage();await second.goto(`${base}/w/${ids.ws}/n/${ids.note}`);await second.getByRole('textbox',{name:'笔记标题',exact:true}).waitFor();
+ await context.setOffline(true);await second.getByRole('textbox',{name:'笔记标题',exact:true}).fill('标签 B 不应丢失');await page.getByRole('textbox',{name:'笔记标题',exact:true}).fill('标签 A 已保存');
  await page.waitForFunction(({user,note})=>Object.keys(localStorage).filter(k=>k.startsWith(`xingli.device.v1:draft:${user}:${note}:`)).length===2,ids);
- await second.close();await context.setOffline(false);await page.locator('[placeholder="无标题"]:visible').press('Control+s');
+ await second.close();await context.setOffline(false);await page.getByRole('textbox',{name:'笔记标题',exact:true}).press('Control+s');
  await page.waitForFunction(({user,note})=>{const rows=Object.keys(localStorage).filter(k=>k.startsWith(`xingli.device.v1:draft:${user}:${note}:`)).map(k=>JSON.parse(localStorage.getItem(k)));return rows.length===1&&rows[0].title==='标签 B 不应丢失';},ids);
  await page.reload();await page.getByText('有本机未同步草稿',{exact:true}).waitFor();assert.ok((await page.locator('section[role="status"] pre').textContent()).includes('标签 B 不应丢失'));
  // 服务端退出后 /me 的拒绝也必须撤销离线身份。
