@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node ../../scripts/build-clipper.mjs && vite build",
     "test": "tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {

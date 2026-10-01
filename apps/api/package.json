@@ -11,6 +11,7 @@
     "@hono/node-server": "^1.14.1",
     "@kb/core": "workspace:*",
     "@kb/shared": "workspace:*",
+    "@mozilla/readability": "^0.6.0",
     "drizzle-orm": "^0.41.0",
     "hono": "^4.7.5",
     "jose": "^6.2.12",

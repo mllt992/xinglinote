@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "存到星璃",
+  "version": "0.1.0",
+  "description": "主动剪藏当前网页正文或选中片段，登录自托管星璃实例后确认保存。",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "action": {"default_popup": "popup.html", "default_title": "存到星璃"},
+  "icons": {"128": "icon.png"}
+}

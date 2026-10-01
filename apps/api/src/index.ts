@@ -1,3 +1,4 @@
+import { clipRoutes } from './routes/clips.ts';
 import type { Server } from "node:http";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
@@ -132,6 +133,7 @@ app.route("/api/v1", fileRoutes);
 app.route("/api/v1", mindMapRoutes);
 app.route("/api/v1", opsRoutes);
 app.route("/api/v1", analyticsRoutes);
+app.route("/api/v1", clipRoutes);
 app.route("/api/v1", workbenchRoutes);
 app.route("/api/v1", workspaceLifecycleRoutes);
 app.route("/api/v1", backupRoutes);

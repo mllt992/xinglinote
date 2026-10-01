@@ -15,3 +15,6 @@ apps/api/dist
 
 # 家用部署备份包含实例密钥，不得提交
 home-backup/
+
+/apps/web/public/xingli-clipper.zip
+/extensions/clipper/dist/

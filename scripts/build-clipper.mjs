@@ -1,0 +1,14 @@
+import { readFile,writeFile,mkdir,readdir,copyFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { dirname,resolve,join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { makeZip } from '../apps/api/src/lib/zip.ts';
+const root=resolve(dirname(fileURLToPath(import.meta.url)),'..'),source=join(root,'extensions/clipper'),out=join(source,'dist');
+const require=createRequire(join(root,'apps/api/package.json')),vendor=dirname(require.resolve('@mozilla/readability/Readability.js'));
+await mkdir(out,{recursive:true});
+for(const name of ['manifest.json','popup.html','popup.js','capture-page.js','popup.css','transfer.html','transfer.js','README.md'])await copyFile(join(source,name),join(out,name));
+await copyFile(join(vendor,'Readability.js'),join(out,'Readability.js'));await copyFile(join(vendor,'LICENSE.md'),join(out,'READABILITY-LICENSE.md'));
+await copyFile(join(root,'apps/web/public/brand/share-card.png'),join(out,'icon.png'));
+const entries=await Promise.all((await readdir(out)).sort().map(async path=>({path,data:await readFile(join(out,path))})));
+await writeFile(join(root,'apps/web/public/xingli-clipper.zip'),makeZip(entries,new Date('2026-01-01T00:00:00Z')));
+console.log(`Clipper: ${entries.length} files, activeTab only; no host permissions or credentials`);

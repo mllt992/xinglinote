@@ -61,8 +61,8 @@ export async function migratePrivateNotebooks(userId: string, fromWorkspaceId: s
  * `export.zip`、backlinks 更是**逐篇**调），一个几百人的工作区等于每篇笔记
  * 扫一遍全成员表。
  */
-export async function memberRole(workspaceId: string, userId: string): Promise<WsRole | null> {
-  const [m] = await db
+export async function memberRole(workspaceId: string, userId: string, reader: Pick<typeof db, "select"> = db): Promise<WsRole | null> {
+  const [m] = await reader
     .select({ role: workspaceMembers.role })
     .from(workspaceMembers)
     .where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, userId)))
