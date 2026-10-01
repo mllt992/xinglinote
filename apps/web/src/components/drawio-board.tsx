@@ -1,3 +1,4 @@
+import { normalizeBoardPreviewSvg } from "../lib/board-preview";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { BookOpen, Download, Maximize, MoreHorizontal, Send, Sparkles, Undo2, X } from "lucide-react";
 import type { DrawioData } from "@kb/shared";
@@ -73,7 +74,7 @@ export const DrawioBoard = forwardRef<DrawioBoardHandle, Props>(function DrawioB
       window.setTimeout(()=>{const i=exportWaiters.current.indexOf(resolve);if(i>=0){exportWaiters.current.splice(i,1);resolve(null);}},30_000);
     });
     if (!url || !url.startsWith('data:image/svg+xml')) throw new Error('画板预览生成失败');
-    return dataUrlToBlob(url).text();
+    return normalizeBoardPreviewSvg(await dataUrlToBlob(url).text());
   } }), [getData,status,origin]);
 
   const post = useCallback((msg: Record<string, unknown>) => {

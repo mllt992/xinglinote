@@ -59,6 +59,13 @@ try{
  assert.ok(await publicPage.locator('.public-board-svg text').evaluateAll(nodes=>nodes.some(n=>n.style.outline.includes('3px'))));
  await publicPage.getByRole('button',{name:'放大导图'}).click();assert.equal(await publicPage.locator('.public-board-svg').evaluate(el=>el.style.width),'125%');
  await publicPage.getByRole('button',{name:'适应',exact:true}).click();
+ const geometry=await publicPage.locator('.public-board-svg svg').evaluate(svg=>{
+  const root=svg.getBoundingClientRect();return{viewBox:svg.getAttribute('viewBox'),shapes:[...svg.querySelectorAll('rect,path')].slice(0,20).map(n=>({tag:n.tagName,fill:n.getAttribute('fill'),opacity:n.getAttribute('opacity')})),root:{x:root.x,y:root.y,width:root.width,height:root.height},labels:[...svg.querySelectorAll('text')].filter(t=>/家庭旅行地图|交通路线|打包清单/.test(t.textContent)).map(t=>{const r=t.getBoundingClientRect();return{text:t.textContent,x:r.x,y:r.y,right:r.right,bottom:r.bottom,font:getComputedStyle(t).fontSize,fill:getComputedStyle(t).fill};})};
+ });
+ assert.ok(geometry.viewBox,'响应式 SVG 必须有 viewBox');assert.ok(geometry.root.height>50);
+ for(const label of geometry.labels){assert.ok(label.x>=geometry.root.x-2&&label.right<=geometry.root.x+geometry.root.width+2&&label.y>=geometry.root.y-2&&label.bottom<=geometry.root.y+geometry.root.height+2,JSON.stringify({geometry,label}));}
+ console.log('SVG visible geometry',JSON.stringify(geometry));
+
  assert.equal(await publicPage.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
  await publicPage.screenshot({path:'/tmp/xingli-boards-share-375.png',fullPage:true});
  await more('发布到文档站');await page.getByText('已发布到文档站',{exact:true}).waitFor();

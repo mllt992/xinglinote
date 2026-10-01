@@ -3,7 +3,7 @@ import { fail } from "@kb/shared";
 import { assertAttachmentType, imageDimensions } from "./file-type.ts";
 
 const SVG_TAGS = ['svg','g','path','rect','circle','ellipse','line','polyline','polygon','text','tspan','defs','clipPath','linearGradient','radialGradient','stop','image','switch'];
-const ATTRS = ['id','x','y','x1','y1','x2','y2','cx','cy','r','rx','ry','width','height','viewBox','preserveAspectRatio','d','points','transform','fill','fill-opacity','fill-rule','stroke','stroke-width','stroke-opacity','stroke-linecap','stroke-linejoin','stroke-dasharray','opacity','font-family','font-size','font-weight','font-style','text-anchor','dominant-baseline','dx','dy','offset','stop-color','stop-opacity','clip-path','gradientUnits','gradientTransform','spreadMethod','href','xlink:href','xmlns','xmlns:xlink'];
+const ATTRS = ['id','x','y','x1','y1','x2','y2','cx','cy','r','rx','ry','width','height','viewBox','preserveAspectRatio','d','points','transform','fill','fill-opacity','fill-rule','stroke','stroke-width','stroke-opacity','stroke-linecap','stroke-linejoin','stroke-dasharray','opacity','font-family','font-size','font-weight','font-style','text-decoration','text-anchor','dominant-baseline','dx','dy','offset','stop-color','stop-opacity','clip-path','gradientUnits','gradientTransform','spreadMethod','href','xlink:href','xmlns','xmlns:xlink'];
 const LOCAL_URL = /^url\(#[A-Za-z_][\w:.-]*\)$/;
 const DATA_IMAGE = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+=*$/;
 
