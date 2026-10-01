@@ -9,17 +9,23 @@ type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | 
 const sameDraft = (a: NoteDraft, b: NoteDraft) => a.title === b.title && a.bodyMd === b.bodyMd && a.aiIndex === b.aiIndex && a.published === b.published && JSON.stringify(a.tags ?? []) === JSON.stringify(b.tags ?? []);
 function parse<T>(value: string | null, fallback: T): T { try { return value ? JSON.parse(value) as T : fallback; } catch { return fallback; } }
 
+type DraftCrypto = Pick<Crypto, "getRandomValues"> | null | undefined;
+/** randomUUID 只在安全上下文可用；普通 HTTP/LAN 仍应正常加载应用。 */
+export function newDraftId(source: DraftCrypto = globalThis.crypto): string | null {
+  try { if(!source?.getRandomValues)return null;const bytes=source.getRandomValues(new Uint8Array(16));return Array.from(bytes,b=>b.toString(16).padStart(2,"0")).join(""); } catch { return null; }
+}
+
 export class DeviceStorage {
   private drafts = new Map<string, LocalNoteDraft | null>();
   private ownDisk = new Map<string, string>();
   private source = new Map<string, string>();
   private edited = new Set<string>();
-  private writer = crypto.randomUUID();
+  private writer: string | null;
   private sequence = 0;
   private userId: string | null = null;
   private generation = 0;
   private observedAuthVersion: string | null;
-  constructor(private storage: StorageLike | null) { this.observedAuthVersion = this.get("authVersion"); }
+  constructor(private storage: StorageLike | null, private cryptoSource: DraftCrypto = globalThis.crypto) { this.observedAuthVersion = this.get("authVersion"); this.writer=newDraftId(cryptoSource); }
   private syncLogout() {
     const version = this.get("authVersion");
     if (version !== this.observedAuthVersion) { this.observedAuthVersion = version; this.userId = null; this.generation++; }
@@ -93,11 +99,12 @@ export class DeviceStorage {
   }
   saveDraft(value: LocalNoteDraft, user = this.userId): "persisted" | "memory" | "failed" {
     this.syncLogout();if(!user||user!==this.userId)return "failed";
-    const key=this.draftKey(value.id),branch=`draft:${user}:${value.id}:${this.writer}:${crypto.randomUUID()}`;
-    const next={...value,draftBranch:branch,draftWriter:this.writer,draftSequence:++this.sequence};
+    const key=this.draftKey(value.id),revision=newDraftId(this.cryptoSource),branch=this.writer&&revision?`draft:${user}:${value.id}:${this.writer}:${revision}`:undefined;
+    const next={...value,draftBranch:branch,draftWriter:this.writer??undefined,draftSequence:++this.sequence};
     // 每个实例写入自己的不可变快照。另一个标签的同篇草稿永远不被覆盖。
     this.drafts.set(key,next);this.edited.add(key);
     if(!this.enabled())return "memory";
+    if(!branch)return "failed";
     const disk=this.diskDrafts();
     if(JSON.stringify(next).length>1_000_000 || (disk.length>=100&&!this.ownDisk.has(key)))return "failed";
     if(!this.put(branch,next))return "failed";

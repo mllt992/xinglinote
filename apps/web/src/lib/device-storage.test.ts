@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DeviceStorage, DEVICE_PREFIX, SNAPSHOT_TTL, type LocalNoteDraft } from "./device-storage.ts";
+import { DeviceStorage, newDraftId, DEVICE_PREFIX, SNAPSHOT_TTL, type LocalNoteDraft } from "./device-storage.ts";
 class MemoryStorage {
   values = new Map<string, string>(); full = false;
   get length() { return this.values.size; }
@@ -87,4 +87,11 @@ test("分支数与单篇大小上限只拒绝新持久化，不清除未同步�
  for(let i=0;i<100;i++){const d=new DeviceStorage(storage);d.identify("alice");d.consent(true);assert.equal(d.saveDraft({...draft(`分支 ${i}`),id:`note-${i}`}),"persisted");}
  const extra=new DeviceStorage(storage);extra.identify("alice");assert.equal(extra.saveDraft({...draft("额外正文"),id:"note-extra"}),"failed");assert.equal(extra.draft("note-extra")?.bodyMd,"额外正文");
  const reload=new DeviceStorage(storage);reload.identify("alice");assert.equal(reload.listDrafts().length,100);assert.equal(extra.saveDraft({...draft("x".repeat(1_000_001)),id:"big"}),"failed");
+});
+
+test("没有 secure-context randomUUID 的 HTTP 环境不阻断应用，无随机源时明确退回内存",()=>{
+ const randomOnly={getRandomValues:globalThis.crypto.getRandomValues.bind(globalThis.crypto)};
+ assert.equal(newDraftId(randomOnly)?.length,32);
+ const storage=new MemoryStorage(),device=new DeviceStorage(storage,randomOnly);device.identify("alice");device.consent(true);assert.equal(device.saveDraft(draft()),"persisted");
+ const restricted=new DeviceStorage(storage,null);restricted.identify("alice");assert.equal(restricted.saveDraft(draft("仍可编辑")),"failed");assert.equal(restricted.draft("note-a")?.bodyMd,"仍可编辑");
 });
