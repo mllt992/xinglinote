@@ -4,14 +4,18 @@ import type { NoteDraft } from "./note-save";
 export const DEVICE_PREFIX = "xingli.device.v1:";
 export const SNAPSHOT_TTL = 7 * 86400000;
 export type DeviceSnapshot = { kind: "note" | "today"; id: string; title: string; text: string; href: string; savedAt: number };
-export type LocalNoteDraft = NoteDraft & { workspaceId: string; savedAt: number };
-type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+export type LocalNoteDraft = NoteDraft & { workspaceId: string; savedAt: number; draftBranch?: string; draftWriter?: string; draftSequence?: number };
+type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
 const sameDraft = (a: NoteDraft, b: NoteDraft) => a.title === b.title && a.bodyMd === b.bodyMd && a.aiIndex === b.aiIndex && a.published === b.published && JSON.stringify(a.tags ?? []) === JSON.stringify(b.tags ?? []);
 function parse<T>(value: string | null, fallback: T): T { try { return value ? JSON.parse(value) as T : fallback; } catch { return fallback; } }
 
 export class DeviceStorage {
   private drafts = new Map<string, LocalNoteDraft | null>();
-  private diskSeen = new Map<string, string | null>();
+  private ownDisk = new Map<string, string>();
+  private source = new Map<string, string>();
+  private edited = new Set<string>();
+  private writer = crypto.randomUUID();
+  private sequence = 0;
   private userId: string | null = null;
   private generation = 0;
   private observedAuthVersion: string | null;
@@ -64,50 +68,67 @@ export class DeviceStorage {
   forgetSnapshot(id: string) { if (this.userId) this.put(`snapshots:${this.userId}`, this.snapshots().filter(s => s.id !== id)); }
   clearSnapshots() { if (this.userId) this.remove(`snapshots:${this.userId}`); }
   private draftKey(id: string, user = this.userId) { return `${user}:${id}`; }
+  private diskDrafts(id?: string): LocalNoteDraft[] {
+    if (!this.userId || !this.storage) return [];
+    const prefix = `draft:${this.userId}:`, rows: LocalNoteDraft[] = [];
+    try {
+      for (let i=0;i<this.storage.length;i++) {
+        const full=this.storage.key(i);if(!full?.startsWith(DEVICE_PREFIX+prefix))continue;
+        const branch=full.slice(DEVICE_PREFIX.length),value=parse<LocalNoteDraft|null>(this.storage.getItem(full),null);
+        if (!value || (id && value.id!==id) || typeof value.id!=="string" || typeof value.title!=="string" || typeof value.bodyMd!=="string" || typeof value.workspaceId!=="string" || !Number.isInteger(value.version) || value.version<1) continue;
+        rows.push({...value,draftBranch:branch});
+      }
+    } catch { /* 存储不可读时保留当前内存稿 */ }
+    // 一次写入中途崩溃可留下同一写者的新旧快照，恢复较新的完整快照。
+    const byWriter=new Map<string,LocalNoteDraft>();
+    for(const row of rows){const key=`${row.id}:${row.draftWriter??row.draftBranch}`,previous=byWriter.get(key);if(!previous||(row.draftSequence??0)>(previous.draftSequence??0)||((row.draftSequence??0)===(previous.draftSequence??0)&&row.savedAt>previous.savedAt))byWriter.set(key,row);}
+    return [...byWriter.values()].sort((a,b)=>b.savedAt-a.savedAt);
+  }
   draft(id: string): LocalNoteDraft | null {
-    this.syncLogout();
-    if (!this.userId) return null;
-    const key = this.draftKey(id);
-    if (this.drafts.has(key)) return this.drafts.get(key) ?? null;
-    const raw = this.get(`draft:${key}`);
-    this.diskSeen.set(key, raw);
-    const value = parse<LocalNoteDraft | null>(raw, null);
-    const valid = value && value.id === id && typeof value.title === "string" && typeof value.bodyMd === "string" && typeof value.workspaceId === "string" && Number.isInteger(value.version) && value.version >= 1 ? value : null;
-    this.drafts.set(key, valid);
-    return valid;
+    this.syncLogout();if(!this.userId)return null;
+    const key=this.draftKey(id);if(this.drafts.has(key))return this.drafts.get(key)??null;
+    const value=this.diskDrafts(id)[0]??null;this.drafts.set(key,value);
+    if(value?.draftBranch)this.source.set(key,value.draftBranch);
+    return value;
   }
   saveDraft(value: LocalNoteDraft, user = this.userId): "persisted" | "memory" | "failed" {
-    this.syncLogout();
-    if (!user || user !== this.userId) return "failed";
-    const key = this.draftKey(value.id);
-    if (!this.diskSeen.has(key)) this.diskSeen.set(key, this.get(`draft:${key}`));
-    // 永远先写内存；QuotaExceeded 后不能把磁盘上的旧稿反灌回来。
-    this.drafts.set(key, value);
-    if (!this.enabled()) return "memory";
-    const persisted = this.put(`draft:${key}`, value);
-    if (persisted) this.diskSeen.set(key, JSON.stringify(value));
-    const ids = parse<unknown>(this.get(`draft-index:${user}`), []);
-    const indexed = this.put(`draft-index:${user}`, [...new Set([value.id, ...(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [])])]);
-    return persisted && indexed ? "persisted" : "failed";
+    this.syncLogout();if(!user||user!==this.userId)return "failed";
+    const key=this.draftKey(value.id),branch=`draft:${user}:${value.id}:${this.writer}:${crypto.randomUUID()}`;
+    const next={...value,draftBranch:branch,draftWriter:this.writer,draftSequence:++this.sequence};
+    // 每个实例写入自己的不可变快照。另一个标签的同篇草稿永远不被覆盖。
+    this.drafts.set(key,next);this.edited.add(key);
+    if(!this.enabled())return "memory";
+    const disk=this.diskDrafts();
+    if(JSON.stringify(next).length>1_000_000 || (disk.length>=100&&!this.ownDisk.has(key)))return "failed";
+    if(!this.put(branch,next))return "failed";
+    const previous=this.ownDisk.get(key);this.ownDisk.set(key,branch);
+    // 只清理本实例自己写过的旧、不可变快照；先保证新快照已持久化。
+    if(previous&&previous!==branch)this.remove(previous);
+    return "persisted";
   }
-  /** 迟到的 A 请求只能确认 A 发送的正文；不会清掉继续输入的 B。 */
+  /** 迟到回包只确认发送正文与该次读取的确切快照，不删除其它分支的后续修订。 */
   acknowledge(sent: NoteDraft, user = this.userId) {
-    if (!user || user !== this.userId) return false;
-    const current = this.draft(sent.id);
-    if (!current || !sameDraft(current, sent)) return false;
-    const key = this.draftKey(sent.id);
-    // 另一标签已写入不同快照时，不让本标签迟到的成功回包删掉它。
-    if (this.diskSeen.has(key) && this.get(`draft:${key}`) !== this.diskSeen.get(key)) return false;
-    this.discardDraft(sent.id); return true;
+    if(!user||user!==this.identity())return false;
+    const key=this.draftKey(sent.id),current=this.draft(sent.id);
+    if(!current||!sameDraft(current,sent))return false;
+    if(current.draftBranch)this.remove(current.draftBranch);
+    const source=this.source.get(key);if(source&&source!==current.draftBranch)this.remove(source);
+    const own=this.ownDisk.get(key);if(own&&own!==current.draftBranch)this.remove(own);
+    this.source.delete(key);this.ownDisk.delete(key);this.edited.delete(key);this.drafts.set(key,null);return true;
   }
   listDrafts(): LocalNoteDraft[] {
-    if (!this.identity()) return [];
-    const ids = parse<unknown>(this.get(`draft-index:${this.userId}`), []);
-    const known = Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
-    const memory = [...this.drafts.keys()].filter(k => k.startsWith(`${this.userId}:`)).map(k => k.slice(this.userId!.length + 1));
-    return [...new Set([...known, ...memory])].map(id => this.draft(id)).filter((d): d is LocalNoteDraft => !!d).sort((a, b) => b.savedAt - a.savedAt);
+    if(!this.identity())return [];
+    const rows=this.diskDrafts();
+    for(const [key,value] of this.drafts){if(!value||!key.startsWith(`${this.userId}:`)||!this.edited.has(key))continue;const index=rows.findIndex(row=>row.id===value.id&&row.draftWriter===this.writer);if(index>=0)rows.splice(index,1);rows.push(value);}
+    return rows.sort((a,b)=>b.savedAt-a.savedAt);
   }
-  discardDraft(id: string) { if (!this.userId) return; const key = this.draftKey(id); this.drafts.set(key, null); this.remove(`draft:${key}`); this.diskSeen.set(key, null); }
+  /** 传入 UI 展示的不可变分支；确认期间别人写的新快照不会被误删。 */
+  discardDraft(id: string, branch?: string) {
+    if(!this.identity())return;
+    const key=this.draftKey(id),current=this.draft(id),target=branch??current?.draftBranch;
+    if(target && (target===`draft:${this.userId}:${id}`||target.startsWith(`draft:${this.userId}:${id}:`)))this.remove(target);
+    if(!branch||branch===current?.draftBranch){this.drafts.set(key,null);this.edited.delete(key);this.source.delete(key);this.ownDisk.delete(key);}
+  }
 }
 
 let local: StorageLike | null = null;

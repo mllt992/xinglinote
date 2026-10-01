@@ -75,7 +75,7 @@ jobs:
         run: |
           if [ -f .env.home ]; then
             docker compose --project-name "xingli-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --env-file .env.home -f compose.home.yml down --volumes --remove-orphans
-            rm -f .env.home
+            rm -f .env.home .env.home.bak .env.bak
           fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

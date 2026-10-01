@@ -3,6 +3,8 @@ import test from "node:test";
 import { DeviceStorage, DEVICE_PREFIX, SNAPSHOT_TTL, type LocalNoteDraft } from "./device-storage.ts";
 class MemoryStorage {
   values = new Map<string, string>(); full = false;
+  get length() { return this.values.size; }
+  key(index:number) { return [...this.values.keys()][index]??null; }
   getItem(k: string) { return this.values.get(k) ?? null; }
   setItem(k: string, v: string) { if (this.full) throw new Error("quota"); this.values.set(k, v); }
   removeItem(k: string) { this.values.delete(k); }
@@ -61,6 +63,28 @@ test("另一标签的新草稿不会被本标签的迟到成功回包删除", ()
   const storage = new MemoryStorage(), a = new DeviceStorage(storage), b = new DeviceStorage(storage);
   a.identify("alice"); b.identify("alice"); a.consent(true);
   a.saveDraft(draft("请求中的旧稿")); b.saveDraft(draft("另一个标签的新稿"));
-  assert.equal(a.acknowledge(draft("请求中的旧稿")), false);
+  assert.equal(a.acknowledge(draft("请求中的旧稿")), true);
   const reloaded = new DeviceStorage(storage); reloaded.identify("alice"); assert.equal(reloaded.draft("note-a")?.bodyMd, "另一个标签的新稿");
+});
+
+test("两标签先打开同篇，再分别输入：保存与显式丢弃只处理指定分支",()=>{
+ const storage=new MemoryStorage(),a=new DeviceStorage(storage),b=new DeviceStorage(storage);a.identify("alice");b.identify("alice");a.consent(true);
+ assert.equal(a.draft("note-a"),null);assert.equal(b.draft("note-a"),null);
+ b.saveDraft(draft("B 独有文字"));const shownB=b.draft("note-a")!;
+ a.saveDraft(draft("A 独有文字"));assert.equal(a.acknowledge(draft("A 独有文字")),true);
+ const reloaded=new DeviceStorage(storage);reloaded.identify("alice");assert.equal(reloaded.draft("note-a")?.bodyMd,"B 独有文字");
+ b.saveDraft(draft("B 更新文字"));reloaded.discardDraft("note-a",shownB.draftBranch);
+ const final=new DeviceStorage(storage);final.identify("alice");assert.equal(final.draft("note-a")?.bodyMd,"B 更新文字");
+});
+test("恢复旧分支后保存，不会确认另一个标签后来写的新修订",()=>{
+ const storage=new MemoryStorage(),a=new DeviceStorage(storage),b=new DeviceStorage(storage);a.identify("alice");b.identify("alice");a.consent(true);a.saveDraft(draft("原草稿"));
+ assert.equal(b.draft("note-a")?.bodyMd,"原草稿");b.saveDraft(draft("恢复后编辑"));a.saveDraft(draft("原标签又输入"));assert.equal(b.acknowledge(draft("恢复后编辑")),true);
+ const next=new DeviceStorage(storage);next.identify("alice");assert.equal(next.draft("note-a")?.bodyMd,"原标签又输入");
+});
+
+test("分支数与单篇大小上限只拒绝新持久化，不清除未同步内容",()=>{
+ const storage=new MemoryStorage();
+ for(let i=0;i<100;i++){const d=new DeviceStorage(storage);d.identify("alice");d.consent(true);assert.equal(d.saveDraft({...draft(`分支 ${i}`),id:`note-${i}`}),"persisted");}
+ const extra=new DeviceStorage(storage);extra.identify("alice");assert.equal(extra.saveDraft({...draft("额外正文"),id:"note-extra"}),"failed");assert.equal(extra.draft("note-extra")?.bodyMd,"额外正文");
+ const reload=new DeviceStorage(storage);reload.identify("alice");assert.equal(reload.listDrafts().length,100);assert.equal(extra.saveDraft({...draft("x".repeat(1_000_001)),id:"big"}),"failed");
 });
