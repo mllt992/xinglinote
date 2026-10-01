@@ -1,0 +1,60 @@
+name: Verify
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: xingli_test
+        ports: ['127.0.0.1:5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d xingli_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres@127.0.0.1:5432/xingli_test
+      DATA_DIR: /tmp/xingli-test-data
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install
+        run: npm install -g pnpm@11.7.0 && pnpm install --frozen-lockfile
+      - name: Typecheck, lint and unit tests
+        run: pnpm typecheck && pnpm lint && pnpm test
+      - name: Prepare isolated database and build
+        run: pnpm db:push && pnpm --filter @kb/web build
+      - name: Real database regression tests
+        env:
+          KB_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/xingli_test
+        run: cd apps/api && node --import tsx --test src/lib/*.integration.test.ts
+      - name: Install one browser
+        run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - name: Mobile capture and public reading at 375px
+        env:
+          KB_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/xingli_test
+        run: node --import ./apps/api/node_modules/tsx/dist/loader.mjs scripts/verify-mobile-capture.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: mobile-375px
+          path: /tmp/xingli-mobile-*.png
+          if-no-files-found: ignore
+          retention-days: 5

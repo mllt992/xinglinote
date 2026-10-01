@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Link2Off } from "lucide-react";
 import { api } from "../api";
 import { cn } from "../lib/utils";
@@ -6,7 +6,6 @@ import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { FormError } from "./ui/form-error";
 import { Input } from "./ui/input";
-import { Switch } from "./ui/switch";
 import { Textarea } from "./ui/textarea";
 import { useConfirm } from "./ui/confirm";
 import { useToast } from "./ui/toast";
@@ -91,6 +90,7 @@ export function CalendarItemEditor({ target, wsId, tz, canEdit, onClose, onSaved
   const [form, setForm] = useState<Form>(() => (target ? formFrom(target, tz) : formFrom({ mode: "create", date: "" }, tz)));
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const saving = useRef(false);
 
   useEffect(() => {
     if (target) { setForm(formFrom(target, tz)); setErr(""); }
@@ -107,10 +107,12 @@ export function CalendarItemEditor({ target, wsId, tz, canEdit, onClose, onSaved
   }
 
   async function save() {
+    if (saving.current) return;
     const title = form.title.trim();
     if (!title) { setErr("先写个标题"); return; }
     if (!form.date) { setErr("先选一天"); return; }
     if (!form.allDay && form.kind === "event" && form.end <= form.start) { setErr("结束时间要晚于开始"); return; }
+    saving.current = true;
     setBusy(true);
     setErr("");
     try {
@@ -147,6 +149,7 @@ export function CalendarItemEditor({ target, wsId, tz, canEdit, onClose, onSaved
     } catch (e) {
       setErr((e as Error).message);
     } finally {
+      saving.current = false;
       setBusy(false);
     }
   }
@@ -171,11 +174,19 @@ export function CalendarItemEditor({ target, wsId, tz, canEdit, onClose, onSaved
     onDelete(item);
   }
 
+  async function requestClose() {
+    if (busy) return;
+    if (target && !readOnly && JSON.stringify(form) !== JSON.stringify(formFrom(target, tz))) {
+      if (!await confirm({ title: "放弃未保存的更改？", description: "内容还没有保存，继续编辑可以保留它。", confirmText: "放弃更改", destructive: true })) return;
+    }
+    onClose();
+  }
+
   const title = target?.mode === "create" ? "新建" : "编辑";
   const dateLabel = form.date ? `${Number(form.date.slice(5, 7))}月${Number(form.date.slice(8, 10))}日` : "";
 
-  return <Dialog open={!!target} onOpenChange={open => { if (!open) onClose(); }}>
-    <DialogContent className="max-w-lg" onOpenAutoFocus={e => {
+  return <Dialog open={!!target} onOpenChange={open => { if (!open) void requestClose(); }}>
+    <DialogContent className="max-w-lg max-md:p-4 max-md:[&_button]:min-h-11 max-md:[&_button]:min-w-11 max-md:[&_input]:min-h-11 max-md:[&_input]:text-base max-md:[&_textarea]:text-base" onOpenAutoFocus={e => {
       // 标题框该拿焦点；Radix 默认会先落到关闭按钮上。来自笔记时标题是锁的，别硬 focus。
       const input = (e.currentTarget as HTMLElement).querySelector<HTMLInputElement>("input[name='title']");
       if (input && !input.disabled) { e.preventDefault(); input.focus(); input.select(); }
@@ -203,7 +214,7 @@ export function CalendarItemEditor({ target, wsId, tz, canEdit, onClose, onSaved
 
         <label className="grid gap-1.5">
           <span className="text-xs font-medium text-muted-foreground">标题</span>
-          <Input name="title" value={form.title} disabled={locked} onChange={e => patch("title", e.target.value)} placeholder={form.kind === "event" ? "比如：和销售对齐季度数据" : "比如：交房租"} />
+          <Input name="title" maxLength={200} value={form.title} disabled={locked} onChange={e => patch("title", e.target.value)} placeholder={form.kind === "event" ? "比如：和销售对齐季度数据" : "比如：交房租"} />
         </label>
 
         <label className="grid gap-1.5">
@@ -216,10 +227,9 @@ export function CalendarItemEditor({ target, wsId, tz, canEdit, onClose, onSaved
             <span className="text-xs font-medium text-muted-foreground">日期</span>
             <Input type="date" value={form.date} disabled={locked} onChange={e => patch("date", e.target.value)} />
           </label>
-          <div className="flex items-end gap-2 pb-1">
-            <Switch checked={form.allDay} disabled={locked} onCheckedChange={v => patch("allDay", v)} label="全天" />
-            <span className="text-xs text-muted-foreground">全天</span>
-          </div>
+          <label className="flex min-h-11 cursor-pointer items-center gap-2 self-end rounded-md px-2 text-sm">
+            <input type="checkbox" checked={form.allDay} disabled={locked} onChange={event => patch("allDay", event.target.checked)} aria-label="全天" className="size-4 accent-[var(--foreground)] max-md:min-h-0!" />全天
+          </label>
         </div>
 
         {!form.allDay && <div className="grid min-w-0 grid-cols-2 gap-3">
@@ -248,7 +258,7 @@ export function CalendarItemEditor({ target, wsId, tz, canEdit, onClose, onSaved
         <div className="flex items-center gap-2 pt-1">
           {item && canEdit && !fromIcs && onDelete && <Button type="button" variant="ghost" className="text-destructive" disabled={busy} onClick={() => void remove()}>删除</Button>}
           <div className="ml-auto flex gap-2">
-            <Button type="button" variant="ghost" onClick={onClose}>取消</Button>
+            <Button type="button" variant="ghost" disabled={busy} onClick={() => void requestClose()}>取消</Button>
             {!readOnly && <Button type="submit" disabled={busy}>{target?.mode === "create" ? "创建" : "保存"}</Button>}
           </div>
         </div>

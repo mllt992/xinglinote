@@ -40,6 +40,7 @@ async function main() {
     }
     todo = failed.map((f) => f.sql);
   }
+  await sql.end();
   console.log("project_columns ready");
 }
 

@@ -105,7 +105,7 @@ export function PublicReadingLayout({ source, children, className }: { source: s
     if (mobileRef.current) mobileRef.current.open = false;
   };
 
-  if (!items.length) return <div ref={contentRef} className={className}>{children}</div>;
+  if (!items.length) return <div ref={contentRef} className={cn("public-reading min-w-0", className)}>{children}</div>;
   return <div className={cn("public-reading mx-auto w-full max-w-6xl", className)}>
     <details ref={mobileRef} className="mb-6 rounded-xl border bg-muted/20 p-3 xl:hidden">
       <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/50"><ListTree className="size-4" />本文目录 <span className="ml-auto text-xs font-normal text-muted-foreground">{items.length} 节</span></summary>

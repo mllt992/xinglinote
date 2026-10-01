@@ -180,6 +180,7 @@ const statements = [
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (note_id, version)
   )`,
+  `ALTER TABLE note_versions ADD COLUMN IF NOT EXISTS name text`,
   `CREATE TABLE IF NOT EXISTS share_links (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     token text NOT NULL UNIQUE,

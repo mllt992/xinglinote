@@ -1,0 +1,148 @@
+// 显式隔离数据库的移动闭环验收：从生产构建 UI 到真实 API，再核对正文。
+// KB_TEST_DATABASE_URL=postgres://.../xxx_test DATABASE_URL=同值 node --import tsx scripts/verify-mobile-capture.mjs
+import assert from 'node:assert/strict';
+import { randomUUID, randomBytes } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { chromium } from 'playwright-core';
+import { db, sql } from '../apps/api/src/db/client.ts';
+import { users, workspaces, workspaceMembers, notebooks, sessions } from '../apps/api/src/db/schema.ts';
+import { syncNoteTasks, localDayKey, DEFAULT_TZ } from '../apps/api/src/lib/calendar.ts';
+import { hashSecret } from '../apps/api/src/lib/tokens.ts';
+
+assert.equal(process.env.DATABASE_URL, process.env.KB_TEST_DATABASE_URL);
+assert.ok(process.env.KB_TEST_DATABASE_URL && new URL(process.env.KB_TEST_DATABASE_URL).pathname.endsWith('_test'));
+const ids = {user:randomUUID(),ws:randomUUID(),nb:randomUUID()};
+const token=randomBytes(32).toString('base64url');
+const suffix=randomUUID().slice(0,8);
+await db.insert(users).values({id:ids.user,email:`mobile-${suffix}@example.invalid`,handle:`mobile${suffix}`,displayName:'移动验收',passwordHash:'not-a-login'});
+await db.insert(workspaces).values({id:ids.ws,slug:`mobile-${suffix}`,name:'移动验收',kind:'normal',ownerId:ids.user});
+await db.insert(workspaceMembers).values({workspaceId:ids.ws,userId:ids.user,role:'owner'});
+await db.insert(notebooks).values({id:ids.nb,workspaceId:ids.ws,slug:'inbox',title:'收件箱',createdBy:ids.user});
+await db.insert(sessions).values({userId:ids.user,tokenHash:hashSecret(token),expiresAt:new Date(Date.now()+3600000)});
+const base='http://127.0.0.1:12099';
+const server=spawn(process.execPath,['--import','./apps/api/node_modules/tsx/dist/loader.mjs','apps/api/src/index.ts'],{env:{...process.env,PUBLIC_URL:base,API_PORT:'12099'},stdio:['ignore','pipe','pipe']});
+let serverError='';server.stderr.on('data',chunk=>{serverError+=chunk;});
+let browser, page;
+const q=async(path,body,method=body?'POST':'GET')=>{
+ const r=await fetch(base+'/api/v1'+path,{method,headers:{cookie:`kb_session=${token}`,'content-type':'application/json','x-requested-with':'fetch'},...(body?{body:JSON.stringify(body)}:{})});
+ const j=await r.json();assert.ok(j.ok,`${path}: ${JSON.stringify(j)}`);return j.data;
+};
+try {
+ let ready=false;
+ for(let i=0;i<100;i++){try{if((await fetch(base+'/api/healthz')).ok){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,100));}
+ assert.ok(ready,serverError);
+ browser=await chromium.launch({executablePath:process.env.KB_CHROMIUM_EXECUTABLE,headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
+ const context=await browser.newContext({viewport:{width:375,height:812},isMobile:true,hasTouch:true});
+ await context.addCookies([{name:'kb_session',value:token,url:base}]);
+ page=await context.newPage();
+ const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(`${base}/w/${ids.ws}/today`);
+ const input=page.getByRole('textbox',{name:'随手记内容'});await input.waitFor();
+ const started=Date.now();
+ await input.fill('手机买菜\n买番茄和面条');
+ await page.getByRole('button',{name:'任务',exact:true}).click();
+ await page.getByText('手机买菜',{exact:true}).waitFor();
+ assert.ok(Date.now()-started<20000);
+ assert.equal(await input.inputValue(),'');
+ const today=await q(`/workspaces/${ids.ws}/today`);
+ assert.equal(today.canEdit,true);
+ assert.ok(today.items.some(x=>x.title==='手机买菜'&&x.bodyMd.includes('买番茄和面条')));
+ // 响应延迟时切换页面，旧请求不能让新页面重复提交或删除另一标签的新草稿。
+ let releaseResponse;
+ const responseGate=new Promise(resolve=>{releaseResponse=resolve;});
+ let reached;
+ const reachedRequest=new Promise(resolve=>{reached=resolve;});
+ await page.route('**/api/v1/workspaces/*/calendar/items',async route=>{const response=await route.fetch();reached();await responseGate;await route.fulfill({response});});
+ await input.fill('延迟保存A');await page.getByRole('button',{name:'任务',exact:true}).click();await reachedRequest;
+ await page.getByRole('button',{name:'日历',exact:true}).click();
+ await page.getByRole('textbox',{name:'随手记内容'}).waitFor();
+ assert.equal(await page.getByRole('textbox',{name:'随手记内容'}).isDisabled(),true,'重新挂载仍应知道请求在进行');
+ const second=await context.newPage();await second.goto(`${base}/w/${ids.ws}/today`);
+ const secondInput=second.getByRole('textbox',{name:'随手记内容'});await secondInput.fill('另一标签的新草稿B');
+ releaseResponse();await page.waitForTimeout(300);await second.reload();await secondInput.waitFor();
+ assert.equal(await secondInput.inputValue(),'另一标签的新草稿B','旧响应不能删除B');await second.close();
+ await page.unroute('**/api/v1/workspaces/*/calendar/items');await page.goto(`${base}/w/${ids.ws}/today`);await input.waitFor();
+ // 同一个 captureId 的响应丢失重试只创建一份任务/笔记。
+ const captureId=randomUUID();const replay={kind:'task',title:'幂等任务',captureId};
+ const [a,b]=await Promise.all([q(`/workspaces/${ids.ws}/calendar/items`,replay),q(`/workspaces/${ids.ws}/calendar/items`,replay)]);assert.equal(a.id,b.id);
+ const noteReplay={notebookId:ids.nb,title:'幂等笔记',captureId:randomUUID()};
+ const [na,nb]=await Promise.all([q('/notes',noteReplay),q('/notes',noteReplay)]);assert.equal(na.id,nb.id);
+ // 失败草稿经过真正刷新仍在，成功才清空。
+ await page.route('**/api/v1/workspaces/*/calendar/items',r=>r.abort());
+ await input.fill('断网时写下的内容');
+ await page.getByRole('button',{name:'任务',exact:true}).click();
+ await page.waitForTimeout(300);
+ assert.equal(await input.inputValue(),'断网时写下的内容');
+ await page.reload();await input.waitFor();assert.equal(await input.inputValue(),'断网时写下的内容');
+ await page.unroute('**/api/v1/workspaces/*/calendar/items');
+ await input.fill('日记第一条');await page.getByRole('button',{name:'日记',exact:true}).click();
+ await page.waitForFunction(()=>document.querySelector('textarea[aria-label="随手记内容"]')?.value==='');
+ const diary=await q(`/workspaces/${ids.ws}/calendar/diary`,{date:today.date});
+ assert.ok((await q(`/notes/${diary.noteId}`)).bodyMd.includes('日记第一条'));
+ await input.fill('手机笔记\n完整正文');await page.locator('footer[aria-label="随手记"]').getByRole('button',{name:'笔记',exact:true}).click();
+ await page.getByRole('button',{name:'保存笔记',exact:true}).click();
+ await page.getByRole('dialog').waitFor({state:'hidden'});
+ assert.equal(await input.inputValue(),'');
+ const notes=await q(`/notebooks/${ids.nb}/tree`);
+ assert.ok(notes.notes.some(n=>n.title==='手机笔记'));
+ const captured=notes.notes.find(n=>n.title==='手机笔记');
+ assert.ok((await q(`/notes/${captured.id}`)).bodyMd.includes('完整正文'));
+ const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);
+ assert.equal(overflow,false,'Today 375px 横向溢出');
+ await page.screenshot({path:'/tmp/xingli-mobile-today.png',fullPage:true});
+ await page.goto(`${base}/w/${ids.ws}/calendar`);
+ await page.getByRole('button',{name:'日程',exact:true}).waitFor();
+ await page.getByRole('button',{name:'日程',exact:true}).click();
+ await page.getByRole('dialog').waitFor();
+ await page.getByPlaceholder('比如：和销售对齐季度数据').fill('取消不会保存');
+ await page.getByRole('button',{name:'取消',exact:true}).click();
+ await page.getByRole('button',{name:'放弃更改',exact:true}).click();
+ await page.getByRole('dialog').waitFor({state:'hidden'});
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'日历 375px 横向溢出');
+ await page.screenshot({path:'/tmp/xingli-mobile-calendar.png',fullPage:true});
+ // 来源任务改期/完成必须真正写回正文，刷新同步后不能反弹。
+ const source=await q('/notes',{notebookId:ids.nb,title:'移动来源测试'});
+ await q(`/notes/${source.id}`,{expectedVersion:source.version,bodyMd:`正文保留\n- [ ] 原文待办 @${localDayKey(new Date(),DEFAULT_TZ)} ^tk-8765abcd`},'PATCH');
+ await syncNoteTasks(source.id);
+ await page.goto(`${base}/w/${ids.ws}/today`);
+ await page.getByRole('button',{name:'完成 原文待办',exact:true}).click();
+ await page.getByRole('button',{name:'取消完成 原文待办',exact:true}).waitFor();
+ assert.ok((await q(`/notes/${source.id}`)).bodyMd.includes('- [x] 原文待办'));
+ await page.getByRole('button',{name:'改期 原文待办',exact:true}).click();
+ await page.getByRole('menuitem',{name:'改到明天',exact:true}).click();
+ await page.getByRole('button',{name:'取消完成 原文待办',exact:true}).waitFor({state:'hidden'});
+ assert.ok(!(await q(`/notes/${source.id}`)).bodyMd.includes(`@${today.date}`));
+ // 存储配额错误时保住内存正文，仍可直接保存到服务器。
+ const quotaPage=await context.newPage();
+ await quotaPage.addInitScript(()=>{const original=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if(k.startsWith('kb.capture.'))throw new DOMException('test quota','QuotaExceededError');return original.call(this,k,v);};});
+ await quotaPage.goto(`${base}/w/${ids.ws}/today`);
+ const quotaInput=quotaPage.getByRole('textbox',{name:'随手记内容'});await quotaInput.fill('缓存满了也保留正文');
+ assert.equal(await quotaInput.inputValue(),'缓存满了也保留正文');
+ await quotaPage.locator('footer[aria-label="随手记"]').getByRole('button',{name:'任务',exact:true}).click();
+ await quotaPage.getByText('缓存满了也保留正文',{exact:true}).waitFor();await quotaPage.close();
+ // 无日期任务从收件箱改到明天，撤销要恢复无日期；来源任务也走相同回写。
+ const undated=await q(`/workspaces/${ids.ws}/calendar/items`,{kind:'task',title:'无日期手工任务'});
+ await page.goto(`${base}/w/${ids.ws}/calendar`);await page.getByRole('button',{name:'待办面板'}).click();
+ await page.getByRole('button',{name:'改期 无日期手工任务',exact:true}).click();await page.getByRole('menuitem',{name:'改到明天',exact:true}).click();
+ await page.waitForTimeout(300);assert.ok((await q(`/calendar/items/${undated.id}`)).dueAt);
+ await page.getByRole('button',{name:'撤销',exact:true}).last().click();await page.waitForTimeout(300);assert.equal((await q(`/calendar/items/${undated.id}`)).dueAt,null);
+ const undatedNote=await q('/notes',{notebookId:ids.nb,title:'无日期来源'});
+ await q(`/notes/${undatedNote.id}`,{expectedVersion:undatedNote.version,bodyMd:'- [ ] 无日期来源任务 ^tk-9988abcd'},'PATCH');await syncNoteTasks(undatedNote.id);
+ await page.reload();await page.getByRole('button',{name:'待办面板'}).click();
+ await page.getByRole('button',{name:'改期 无日期来源任务',exact:true}).click();await page.getByRole('menuitem',{name:'改到明天',exact:true}).click();await page.waitForTimeout(300);
+ assert.ok((await q(`/notes/${undatedNote.id}`)).bodyMd.includes('@'));
+ await page.getByRole('button',{name:'撤销',exact:true}).last().click();await page.waitForTimeout(300);assert.ok(!(await q(`/notes/${undatedNote.id}`)).bodyMd.includes('@'));
+ // 已公开页的 375px 正文、长 URL、表格和图片都不能撑出屏幕。
+ const publicNote=await q('/notes',{notebookId:ids.nb,title:'窄屏公开阅读'});
+ await q(`/notes/${publicNote.id}`,{expectedVersion:publicNote.version,bodyMd:`长链接 https://example.invalid/${'x'.repeat(180)}\n\n| 第一列 | 第二列 |\n| --- | --- |\n| ${'长'.repeat(50)} | 正文 |\n\n![品牌](/brand/share-card.png)`},'PATCH');
+ const share=await q(`/notes/${publicNote.id}/shares`,{});
+ const anon=await browser.newContext({viewport:{width:375,height:812},isMobile:true,hasTouch:true});
+ const read=await anon.newPage();await read.goto(`${base}/p/${share.token}`);
+ await read.getByRole('heading',{name:'窄屏公开阅读'}).waitFor();
+ assert.equal(await read.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'分享阅读横向溢出');
+ assert.ok(await read.locator('.markdown').evaluate(el=>parseFloat(getComputedStyle(el).fontSize)>=16));
+ await read.screenshot({path:'/tmp/xingli-mobile-public.png',fullPage:true});
+ await anon.close();
+ assert.deepEqual(errors,[]);
+ console.log(JSON.stringify({mobile375:true,taskUnder20s:true,failedDraftSurvivesReload:true,journalAppend:true,noteFullText:true,noHorizontalOverflow:true},null,2));
+}catch(error){await page?.screenshot({path:'/tmp/xingli-mobile-failure.png',fullPage:true}).catch(()=>{});throw error;}finally{await browser?.close();server.kill('SIGTERM');await sql.end();}
