@@ -51,10 +51,16 @@ jobs:
         env:
           KB_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/xingli_test
         run: node --import ./apps/api/node_modules/tsx/dist/loader.mjs scripts/verify-mobile-capture.mjs
+      - name: Migration import browser verification
+        env:
+          KB_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/xingli_test
+        run: node --import ./apps/api/node_modules/tsx/dist/loader.mjs scripts/verify-migration-import.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: mobile-375px
-          path: /tmp/xingli-mobile-*.png
+          path: |
+            /tmp/xingli-mobile-*.png
+            /tmp/xingli-migration-*.png
           if-no-files-found: ignore
           retention-days: 5
