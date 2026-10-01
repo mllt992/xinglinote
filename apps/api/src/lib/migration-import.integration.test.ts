@@ -92,6 +92,16 @@ test('迁移真实数据库：57 页预览/确认、附件去重下载、冲突�
     const collisionPreview=await call('import-files-preview',collisions);const collisionResult=await call('import-files',collisions,{},collisionPreview.json.data.fingerprint);assert.equal(collisionResult.json.data.created.length,1);
     const collisionId=collisionResult.json.data.created[0]!.id;const collisionAssets=()=>db.select().from(attachments).where(eq(attachments.noteId,collisionId));assert.equal((await collisionAssets()).length,2);
     const collisionOverwrite=await call('import-files-preview',collisions,{mode:'overwrite'});const collisionAgain=await call('import-files',collisions,{mode:'overwrite'},collisionOverwrite.json.data.fingerprint);assert.equal(collisionAgain.json.data.overwritten.length,1);assert.equal((await collisionAssets()).length,2);
+    const concurrent=await Promise.all(Array.from({length:12},async(_,i)=>{
+      const payload=[{path:`并发-${i}.md`,bytes:Buffer.from(`并发正文 ${i} [附件](并发.txt)`)},{path:'并发.txt',bytes:Buffer.from('共享并发附件')}];
+      const preview=await call('import-files-preview',payload);return{payload,fingerprint:preview.json.data.fingerprint};
+    }));
+    const concurrentResults=await Promise.race([
+      Promise.all(concurrent.map(({payload,fingerprint})=>call('import-files',payload,{},fingerprint))),
+      new Promise<never>((_,reject)=>{const timer=setTimeout(()=>reject(new Error('12个并发导入不应耗尽连接池')),10000);timer.unref();}),
+    ]);
+    assert.ok(concurrentResults.every(r=>r.json.data.created.length===1));
+    const [sharedBlob]=await db.select().from(blobStore).where(eq(blobStore.sha256,hashBytes(Buffer.from('共享并发附件'))));assert.equal(sharedBlob!.refcount,12);
     // putBlob 写盘失败时，已经登记的引用要被补偿释放。
     let diskData=Buffer.from('');let prefix='';
     for(let n=0;n<1000;n++){diskData=Buffer.from(`disk failure ${suffix} ${n}`);prefix=join(env.dataDir,'blobs',hashBytes(diskData).slice(0,2));if(!await stat(prefix).then(()=>true,()=>false))break;}

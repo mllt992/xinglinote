@@ -35,13 +35,13 @@ async function writeAtomic(abs: string, bytes: Buffer) {
  * 登记一份物理文件引用。相同 sha256 只落盘一次，refcount +1。
  * 先登记引用再补写文件；磁盘失败补偿减引用，不能留下无人释放的 refcount。
  */
-export async function putBlob(bytes: Buffer): Promise<BlobRef> {
+export async function putBlob(bytes: Buffer, transaction?: Pick<typeof db, "insert">): Promise<BlobRef> {
   const sha256 = hashBytes(bytes);
   const path = blobRelPath(sha256);
-  await db.insert(blobStore).values({ sha256, bytes: bytes.length, refcount: 1, path })
+  await (transaction ?? db).insert(blobStore).values({ sha256, bytes: bytes.length, refcount: 1, path })
     .onConflictDoUpdate({ target: blobStore.sha256, set: { refcount: sql`${blobStore.refcount} + 1` } });
   try { await writeAtomic(absPath(path), bytes); }
-  catch (error) { await releaseBlob(sha256); throw error; }
+  catch (error) { if (!transaction) await releaseBlob(sha256); throw error; }
   return { sha256, path, bytes: bytes.length };
 }
 

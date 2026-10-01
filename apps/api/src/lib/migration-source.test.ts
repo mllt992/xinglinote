@@ -78,3 +78,46 @@ test('通用 HTML 转换器可将文章相对链接变成原站绝对链接',()=
   const result=htmlToMarkdown('<a href="../guide?a=1">指南</a><img src="/img.png">',{baseUrl:'https://example.invalid/news/page'});
   assert.match(result.content,/https:\/\/example.invalid\/guide\?a=1/);assert.match(result.content,/https:\/\/example.invalid\/img.png/);assert.doesNotMatch(result.content,/!\[/);
 });
+
+test('多个归档共享剩余预算，第二包在 inflate 前拒绝',async()=>{
+ const {MIGRATION_LIMITS,migrationBudget}=await import('./migration-zip.ts');
+ const before=MIGRATION_LIMITS.totalBytes;
+ try{
+  MIGRATION_LIMITS.totalBytes=1024*1024;
+  const a=makeZip([{path:'a.txt',data:Buffer.alloc(700000,65)}]);
+  const b=makeZip([{path:'b.txt',data:Buffer.alloc(700000,66)}]);
+  const budget=migrationBudget();readMigrationZip(a,budget);assert.equal(budget.bytes,1024*1024-700000);
+  // 损坏第二包压缩流；必须先报共享预算，而不是走解压报损坏。
+  const localName=b.readUInt16LE(26);b[30+localName]=0;
+  assert.throws(()=>readMigrationZip(b,budget),/总计|限额/);
+  await assert.rejects(prepareMigration([{path:'a.zip',bytes:a},{path:'b.zip',bytes:b}]),/总计|限额/);
+ }finally{MIGRATION_LIMITS.totalBytes=before;}
+});
+test('HTML 嵌套表格和过大结构在转换前拒绝，不指数展开',()=>{
+ const nested='<table><tr><td>'.repeat(30)+'x'+'</td></tr></table>'.repeat(30);
+ assert.throws(()=>htmlToMarkdown(nested),/嵌套表格/);
+ assert.throws(()=>htmlToMarkdown('<div>'.repeat(130)+'x'+'</div>'.repeat(130)),/结构/);
+ const flat=htmlToMarkdown('<table><tbody><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></tbody></table>');assert.match(flat.content,/\| A \| B \|/);
+});
+test('DOCX 同一图片重复引用只保留一份资源，并有读取工作量上限',async()=>{
+ const {MIGRATION_LIMITS}=await import('./migration-zip.ts');
+ const entries=readMigrationZip(wordExportFixture());
+ const document=entries.find(e=>e.path==='word/document.xml')!;
+ const xml=document.bytes.toString('utf8');
+ const drawing=xml.match(/<w:drawing>[\s\S]*?<\/w:drawing>/)?.[0];assert.ok(drawing);
+ document.bytes=Buffer.from(xml.replace(drawing!,drawing!.repeat(8)));
+ entries.find(e=>e.path==='word/media/image1.png')!.bytes=Buffer.concat([FIXTURE_PNG,Buffer.alloc(1024*1024-FIXTURE_PNG.length)]);
+ const repeated=makeZip(entries.map(e=>({path:e.path,data:e.bytes})));
+ const result=await prepareMigration([{path:'repeated.docx',bytes:repeated}]);assert.equal(result.files[0]?.assets.length,1);
+ const before=MIGRATION_LIMITS.totalBytes;
+ try{MIGRATION_LIMITS.totalBytes=4*1024*1024;const limited=await prepareMigration([{path:'limited.docx',bytes:repeated}]);assert.equal(limited.files.length,0);assert.ok(limited.report.some(r=>r.status==='failed'&&/读取工作量/.test(r.message)));}finally{MIGRATION_LIMITS.totalBytes=before;}
+});
+
+test('DOCX XML 对象树在 Mammoth 前按节点和深度限额拒绝',async()=>{
+ const entries=readMigrationZip(wordExportFixture());const doc=entries.find(e=>e.path==='word/document.xml')!;
+ for(const inner of ['<w:r><w:t/></w:r>'.repeat(30000),'<w:r>'.repeat(130)+'x'+'</w:r>'.repeat(130)]){
+  doc.bytes=Buffer.from(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${inner}</w:body></w:document>`);
+  const result=await prepareMigration([{path:'bounded.docx',bytes:makeZip(entries.map(e=>({path:e.path,data:e.bytes})))}]);
+  assert.equal(result.files.length,0);assert.ok(result.report.some(r=>r.status==='failed'&&/XML 结构/.test(r.message)));
+ }
+});

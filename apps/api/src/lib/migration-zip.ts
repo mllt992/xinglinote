@@ -2,6 +2,8 @@ import { crc32, inflateRawSync } from 'node:zlib';
 import { fail } from '@kb/shared';
 
 export const MIGRATION_LIMITS = { pages: 500, entries: 2000, totalBytes: 100 * 1024 * 1024, fileBytes: 25 * 1024 * 1024, pageBytes: 2 * 1024 * 1024 };
+export type MigrationBudget = { bytes: number; entries: number };
+export const migrationBudget = (): MigrationBudget => ({bytes:MIGRATION_LIMITS.totalBytes,entries:MIGRATION_LIMITS.entries});
 export type MigrationEntry = { path: string; bytes: Buffer };
 
 /** 路径只是归档内的逻辑地址，绝不拿来写磁盘。仍拒绝所有穿越和歧义。 */
@@ -14,7 +16,7 @@ export function migrationPath(raw: string): string {
 }
 
 /** 先检查中央目录与总量，再以 maxOutputLength 解压；不信任包内的尺寸声明。 */
-export function readMigrationZip(bytes: Buffer): MigrationEntry[] {
+export function readMigrationZip(bytes: Buffer, budget: MigrationBudget = migrationBudget()): MigrationEntry[] {
   const bad = (message: string): never => { throw fail('VALIDATION', `ZIP：${message}`); };
   if (bytes.length > MIGRATION_LIMITS.totalBytes) bad('压缩文件超过 100 MB');
   let end = -1;
@@ -25,7 +27,7 @@ export function readMigrationZip(bytes: Buffer): MigrationEntry[] {
   const count = bytes.readUInt16LE(end + 10), directory = bytes.readUInt32LE(end + 16), size = bytes.readUInt32LE(end + 12);
   if (bytes.readUInt16LE(end + 4) || bytes.readUInt16LE(end + 6) || count !== bytes.readUInt16LE(end + 8)) bad('不支持多卷');
   if (count === 65535 || directory === 0xffffffff || size === 0xffffffff) bad('不支持 ZIP64');
-  if (count > MIGRATION_LIMITS.entries || directory + size !== end) bad('条目过多或目录损坏');
+  if (count > Math.min(MIGRATION_LIMITS.entries,budget.entries) || directory + size !== end) bad('条目过多或目录损坏');
   const entries: Array<{ path: string; start: number; compressed: number; length: number; method: number; crc: number }> = [];
   const names = new Set<string>(); let pos = directory, total = 0;
   const ranges: Array<[number, number]> = [];
@@ -41,7 +43,7 @@ export function readMigrationZip(bytes: Buffer): MigrationEntry[] {
     const rawName = bytes.subarray(pos + 46, pos + 46 + nameSize).toString('utf8');
     const path = migrationPath(rawName);
     if (names.has(path)) bad(`重复路径：${path}`); names.add(path);
-    if (length > MIGRATION_LIMITS.fileBytes || (total += length) > MIGRATION_LIMITS.totalBytes) bad('解压后超过单文件 25 MB / 总计 100 MB 限额');
+    if (length > MIGRATION_LIMITS.fileBytes || (total += length) > Math.min(MIGRATION_LIMITS.totalBytes,budget.bytes)) bad('解压后超过单文件 25 MB / 总计 100 MB 限额');
     if (local + 30 > directory || bytes.readUInt32LE(local) !== 0x04034b50) bad('文件头损坏');
     const localNameSize = bytes.readUInt16LE(local + 26), localExtra = bytes.readUInt16LE(local + 28), start = local + 30 + localNameSize + localExtra;
     if (start + compressed > directory || bytes.readUInt16LE(local + 8) !== method || bytes.readUInt16LE(local + 6) !== flags || bytes.subarray(local + 30, local + 30 + localNameSize).toString('utf8') !== rawName) bad('文件头与目录不一致');
@@ -51,6 +53,8 @@ export function readMigrationZip(bytes: Buffer): MigrationEntry[] {
     pos = next;
   }
   if (pos !== directory + size) bad('中央目录长度错误');
+  // 在任何 inflate 前一次扣除整个中央目录预算，跨多个 ZIP / DOCX 共用。
+  budget.bytes -= total;budget.entries -= count;
   return entries.map(entry => {
     const compressed = bytes.subarray(entry.start, entry.start + entry.compressed);
     let output: Buffer;

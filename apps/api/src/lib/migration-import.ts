@@ -3,7 +3,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { AppError, fail } from '@kb/shared';
 import { db } from '../db/client.ts';
 import { attachments, backgroundJobs, folders, notebooks, notes, noteVersions, users } from '../db/schema.ts';
-import { putBlob, releaseBlob, hashBytes } from './blobs.ts';
+import { putBlob, hashBytes } from './blobs.ts';
 import { assertAttachmentType } from './file-type.ts';
 import { assertUserStorage, textBytes } from './quota.ts';
 import { writeNoteFile } from './files.ts';
@@ -35,7 +35,7 @@ export async function executeMigration(nb: typeof notebooks.$inferSelect, userId
   const savedByIndex=new Map<number,typeof notes.$inferSelect>();
   const titleByToken = new Map(source.files.map((page,i)=>[migrationNoteToken(page.sourcePath),plan.items[i]!.title]));
   for(let index=0;index<plan.items.length;index++) {
-    const item=plan.items[index]!,page=source.files[index]!,acquired:string[]=[];
+    const item=plan.items[index]!,page=source.files[index]!;
     const warnings=[...page.warnings];
     if(item.folderPath.length===8&&page.path.split('/').length-1+plan.targetFolderPath.length>8)warnings.push('目录超过 8 层，较深目录已合并到第 8 层');
     if(item.action==='skip'){skipped.push({path:page.sourcePath,title:item.title});report.push({path:page.sourcePath,title:item.title,status:'skipped',message:'同目录已存在同名笔记'});continue;}
@@ -91,8 +91,8 @@ export async function executeMigration(nb: typeof notebooks.$inferSelect, userId
         }
         const fileBytes=pending.reduce((n,a)=>n+(!a.existing||a.existing.trashedAt?a.bytes.length:0),0);
         const noteDelta=textBytes(item.title,body)-(existing?textBytes(existing.title,existing.bodyMd):0);
-        if(owner===userId)await assertUserStorage(userId,Math.max(0,noteDelta)+fileBytes);
-        else {await assertUserStorage(owner,Math.max(0,noteDelta));await assertUserStorage(userId,fileBytes);}
+        if(owner===userId)await assertUserStorage(userId,Math.max(0,noteDelta)+fileBytes,tx);
+        else {await assertUserStorage(owner,Math.max(0,noteDelta),tx);await assertUserStorage(userId,fileBytes,tx);}
         let note: typeof notes.$inferSelect;
         if(existing){
           const changed=existing.bodyMd!==body;
@@ -110,7 +110,7 @@ export async function executeMigration(nb: typeof notebooks.$inferSelect, userId
         }
         for(const asset of pending){
           if(asset.existing){if(asset.existing.trashedAt)await tx.update(attachments).set({trashedAt:null}).where(eq(attachments.id,asset.id));continue;}
-          const blob=await putBlob(asset.bytes);acquired.push(blob.sha256);
+          const blob=await putBlob(asset.bytes,tx);
           await tx.insert(attachments).values({id:asset.id,workspaceId:nb.workspaceId,noteId,filename:asset.filename,storedName:blob.path,mime:asset.mime,bytes:asset.bytes.length,sha256:blob.sha256,createdBy:userId,extractStatus:asset.mime==='application/pdf'?'pending':'none'});
           if(asset.mime==='application/pdf')await tx.insert(backgroundJobs).values({type:'extract_pdf',payload:{attachmentId:asset.id}});
         }
@@ -125,7 +125,7 @@ export async function executeMigration(nb: typeof notebooks.$inferSelect, userId
       catch {report.push({...result,status:'degraded',message:'正文已安全入库，磁盘镜像写入失败，可重新保存笔记修复'});}
     } catch(e) {
       if(!(e instanceof AppError))console.error("迁移单篇失败",page.sourcePath,e);
-      for(const sha of acquired)await releaseBlob(sha).catch(()=>{});
+      // 引用随数据库事务一起回滚，不再次减别人的共享引用。失败落盘的哈希文件可供下次复用。
       report.push({path:page.sourcePath,title:item.title,status:'failed',message:e instanceof AppError?e.message:'导入失败，本篇已回滚，请重试或检查服务器日志'});
     }
   }

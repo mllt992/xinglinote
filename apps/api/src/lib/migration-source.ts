@@ -1,10 +1,11 @@
 import { posix } from 'node:path';
 import { createHash } from 'node:crypto';
 import mammoth from 'mammoth';
+import sanitizeHtml from 'sanitize-html';
 import { fail } from '@kb/shared';
 import { assertAttachmentType } from './file-type.ts';
 import { htmlToMarkdown } from './migration-html.ts';
-import { MIGRATION_LIMITS, migrationPath, readMigrationZip, type MigrationEntry } from './migration-zip.ts';
+import { MIGRATION_LIMITS, migrationBudget, migrationPath, readMigrationZip, type MigrationEntry } from './migration-zip.ts';
 import { parseFront } from './import-plan-path.ts';
 
 export type MigrationOrigin = 'auto' | 'notion' | 'yuque' | 'generic';
@@ -51,11 +52,13 @@ function localTarget(source: string, href: string): string | null {
 
 export async function prepareMigration(sources: MigrationEntry[], requested: MigrationOrigin = 'auto'): Promise<MigrationSource> {
   const entries: MigrationEntry[] = []; let total = 0;
+  const budget=migrationBudget();
+  if(sources.length>MIGRATION_LIMITS.entries)throw fail("QUOTA","导入条目超过限制");
   for (const input of sources) {
     const path = migrationPath(input.path);
     if ((total += input.bytes.length) > MIGRATION_LIMITS.totalBytes) throw fail('QUOTA','导入文件总计不能超过 100 MB');
-    if (/\.zip$/i.test(path)) entries.push(...readMigrationZip(input.bytes));
-    else { if(input.bytes.length>MIGRATION_LIMITS.fileBytes)throw fail('QUOTA','单个导入文件不能超过 25 MB'); entries.push({path,bytes:input.bytes}); }
+    if (/\.zip$/i.test(path)) entries.push(...readMigrationZip(input.bytes,budget));
+    else { if(input.bytes.length>MIGRATION_LIMITS.fileBytes || input.bytes.length>budget.bytes || budget.entries<1)throw fail('QUOTA','单个导入文件或总体预算超过限制');budget.bytes-=input.bytes.length;budget.entries--;entries.push({path,bytes:input.bytes}); }
   }
   if (entries.length > MIGRATION_LIMITS.entries || entries.reduce((n,e)=>n+e.bytes.length,0)>MIGRATION_LIMITS.totalBytes) throw fail('QUOTA','导入包解压总量或条目超过限制');
   const archive = new Map<string,Buffer>(), report: MigrationReportItem[] = [];
@@ -68,7 +71,9 @@ export async function prepareMigration(sources: MigrationEntry[], requested: Mig
   const pagePaths = [...archive.keys()].filter(p=>noteExt.test(p));
   if (pagePaths.length > MIGRATION_LIMITS.pages) throw fail('QUOTA','一次最多导入 500 篇');
   const files: MigrationPage[] = [], used = new Set<string>();
-  let expandedBytes=entries.reduce((sum,entry)=>sum+entry.bytes.length,0),convertedBytes=0;
+  let convertedBytes=0, imageReferences=0, imageReadRemaining=MIGRATION_LIMITS.totalBytes;
+  let imageQueue: Promise<unknown> = Promise.resolve();
+  const convertedImages=new Map<string,MigrationAsset>();
   for (const sourcePath of pagePaths) {
     const bytes = archive.get(sourcePath)!; const path = migrationTitlePath(sourcePath, source), warnings: string[] = [], assets: MigrationAsset[] = [];
     let content: string, title: string | null = null;
@@ -76,17 +81,48 @@ export async function prepareMigration(sources: MigrationEntry[], requested: Mig
       if (!/\.docx$/i.test(sourcePath) && bytes.length > MIGRATION_LIMITS.pageBytes) throw fail('QUOTA','单篇正文不能超过 2 MB');
       if (/\.docx$/i.test(sourcePath)) {
         // mammoth 自带 ZIP 解包前也要通过同一套有界检查；禁止读取文件系统和外链。
-        const docxEntries = readMigrationZip(bytes);
-        expandedBytes+=docxEntries.reduce((sum,entry)=>sum+entry.bytes.length,0)-bytes.length;
-        if(expandedBytes>MIGRATION_LIMITS.totalBytes)throw fail('QUOTA','嵌套 DOCX 解压总量超过 100 MB');
+        const docxEntries = readMigrationZip(bytes,budget);
+        if(docxEntries.some(e=>/\.(?:xml|rels)$/i.test(e.path)&&e.bytes.length>MIGRATION_LIMITS.pageBytes))throw fail('QUOTA','DOCX XML 结构超过单篇限制');
         if(docxEntries.filter(e=>/\.(?:xml|rels)$/i.test(e.path)).some(e=>/<!DOCTYPE|<!ENTITY|\u0000/i.test(text(e.bytes)))) throw fail('VALIDATION','DOCX 不接受 XML 实体声明');
-        const result = await mammoth.convertToHtml({buffer:bytes}, { externalFileAccess:false, convertImage:mammoth.images.imgElement(async img=> {
-          const data = Buffer.from(await img.read('base64'),'base64'); const mime=img.contentType;
-          assertAttachmentType(mime,data);
-          if(data.length>MIGRATION_LIMITS.fileBytes)throw fail('QUOTA','内嵌图片超过 25 MB');
-          const assetPath=`${sourcePath}.assets/image-${assets.length+1}.${mime.split('/')[1]}`; const placeholder=token('asset',assetPath);
-          assets.push({path:assetPath,filename:posix.basename(assetPath),mime,bytes:data,placeholder}); return {src:placeholder};
+        let xmlBytes=0,xmlNodes=0;
+        for(const entry of docxEntries.filter(e=>/\.(?:xml|rels)$/i.test(e.path))){
+          if((xmlBytes+=entry.bytes.length)>8*1024*1024)throw fail('QUOTA','DOCX XML 总量超过结构预算');
+          let depth=0;
+          sanitizeHtml(text(entry.bytes),{parser:{xmlMode:true},allowedTags:[],allowedAttributes:{},nonTextTags:[],textFilter:()=>'',
+            onOpenTag:()=>{if(++xmlNodes>50000||++depth>128)throw fail('QUOTA','DOCX XML 结构过大或嵌套过深');},
+            onCloseTag:()=>{depth=Math.max(0,depth-1);},
+          });
+        }
+        let imageFailure: Error | null = null;
+        const maxImageBytes=Math.max(1,...docxEntries.filter(e=>!/\.(?:xml|rels)$/i.test(e.path)).map(e=>e.bytes.length));
+        const result = await mammoth.convertToHtml({buffer:bytes}, { externalFileAccess:false, convertImage:mammoth.images.imgElement(img=> {
+          if(++imageReferences>MIGRATION_LIMITS.entries){imageFailure=fail('QUOTA','内嵌图片引用过多');throw imageFailure;}
+          // mammoth 可并发调用回调；串行读取使重复引用不会同时物化大量副本。
+          const work=imageQueue.then(async()=>{
+            if(imageFailure)throw imageFailure;
+            if(imageReadRemaining<maxImageBytes)throw fail('QUOTA','DOCX 图片重复读取工作量超过限制');
+            imageReadRemaining-=maxImageBytes;
+            const encoded=await img.read('base64');
+            const decodedLength=Math.floor(encoded.length*3/4)-(encoded.endsWith('==')?2:encoded.endsWith('=')?1:0);
+            imageReadRemaining+=Math.max(0,maxImageBytes-decodedLength);
+            if(encoded.length>Math.ceil(MIGRATION_LIMITS.fileBytes/3)*4)throw fail('QUOTA','内嵌图片超过 25 MB');
+            const key=createHash('sha256').update(img.contentType).update(encoded).digest('hex');
+            let asset=convertedImages.get(key);
+            if(!asset){
+              const length=Math.floor(encoded.length*3/4)-(encoded.endsWith('==')?2:encoded.endsWith('=')?1:0);
+              if(length>budget.bytes)throw fail('QUOTA','转换图片超过导入总内存预算');
+              budget.bytes-=length;
+              const data=Buffer.from(encoded,'base64'),mime=img.contentType;assertAttachmentType(mime,data);
+              const assetPath=`${sourcePath}.assets/image-${convertedImages.size+1}.${mime.split('/')[1]}`;
+              asset={path:assetPath,filename:posix.basename(assetPath),mime,bytes:data,placeholder:token('asset',assetPath)};
+              convertedImages.set(key,asset);
+            }
+            if(!assets.some(a=>a.placeholder===asset!.placeholder))assets.push(asset);
+            return {src:asset.placeholder};
+          });
+          imageQueue=work.catch(error=>{imageFailure=error instanceof Error?error:new Error(String(error));});return work;
         }) });
+        if(imageFailure)throw imageFailure;
         const html = htmlToMarkdown(result.value,{bundledImages:true}); content=html.content;title=html.title;
         warnings.push('DOCX 已转换为 Markdown，复杂排版、批注及不支持的块可能降级',...result.messages.map(m=>m.message),...html.warnings);
       } else if (/\.html?$/i.test(sourcePath)) {
@@ -134,7 +170,7 @@ export async function prepareMigration(sources: MigrationEntry[], requested: Mig
       if(convertedBytes>MIGRATION_LIMITS.totalBytes)throw fail('QUOTA','转换后正文总量超过 100 MB');
       files.push({path,sourcePath,content,warnings:[...new Set(warnings)],assets}); used.add(sourcePath);
     } catch(e) {
-      if(expandedBytes>MIGRATION_LIMITS.totalBytes||convertedBytes>MIGRATION_LIMITS.totalBytes)throw e;
+      if(convertedBytes>MIGRATION_LIMITS.totalBytes)throw e;
       report.push({path:sourcePath,status:'failed',message:(e as Error).message});used.add(sourcePath);
     }
   }
