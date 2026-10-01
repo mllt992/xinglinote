@@ -61,10 +61,12 @@ try{
  await publicPage.getByRole('button',{name:'适应',exact:true}).click();
  await publicPage.screenshot({path:'/tmp/xingli-boards-share-375.png',fullPage:true});
  const geometry=await publicPage.locator('.public-board-svg > svg').evaluate(svg=>{
-  const root=svg.getBoundingClientRect();return{viewBox:svg.getAttribute('viewBox'),shapes:[...svg.querySelectorAll('rect,path')].slice(0,20).map(n=>({tag:n.tagName,fill:n.getAttribute('fill'),opacity:n.getAttribute('opacity')})),root:{x:root.x,y:root.y,width:root.width,height:root.height},labels:[...svg.querySelectorAll('text')].filter(t=>/家庭旅行地图|交通路线|打包清单/.test(t.textContent)).map(t=>{const r=t.getBoundingClientRect();return{text:t.textContent,x:r.x,y:r.y,right:r.right,bottom:r.bottom,font:getComputedStyle(t).fontSize,fill:getComputedStyle(t).fill};})};
+  const root=svg.getBoundingClientRect();return{viewBox:svg.getAttribute('viewBox'),shapes:[...svg.querySelectorAll('rect,path')].slice(0,20).map(n=>{const r=n.getBoundingClientRect();return{tag:n.tagName,fill:getComputedStyle(n).fill,opacity:n.getAttribute('opacity'),x:r.x,y:r.y,right:r.right,bottom:r.bottom,width:r.width,height:r.height};}),root:{x:root.x,y:root.y,width:root.width,height:root.height},labels:[...svg.querySelectorAll('text')].filter(t=>/家庭旅行地图|交通路线|打包清单/.test(t.textContent)).map(t=>{const r=t.getBoundingClientRect();return{text:t.textContent,x:r.x,y:r.y,right:r.right,bottom:r.bottom,font:getComputedStyle(t).fontSize,fill:getComputedStyle(t).fill};})};
  });
  assert.ok(geometry.viewBox,'响应式 SVG 必须有 viewBox');assert.ok(geometry.root.height>50);
  for(const label of geometry.labels){assert.ok(label.x>=geometry.root.x-2&&label.right<=geometry.root.x+geometry.root.width+2&&label.y>=geometry.root.y-2&&label.bottom<=geometry.root.y+geometry.root.height+2,JSON.stringify({geometry,label}));}
+ const rootLabel=geometry.labels.find(l=>l.text==='家庭旅行地图');assert.ok(rootLabel);
+ assert.ok(geometry.shapes.some(s=>s.fill!==rootLabel.fill&&!['none','transparent','rgba(0, 0, 0, 0)'].includes(s.fill)&&s.x<=rootLabel.x&&s.right>=rootLabel.right&&s.y<=rootLabel.y&&s.bottom>=rootLabel.bottom),'根节点必须有可见的对比背景，不能只剩白字');
  console.log('SVG visible geometry',JSON.stringify(geometry));
 
  assert.equal(await publicPage.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);

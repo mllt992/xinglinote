@@ -33,3 +33,7 @@ test('SVG 展示属性不能用 CSS 转义或实体隐藏远程 URL',()=>{
  const raw=String.raw`<svg><rect fill="u\72l(https://example.invalid/fill#id)"/><g clip-path="\75rl(https://example.invalid/clip#id)"><text>safe</text></g><circle stroke="u&#92;72l(https://example.invalid/encoded#id)"/><path fill="u&#x0009;rl(https://example.invalid/control#id)"/></svg>`;
  const clean=sanitizeBoardSvg(raw);assert.ok(!clean.includes('example.invalid'));assert.ok(clean.includes('safe'));
 });
+
+test('多行 SVG 路径保留几何，不能只剩白字和透明选择框',()=>{
+ const clean=sanitizeBoardSvg('<svg width="100" height="50"><path d="M 0 0\nL 100 0\tL 100 50 L 0 50 Z" fill="#111111"/><text fill="#ffffff">根节点</text></svg>');assert.match(clean,/d="M 0 0 L 100 0 L 100 50 L 0 50 Z"/);assert.match(clean,/fill="#111111"/);
+});

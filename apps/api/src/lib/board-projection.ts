@@ -23,7 +23,9 @@ export function sanitizeBoardSvg(raw: string) {
     nonTextTags: ['script','style','foreignObject','metadata','title','desc','iframe','object','embed'],
     transformTags: { '*': (tag, attrs) => {
       const safe: Record<string,string> = {};
-      for (const [key, value] of Object.entries(attrs)) {
+      for (const [key, rawValue] of Object.entries(attrs)) {
+        // 路径/变换的合法空白归一化，不能因多行 d 而丢掉节点形状。CSS 展示值仍拒绝控制符。
+        const value=['d','points','transform','viewBox'].includes(key)?rawValue.replace(/[\t\n\r\f]/g,' '):rawValue;
         if (!ATTRS.includes(key) || value.length > (key === 'href' || key === 'xlink:href' ? 1_500_000 : 100_000)) continue;
         if (key === 'href' || key === 'xlink:href') {
           if (tag === 'image' && !safe.href && DATA_IMAGE.test(value)) {
