@@ -21,6 +21,7 @@ import { Tooltip, TooltipProvider } from "./ui/tooltip";
 import { useConfirm, usePrompt } from "./ui/confirm";
 import { useToast } from "./ui/toast";
 import { cn } from "../lib/utils";
+import { useDeviceAccountKey } from "../lib/use-device-account";
 import { deviceStorage } from "../lib/device-storage";
 
 // 编辑器（simple-mind-map / draw.io 外壳）只在打开时才需要，单独拆包，不拖慢笔记首屏。
@@ -118,6 +119,10 @@ function CreateDialog({ open, kind, onOpenChange, notebooks, onCreate, drawioEna
 function AiCreateDialog({ workspaceId, open, onOpenChange, notebooks, onDone }: { workspaceId: string; open: boolean; onOpenChange: (v: boolean) => void; notebooks: NotebookRow[]; onDone: (id: string) => void }) {
   const toast = useToast();
   const model = useAiModel(workspaceId);
+  const active = useRef(true);
+  const account = useRef({ epoch: deviceStorage.epoch(), identity: deviceStorage.identity() });
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  const currentAccount = () => active.current && account.current.epoch === deviceStorage.epoch() && account.current.identity === deviceStorage.identity();
   const [prompt, setPrompt] = useState("");
   const [notebookId, setNotebookId] = useState("");
   const [busy, setBusy] = useState(false);
@@ -127,14 +132,15 @@ function AiCreateDialog({ workspaceId, open, onOpenChange, notebooks, onDone }: 
       <DialogHeader><DialogTitle>用 AI 生成思维导图</DialogTitle><DialogDescription>说说要画什么，AI 先搭好结构，你再接着改。</DialogDescription></DialogHeader>
       <form className="grid gap-3" onSubmit={async e => {
         e.preventDefault();
-        if (prompt.trim().length < 2 || !notebookId) return;
+        if (!currentAccount() || prompt.trim().length < 2 || !notebookId) return;
         setBusy(true);
         try {
           const d = await api<{ mindMap: Brief }>(`/api/v1/notebooks/${notebookId}/mindmaps/ai`, { method: "POST", body: JSON.stringify({ prompt: prompt.trim(), selection: model.selection }) });
+          if (!currentAccount()) return;
           toast.success("已生成", `「${d.mindMap.title}」`);
           onOpenChange(false);
           onDone(d.mindMap.id);
-        } catch (err) { toast.error("AI 没能生成", aiErr(err)); } finally { setBusy(false); }
+        } catch (err) { if (currentAccount()) toast.error("AI 没能生成", aiErr(err)); } finally { if (currentAccount()) setBusy(false); }
       }}>
         <Textarea autoFocus rows={4} maxLength={2000} value={prompt} placeholder="比如：给新人准备的前端工程化学习路线；或者：一场 200 人技术大会的筹备清单" onChange={e => setPrompt(e.target.value)} />
         <AiModelSelect model={model} disabled={busy} />
@@ -205,7 +211,8 @@ function MoveDialog({ open, onOpenChange, notebooks, current, onMove }: { open: 
 /** 列表页：按笔记本分组，能按类型筛选、按标题过滤。 */
 export function MindMapsPage() {
   const { wsId = "" } = useParams();
-  return <MindMapsWorkspacePage key={wsId} />;
+  const account = useDeviceAccountKey();
+  return <MindMapsWorkspacePage key={`${wsId}:${account}`} />;
 }
 function MindMapsWorkspacePage() {
   const { wsId = "" } = useParams();
@@ -450,6 +457,8 @@ const SAVE_LABEL: Record<SaveState, string> = { saved: "已保存", dirty: "有�
  */
 function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null, refreshPreview: (version: number) => Promise<void>) {
   const toast = useToast();
+  const owner = useRef({ epoch: deviceStorage.epoch(), user: deviceStorage.identity() });
+  const accountCurrent = () => owner.current.epoch === deviceStorage.epoch() && owner.current.user === deviceStorage.identity() && !!owner.current.user;
   const [state, setState] = useState<SaveState>("saved");
   const version = useRef(0);
   const lastSaved = useRef("");
@@ -476,8 +485,9 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
   }, []);
 
   const save = useCallback(async (): Promise<void> => {
+    if (!accountCurrent()) { if (timer.current) window.clearTimeout(timer.current); timer.current = null; return; }
     const generation=saveGeneration.current,id=loaded?.mindMap.id;
-    const stillCurrent=()=>generation===saveGeneration.current && id===liveLoaded.current?.mindMap.id;
+    const stillCurrent=()=>accountCurrent() && generation===saveGeneration.current && id===liveLoaded.current?.mindMap.id;
     if (timer.current) { window.clearTimeout(timer.current); timer.current = null; }
     if (inFlight.current) { await inFlight.current; }
     if(!stillCurrent())return;
@@ -488,7 +498,7 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
     setState("saving");
     const run = (async () => {
       try {
-        const d = await api<{ mindMap: Brief }>(`/api/v1/mindmaps/${loaded.mindMap.id}`, { method: "PATCH", keepalive: body.length < 60_000, body: JSON.stringify({ data, expectedVersion: version.current, source: source.current }) });
+        const d = await api<{ mindMap: Brief }>(`/api/v1/mindmaps/${loaded.mindMap.id}`, { method: "PATCH", keepalive: body.length < 60_000, body: JSON.stringify({ data, expectedUserId: owner.current.user, expectedVersion: version.current, source: source.current }) });
         if(!stillCurrent())return;
         source.current = "edit";
         version.current = d.mindMap.version;
@@ -518,7 +528,7 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
   saveRef.current = save;
 
   const schedule = useCallback((data?: BoardData | null) => {
-    if (!loaded?.canEdit || blocked.current) return;
+    if (!accountCurrent() || !loaded?.canEdit || blocked.current) return;
     const snap = data ?? latest.current();
     if (snap) pending.current = snap;
     if (pending.current && JSON.stringify(pending.current) === lastSaved.current) { setState(s => s === "saving" ? s : "saved"); return; }
@@ -528,7 +538,7 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
   }, [loaded]);
 
   useEffect(() => {
-    const flush = () => { if (timer.current) void saveRef.current(); };
+    const flush = () => { if (timer.current && accountCurrent()) void saveRef.current(); else if (timer.current) { window.clearTimeout(timer.current); timer.current = null; } };
     window.addEventListener("pagehide", flush);
     return () => { window.removeEventListener("pagehide", flush); flush(); };
   }, []);
@@ -539,7 +549,7 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
   /** 先把没存的存掉，返回当前服务端版本号；冲突 / 失败返回 null。 */
   const settle = useCallback(async (): Promise<number | null> => {
     await saveRef.current();
-    return blocked.current || JSON.stringify(latest.current()) !== lastSaved.current ? null : version.current;
+    return !accountCurrent() || blocked.current || JSON.stringify(latest.current()) !== lastSaved.current ? null : version.current;
   }, []);
   const dirty = () => !!timer.current || !!inFlight.current;
 
@@ -549,7 +559,8 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
 /** 编辑页：思维导图 / 画板共用外壳（标题、保存状态、版本历史、复制、移动、删除）。 */
 export function MindMapPage() {
   const { wsId = "", mindMapId = "" } = useParams();
-  return <MindMapWorkspacePage key={`${wsId}:${mindMapId}`} />;
+  const account = useDeviceAccountKey();
+  return <MindMapWorkspacePage key={`${wsId}:${mindMapId}:${account}`} />;
 }
 function MindMapWorkspacePage() {
   const { wsId = "", mindMapId = "" } = useParams();

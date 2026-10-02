@@ -1000,24 +1000,28 @@ function IconsDialog({ open, selected, onOpenChange, onToggle }: { open: boolean
   </DialogContent></Dialog>;
 }
 
-function AiExpandDialog({ workspaceId, open, mapId, onOpenChange, getTarget, onInsert }: {
+export function AiExpandDialog({ workspaceId, open, mapId, onOpenChange, getTarget, onInsert }: {
   workspaceId: string; open: boolean; mapId: string; onOpenChange: (o: boolean) => void;
   getTarget: () => { path: string[]; existing: string[] } | null; onInsert: (items: OutlineNode[]) => boolean;
 }) {
   const toast = useToast();
   const model = useAiModel(workspaceId);
+  const resultOwner = useRef<{ epoch: number; identity: string | null } | null>(null);
+  const ownsResult = () => model.isCurrent() && resultOwner.current?.epoch === model.epoch && resultOwner.current?.identity === model.identity;
   const request = useRef<AbortController | null>(null);
   useEffect(() => { if (!open) { request.current?.abort(); request.current = null; setBusy(false); } return () => request.current?.abort(); }, [open]);
   const [count, setCount] = useState(5);
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
   const [items, setItems] = useState<OutlineNode[] | null>(null);
+  useEffect(() => { request.current?.abort(); request.current = null; resultOwner.current = null; setItems(null); setInstruction(""); setBusy(false); }, [workspaceId, mapId, model.epoch, model.identity]);
   const getTargetRef = useRef(getTarget);
   getTargetRef.current = getTarget;
-  const target = useMemo(() => open ? getTargetRef.current() : null, [open]);
+  const target = useMemo(() => open ? getTargetRef.current() : null, [open, model.epoch, model.identity]);
   useEffect(() => { if (open) { setItems(null); setInstruction(""); } }, [open]);
   const run = async () => {
-    if (!target || request.current) return;
+    if (!target || request.current || !model.data || !model.isCurrent()) return;
+    const liveAccount = model.isCurrent;
     const ctrl = new AbortController(); request.current = ctrl;
     setBusy(true);
     try {
@@ -1025,14 +1029,15 @@ function AiExpandDialog({ workspaceId, open, mapId, onOpenChange, getTarget, onI
         selection: model.selection,
         path: target.path.slice(-60).map(t => t.slice(0, 500)), existing: target.existing.slice(0, 200).map(t => t.slice(0, 500)), count, instruction: instruction.trim() || undefined,
       }) });
-      if (!ctrl.signal.aborted) setItems(d.items);
+      if (!ctrl.signal.aborted && liveAccount()) { resultOwner.current = { epoch: model.epoch, identity: model.identity }; setItems(d.items); }
     } catch (e) {
-      if (ctrl.signal.aborted) return;
+      if (ctrl.signal.aborted || !liveAccount()) return;
       const code = (e as { code?: string }).code;
       toast.error("AI 没能扩展", code === "AI_NOT_CONFIGURED" ? "还没有可用的 AI，可以在「AI 与自动化」里设置。" : (e as Error).message);
-    } finally { if (!ctrl.signal.aborted) { request.current = null; setBusy(false); } }
+    } finally { if (!ctrl.signal.aborted && liveAccount()) { request.current = null; setBusy(false); } }
   };
   const list = (nodes: OutlineNode[], depth = 0): React.ReactNode => nodes.map((i, k) => <div key={`${depth}-${k}`} style={{ paddingLeft: depth * 14 }} className="text-sm leading-6">· {i.text}{i.children.length > 0 && list(i.children, depth + 1)}</div>);
+  if (!model.data) return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle>AI 扩展节点</DialogTitle></DialogHeader><AiModelSelect model={model} /></DialogContent></Dialog>;
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-w-lg">
     <DialogHeader><DialogTitle>AI 扩展节点</DialogTitle><DialogDescription>{target ? `为「${target.path[target.path.length - 1] || "未命名"}」补充子节点。AI 会参考从中心主题到这里的路径和已有的子节点。` : "先选中一个节点。"}</DialogDescription></DialogHeader>
     <div className="grid gap-3">
@@ -1041,11 +1046,11 @@ function AiExpandDialog({ workspaceId, open, mapId, onOpenChange, getTarget, onI
         <Field label="额外要求（可选）"><Input value={instruction} maxLength={500} placeholder="比如：侧重风险、每条带一个例子" onChange={e => setInstruction(e.target.value)} /></Field>
         <Field label="数量"><select className={selectCls} value={count} onChange={e => setCount(Number(e.target.value))}>{[3, 5, 8, 12].map(n => <option key={n} value={n}>{n} 个左右</option>)}</select></Field>
       </div>
-      {items && <div className="max-h-64 overflow-y-auto rounded-lg border border-border bg-muted/40 p-3" data-testid="ai-expand-preview">{list(items)}</div>}
+      {items && model.data && ownsResult() && <div className="max-h-64 overflow-y-auto rounded-lg border border-border bg-muted/40 p-3" data-testid="ai-expand-preview">{list(items)}</div>}
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onClick={() => onOpenChange(false)}>取消</Button>
         <Button variant={items ? "outline" : "default"} disabled={busy || !target} onClick={() => void run()}><Sparkles />{busy ? "AI 正在想…" : items ? "换一批" : "生成建议"}</Button>
-        {items && <Button disabled={busy} onClick={() => { if (onInsert(items)) { toast.success("已插入", `新增 ${items.length} 个子节点，可以撤销。`); onOpenChange(false); } }}>插入到导图</Button>}
+        {items && model.data && ownsResult() && <Button disabled={busy} onClick={() => { if (!ownsResult()) return; if (onInsert(items)) { toast.success("已插入", `新增 ${items.length} 个子节点，可以撤销。`); onOpenChange(false); } }}>插入到导图</Button>}
       </div>
     </div>
   </DialogContent></Dialog>;

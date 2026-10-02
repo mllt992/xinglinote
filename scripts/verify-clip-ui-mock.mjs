@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import {chromium} from 'playwright-core';
-const base='http://127.0.0.1:12148';
-const browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});
+const base=process.env.KB_MOCK_BASE_URL??'http://127.0.0.1:12148';
+const browser=await chromium.launch({executablePath:process.env.KB_CHROMIUM_EXECUTABLE??'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});
 await mkdir('artifacts',{recursive:true});
 try {
 for(const width of [375,1280]){

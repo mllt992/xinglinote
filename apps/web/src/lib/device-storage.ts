@@ -40,14 +40,17 @@ export class DeviceStorage {
   identify(id: string | null) {
     const previous = this.userId ?? parse<{ id: string } | null>(this.get("active"), null)?.id;
     if (previous && previous !== id) this.remove(`snapshots:${previous}`);
-    if (this.userId !== id) this.generation++;
+    const changed = this.userId !== id;
+    if (changed) this.generation++;
     this.userId = id;
     if (id && this.enabled(id)) this.put("active", { id }); else this.remove("active");
+    if (changed) deviceChanged();
   }
   logout() {
     this.identify(null); this.generation++;
     this.put("authVersion", `${Date.now()}:${Math.random()}`);
     this.observedAuthVersion = this.get("authVersion");
+    deviceChanged();
   }
   consent(enabled: boolean) {
     const id = this.userId; if (!id) return false;

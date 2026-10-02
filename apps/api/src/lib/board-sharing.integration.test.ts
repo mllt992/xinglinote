@@ -25,6 +25,10 @@ test('公开画板投影：能力密码、原始源隔离、发布与版本生�
   const xml='<mxfile><diagram><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="2" value="原始XML不可公开" vertex="1" parent="1"><mxGeometry x="-100000" y="100000" width="160" height="80" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>';
   const create=await req(`/notebooks/${id.nb}/mindmaps`,{kind:'drawio',title:'无限画板验收',data:{format:'drawio',xml,noteIds:[id.pub,id.private]}});
   assert.equal(create.status,201);const made=await create.json() as {data:{mindMap:{id:string;version:number}}};const board=made.data.mindMap;
+  // 两个账号都有编辑权，旧账号的待保存内容仍不能借新会话提交。
+  assert.equal((await req(`/mindmaps/${board.id}`,{expectedUserId:id.user,expectedVersion:1,title:'旧账号迟到保存'},'PATCH',editorToken)).status,403);
+  const [unchanged]=await db.select().from(mindMaps).where(eq(mindMaps.id,board.id));
+  assert.equal(unchanged.version,1);assert.equal(unchanged.title,'无限画板验收');
   const editable=await (await req(`/mindmaps/${board.id}`)).json() as {data:{mindMap:{data:{xml:string;noteIds:string[]}}}};
   assert.ok(editable.data.mindMap.data.xml.includes('x="-100000"'));assert.ok(editable.data.mindMap.data.xml.includes('y="100000"'));assert.deepEqual(editable.data.mindMap.data.noteIds,[id.pub,id.private]);
   const svg='<svg viewBox="0 0 300 100"><metadata>secret-source</metadata><rect width="300" height="100" fill="#fff"/><text x="10" y="40">只读可视节点</text><script>evil()</script><image href="https://private.invalid/pixel"/></svg>';

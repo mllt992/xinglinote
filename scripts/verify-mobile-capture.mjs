@@ -5,7 +5,7 @@ import { randomUUID, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import { db, sql } from '../apps/api/src/db/client.ts';
-import { users, workspaces, workspaceMembers, notebooks, sessions } from '../apps/api/src/db/schema.ts';
+import { users, workspaces, workspaceMembers, notebooks, sessions, calendarItems } from '../apps/api/src/db/schema.ts';
 import { syncNoteTasks, localDayKey, DEFAULT_TZ } from '../apps/api/src/lib/calendar.ts';
 import { hashSecret } from '../apps/api/src/lib/tokens.ts';
 
@@ -100,19 +100,22 @@ try {
  await page.getByRole('dialog').waitFor({state:'hidden'});
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'日历 375px 横向溢出');
  await page.screenshot({path:'/tmp/xingli-mobile-calendar.png',fullPage:true});
- // 来源任务改期/完成必须真正写回正文，刷新同步后不能反弹。
- const source=await q('/notes',{notebookId:ids.nb,title:'移动来源测试'});
- await q(`/notes/${source.id}`,{expectedVersion:source.version,bodyMd:`正文保留\n- [ ] 原文待办 @${localDayKey(new Date(),DEFAULT_TZ)} ^tk-8765abcd`},'PATCH');
+ // 笔记复选框不进入 Today、不改正文；日历手工任务正常完成和改期。
+ const source=await q('/notes',{notebookId:ids.nb,title:'移动来源笔记'});
+ const sourceBody=`原文保留\n- [ ] 普通选项 @${localDayKey(new Date(),DEFAULT_TZ)} ^tk-8765abcd`;
+ await q(`/notes/${source.id}`,{expectedVersion:source.version,bodyMd:sourceBody},'PATCH');
  await syncNoteTasks(source.id);
+ assert.ok(!(await q(`/workspaces/${ids.ws}/today`)).items.some(x=>x.sourceNoteId===source.id));
+ assert.equal((await q(`/notes/${source.id}`)).bodyMd,sourceBody);
+ await q(`/workspaces/${ids.ws}/calendar/items`,{kind:'task',title:'原日历待办',dueAt:new Date().toISOString()});
  await page.goto(`${base}/w/${ids.ws}/today`);
- await page.getByRole('button',{name:'完成 原文待办',exact:true}).click();
- await page.getByRole('button',{name:'取消完成 原文待办',exact:true}).waitFor();
- assert.ok((await q(`/notes/${source.id}`)).bodyMd.includes('- [x] 原文待办'));
- await page.getByRole('button',{name:'改期 原文待办',exact:true}).click();
+ await page.getByRole('button',{name:'完成 原日历待办',exact:true}).click();
+ await page.getByRole('button',{name:'取消完成 原日历待办',exact:true}).waitFor();
+ await page.getByRole('button',{name:'改期 原日历待办',exact:true}).click();
  await page.getByRole('menuitem',{name:'改到明天',exact:true}).click();
- await page.getByRole('button',{name:'取消完成 原文待办',exact:true}).waitFor({state:'hidden'});
- assert.ok(!(await q(`/notes/${source.id}`)).bodyMd.includes(`@${today.date}`));
- // 存储配额错误时保住内存正文，仍可直接保存到服务器。
+ await page.getByRole('button',{name:'取消完成 原日历待办',exact:true}).waitFor({state:'hidden'});
+ assert.equal((await q(`/notes/${source.id}`)).bodyMd,sourceBody);
+ // 存储配额错误时仍可保存服务器。
  const quotaPage=await context.newPage();
  await quotaPage.addInitScript(()=>{const original=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if(k.startsWith('kb.capture.'))throw new DOMException('test quota','QuotaExceededError');return original.call(this,k,v);};});
  await quotaPage.goto(`${base}/w/${ids.ws}/today`);
@@ -120,19 +123,31 @@ try {
  assert.equal(await quotaInput.inputValue(),'缓存满了也保留正文');
  await quotaPage.locator('footer[aria-label="随手记"]').getByRole('button',{name:'任务',exact:true}).click();
  await quotaPage.getByText('缓存满了也保留正文',{exact:true}).waitFor();await quotaPage.close();
- // 无日期任务从收件箱改到明天，撤销要恢复无日期；来源任务也走相同回写。
+ // 无日期日历任务从收件箱改到明天，撤销要恢复无日期。
  const undated=await q(`/workspaces/${ids.ws}/calendar/items`,{kind:'task',title:'无日期手工任务'});
  await page.goto(`${base}/w/${ids.ws}/calendar`);await page.getByRole('button',{name:'待办面板'}).click();
  await page.getByRole('button',{name:'改期 无日期手工任务',exact:true}).click();await page.getByRole('menuitem',{name:'改到明天',exact:true}).click();
  await page.waitForTimeout(300);assert.ok((await q(`/calendar/items/${undated.id}`)).dueAt);
  await page.getByRole('button',{name:'撤销',exact:true}).last().click();await page.waitForTimeout(300);assert.equal((await q(`/calendar/items/${undated.id}`)).dueAt,null);
- const undatedNote=await q('/notes',{notebookId:ids.nb,title:'无日期来源'});
- await q(`/notes/${undatedNote.id}`,{expectedVersion:undatedNote.version,bodyMd:'- [ ] 无日期来源任务 ^tk-9988abcd'},'PATCH');await syncNoteTasks(undatedNote.id);
+ // 模拟升级前无日期来源项：历史区保留，转换后成为正常日历任务。
+ const undatedNote=await q('/notes',{notebookId:ids.nb,title:'无日期旧来源'});
+ const undatedBody='- [ ] 无日期来源任务 ^tk-9988abcd';
+ await q(`/notes/${undatedNote.id}`,{expectedVersion:undatedNote.version,bodyMd:undatedBody},'PATCH');
+ await syncNoteTasks(undatedNote.id);
+ const [legacy]=await db.insert(calendarItems).values({workspaceId:ids.ws,notebookId:ids.nb,source:'note',sourceNoteId:undatedNote.id,sourceAnchor:'^tk-9988abcd',kind:'task',title:'无日期来源任务',createdBy:ids.user,updatedBy:ids.user}).returning();
+ const isolated=await q(`/workspaces/${ids.ws}/calendar/inbox`);
+ assert.ok(isolated.legacy.some(x=>x.id===legacy.id));
+ assert.ok(!isolated.inbox.some(x=>x.id===legacy.id));
  await page.reload();await page.getByRole('button',{name:'待办面板'}).click();
- await page.getByRole('button',{name:'改期 无日期来源任务',exact:true}).click();await page.getByRole('menuitem',{name:'改到明天',exact:true}).click();await page.waitForTimeout(300);
- assert.ok((await q(`/notes/${undatedNote.id}`)).bodyMd.includes('@'));
- await page.getByRole('button',{name:'撤销',exact:true}).last().click();await page.waitForTimeout(300);assert.ok(!(await q(`/notes/${undatedNote.id}`)).bodyMd.includes('@'));
- // 已公开页的 375px 正文、长 URL、表格和图片都不能撑出屏幕。
+ await page.locator('summary').filter({hasText:'历史笔记导入'}).click();
+ await page.getByRole('button',{name:'无日期来源任务',exact:true}).click();
+ await page.getByRole('button',{name:'转为独立任务',exact:true}).click();
+ await page.getByRole('dialog').waitFor({state:'hidden'});
+ const recovered=await q(`/workspaces/${ids.ws}/calendar/inbox`);
+ assert.ok(recovered.inbox.some(x=>x.id===legacy.id && x.source==='manual'));
+ assert.ok(!recovered.legacy.some(x=>x.id===legacy.id));
+ assert.equal((await q(`/notes/${undatedNote.id}`)).bodyMd,undatedBody);
+ // 已公开页在 375px 不溢出。
  const publicNote=await q('/notes',{notebookId:ids.nb,title:'窄屏公开阅读'});
  await q(`/notes/${publicNote.id}`,{expectedVersion:publicNote.version,bodyMd:`长链接 https://example.invalid/${'x'.repeat(180)}\n\n| 第一列 | 第二列 |\n| --- | --- |\n| ${'长'.repeat(50)} | 正文 |\n\n![品牌](/brand/share-card.png)`},'PATCH');
  const share=await q(`/notes/${publicNote.id}/shares`,{});

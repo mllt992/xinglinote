@@ -220,9 +220,11 @@ function NoteLinksPanel({ ids, editable, onOpen, onAdd, onRemove, onClose }: {
 
 const SUGGESTIONS = ["画一个用户注册登录的流程图，包含邮箱验证和失败分支", "画一张三层 Web 应用架构图：前端、API、数据库和缓存", "把现在的图改成从左到右排列，并统一配色"];
 
-function AiChatPanel({ workspaceId, mapId, getXml, applyXml, onClose, ready }: { workspaceId: string; mapId: string; getXml: () => string; applyXml: (xml: string) => void; onClose: () => void; ready: boolean }) {
+export function AiChatPanel({ workspaceId, mapId, getXml, applyXml, onClose, ready }: { workspaceId: string; mapId: string; getXml: () => string; applyXml: (xml: string) => void; onClose: () => void; ready: boolean }) {
   const toast = useToast();
   const model = useAiModel(workspaceId);
+  const resultOwner = useRef<{ epoch: number; identity: string | null } | null>(null);
+  const ownsResult = () => model.isCurrent() && resultOwner.current?.epoch === model.epoch && resultOwner.current?.identity === model.identity;
   const request = useRef<AbortController | null>(null);
   useEffect(() => () => request.current?.abort(), []);
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
@@ -230,11 +232,13 @@ function AiChatPanel({ workspaceId, mapId, getXml, applyXml, onClose, ready }: {
   const [busy, setBusy] = useState(false);
   const undo = useRef<string[]>([]);
   const [undoCount, setUndoCount] = useState(0);
+  useEffect(() => { request.current?.abort(); request.current = null; resultOwner.current = null; setMsgs([]); setText(""); setBusy(false); undo.current = []; setUndoCount(0); }, [workspaceId, mapId, model.epoch, model.identity]);
   const list = useRef<HTMLDivElement | null>(null);
   useEffect(() => { list.current?.scrollTo({ top: list.current.scrollHeight }); }, [msgs, busy]);
   const send = async (content: string) => {
     const c = content.trim();
-    if (!c || busy || request.current) return;
+    if (!c || busy || request.current || !model.data || !model.isCurrent()) return;
+    const liveAccount = model.isCurrent;
     const ctrl = new AbortController();
     request.current = ctrl;
     if (!ready) { request.current = null; toast.error("编辑器还没准备好", "等画板加载完再试。"); return; }
@@ -245,24 +249,27 @@ function AiChatPanel({ workspaceId, mapId, getXml, applyXml, onClose, ready }: {
     try {
       const before = getXml();
       const d = await api<{ xml: string; reply: string }>(`/api/v1/mindmaps/${mapId}/ai/drawio`, { method: "POST", signal: ctrl.signal, body: JSON.stringify({ selection: model.selection, messages: next.slice(-10), xml: before.length <= 400_000 ? before : "" }) });
-      if (ctrl.signal.aborted) return;
+      if (ctrl.signal.aborted || !liveAccount()) return;
+      resultOwner.current = { epoch: model.epoch, identity: model.identity };
       undo.current.push(before);
       setUndoCount(undo.current.length);
       applyXml(d.xml);
       setMsgs(m => [...m, { role: "assistant", content: d.reply || "已按要求更新画板。" }]);
     } catch (e) {
-      if (ctrl.signal.aborted) return;
+      if (ctrl.signal.aborted || !liveAccount()) return;
       const code = (e as { code?: string }).code;
       toast.error("AI 没能画出来", code === "AI_NOT_CONFIGURED" ? "还没有可用的 AI，可以在「AI 与自动化」里设置。" : (e as Error).message);
       setMsgs(m => m.slice(0, -1));
       setText(c);
-    } finally { if (!ctrl.signal.aborted) { request.current = null; setBusy(false); } }
+    } finally { if (!ctrl.signal.aborted && liveAccount()) { request.current = null; setBusy(false); } }
   };
+  if (!model.data) return <aside className="w-80 border-l border-border p-3"><AiModelSelect model={model} /></aside>;
   return <aside className="flex w-80 shrink-0 flex-col border-l border-border bg-background" aria-label="AI 画图">
     <div className="flex h-11 items-center justify-between border-b border-border px-3">
       <p className="flex items-center gap-1.5 text-sm font-semibold"><Sparkles className="size-4" />AI 画图</p>
       <div className="flex items-center gap-0.5">
-        <Tooltip content="撤销上一次 AI 修改"><Button size="icon" variant="ghost" className="size-7" aria-label="撤销上一次 AI 修改" disabled={!undoCount || busy} onClick={() => {
+        <Tooltip content="撤销上一次 AI 修改"><Button size="icon" variant="ghost" className="size-7" aria-label="撤销上一次 AI 修改" disabled={!model.data || !ownsResult() || !undoCount || busy} onClick={() => {
+          if (!ownsResult()) return;
           const prev = undo.current.pop();
           setUndoCount(undo.current.length);
           if (prev !== undefined) { applyXml(prev); toast.success("已撤销 AI 修改"); }
@@ -276,7 +283,7 @@ function AiChatPanel({ workspaceId, mapId, getXml, applyXml, onClose, ready }: {
         <p className="text-xs leading-5 text-muted-foreground">用一句话描述想要的图，或者让 AI 改现在这张（它能看到当前画板）。每次修改都能撤销，也会进版本历史。</p>
         {SUGGESTIONS.map(s => <button key={s} type="button" className="block w-full rounded-lg border border-border px-2.5 py-2 text-left text-xs leading-5 hover:bg-muted" onClick={() => void send(s)}>{s}</button>)}
       </div>}
-      {msgs.map((m, i) => <div key={i} className={cn("max-w-[92%] whitespace-pre-wrap rounded-xl px-3 py-2 text-sm leading-6", m.role === "user" ? "ml-auto bg-primary text-primary-foreground" : "bg-muted")}>{m.content}</div>)}
+      {(model.data ? msgs : []).map((m, i) => <div key={i} className={cn("max-w-[92%] whitespace-pre-wrap rounded-xl px-3 py-2 text-sm leading-6", m.role === "user" ? "ml-auto bg-primary text-primary-foreground" : "bg-muted")}>{m.content}</div>)}
       {busy && <div className="w-fit rounded-xl bg-muted px-3 py-2 text-sm text-muted-foreground">AI 正在画…（复杂的图可能要一两分钟）</div>}
     </div>
     <form className="border-t border-border p-2" onSubmit={e => { e.preventDefault(); void send(text); }}>

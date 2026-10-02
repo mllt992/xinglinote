@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { BellRing, CalendarDays, ChevronRight, FileText, History, Inbox, Layers, Link2Off, MoreHorizontal, PenLine, Plus, RotateCcw, Sparkles, Star, UserPlus, X } from "lucide-react";
 import { api } from "../api";
 import { deviceStorage } from "../lib/device-storage";
+import { useDeviceAccountKey } from "../lib/use-device-account";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -99,7 +100,8 @@ function rangeOf(view: View, cursor: Date) {
 
 export function CalendarPage() {
   const { wsId = "" } = useParams();
-  return <CalendarWorkspacePage key={`${wsId}:${deviceStorage.epoch()}`} />;
+  const accountKey = useDeviceAccountKey();
+  return <CalendarWorkspacePage key={`${wsId}:${accountKey}`} />;
 }
 function CalendarWorkspacePage() {
   const { wsId = "" } = useParams();
@@ -1569,6 +1571,15 @@ type TodayData = { date: string; timezone: string; canEdit: boolean; items: Cale
 
 export function TodayPage() {
   const { wsId = "" } = useParams();
+  const accountKey = useDeviceAccountKey();
+  return <TodayWorkspacePage key={`${wsId}:${accountKey}`} />;
+}
+function TodayWorkspacePage() {
+  const { wsId = "" } = useParams();
+  const alive = useRef(true);
+  const accountEpoch = useRef(deviceStorage.epoch());
+  const stillCurrent = () => alive.current && accountEpoch.current === deviceStorage.epoch();
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const nav = useNavigate();
   const toast = useToast();
   const narrow = useNarrow();
@@ -1584,15 +1595,16 @@ export function TodayPage() {
   const tz = data?.timezone ?? "Asia/Shanghai";
   const canEdit = data?.canEdit === true;
   const load = useCallback(async () => {
+    if (!stillCurrent()) return;
     const sequence = ++loadSequence.current;
     try {
       // 离线快照必须先拿到服务器确认的身份，不能把上个账号当缓存命名空间。
       await api("/api/v1/me");
-      if (sequence !== loadSequence.current) return;
+      if (!stillCurrent() || sequence !== loadSequence.current) return;
       const result = await api<TodayData>(`/api/v1/workspaces/${wsId}/today`);
-      if (sequence === loadSequence.current) { setData(result); setError(""); }
+      if (stillCurrent() && sequence === loadSequence.current) { setData(result); setError(""); }
     }
-    catch (e) { if (sequence === loadSequence.current) setError((e as Error).message); }
+    catch (e) { if (stillCurrent() && sequence === loadSequence.current) setError((e as Error).message); }
   }, [wsId]);
   useEffect(() => { setData(null); void load(); return () => { loadSequence.current++; }; }, [load]);
   useEffect(() => {

@@ -74,7 +74,8 @@ mindMapRoutes.get("/mindmaps/:id", async c => {
 /** 改标题 / 整份数据 / 挪到同工作区的另一个笔记本。必须带上次拿到的 version，撞了回 CONFLICT_VERSION。 */
 mindMapRoutes.patch("/mindmaps/:id", async c => {
   const user = await requireUser(c);
-  const body = z.object({ expectedVersion: z.number().int().positive(), title: title.optional(), data: z.unknown().optional(), notebookId: z.string().uuid().optional(), source: z.enum(["edit", "import", "ai"]).default("edit") }).parse(await c.req.json());
+  const body = z.object({ expectedUserId: z.string().uuid().optional(), expectedVersion: z.number().int().positive(), title: title.optional(), data: z.unknown().optional(), notebookId: z.string().uuid().optional(), source: z.enum(["edit", "import", "ai"]).default("edit") }).parse(await c.req.json());
+  if (body.expectedUserId && body.expectedUserId !== user.id) throw fail("FORBIDDEN", "账号已变更，请重新打开导图");
   if (body.title === undefined && body.data === undefined && !body.notebookId) throw fail("VALIDATION", "没有要保存的内容");
   const { map, workspace } = await loadBoard(c.req.param("id"), user.id, "edit");
   let notebookId: string | undefined;

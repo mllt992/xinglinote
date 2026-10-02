@@ -31,7 +31,7 @@ export function useAiModel(workspaceId?: string) {
   }, [workspaceId, epoch, identity, revision]);
   const current = state.workspaceId === workspaceId && state.epoch === epoch && state.identity === identity ? state : { epoch, identity, data: null, value: "", error: "" };
   const selection: ChatSelection | undefined = current.value ? JSON.parse(current.value) as ChatSelection : undefined;
-  return { ...current, selection, setValue: (value: string) => setState(s => ({ ...s, value })) };
+  return { ...current, selection, isCurrent: () => epoch === deviceStorage.epoch() && identity === deviceStorage.identity(), setValue: (value: string) => setState(s => ({ ...s, value })) };
 }
 
 export function AiModelSelect({ model, disabled }: { model: ReturnType<typeof useAiModel>; disabled?: boolean }) {
