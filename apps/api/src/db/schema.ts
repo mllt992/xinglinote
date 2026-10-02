@@ -257,6 +257,7 @@ export const folders = pgTable("folders", {
 ]);
 
 export const notes = pgTable("notes", {
+  captureHash: text("capture_hash"),
   id: uuid("id").defaultRandom().primaryKey(),
   workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id),
   notebookId: uuid("notebook_id").notNull().references(() => notebooks.id),

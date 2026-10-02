@@ -126,6 +126,7 @@ const statements = [
   `ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS site_publish_requested_at timestamptz`,
   `ALTER TABLE folders ADD COLUMN IF NOT EXISTS trashed_by uuid REFERENCES users(id)`,
   `ALTER TABLE folders ADD COLUMN IF NOT EXISTS trash_batch_id uuid`,
+  `ALTER TABLE notes ADD COLUMN IF NOT EXISTS capture_hash text`,
   `ALTER TABLE notes ADD COLUMN IF NOT EXISTS trashed_by uuid REFERENCES users(id)`,
   `ALTER TABLE notes ADD COLUMN IF NOT EXISTS trash_batch_id uuid`,
   `CREATE TABLE IF NOT EXISTS notebook_members (notebook_id uuid NOT NULL REFERENCES notebooks(id), user_id uuid NOT NULL REFERENCES users(id), role text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(notebook_id,user_id))`,

@@ -44,6 +44,9 @@ importers:
       '@kb/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@mozilla/readability':
+        specifier: ^0.6.0
+        version: 0.6.0
       drizzle-orm:
         specifier: ^0.41.0
         version: 0.41.0(postgres@3.4.9)
@@ -1117,6 +1120,10 @@ packages:
 
   '@mixmark-io/domino@2.2.0':
     resolution: {integrity: sha512-Y28PR25bHXUg88kCV7nivXrP2Nj2RueZ3/l/jdx6J9f8J4nsEGcgX0Qe6lt7Pa+J79+kPiJU3LguR6O/6zrLOw==}
+
+  '@mozilla/readability@0.6.0':
+    resolution: {integrity: sha512-juG5VWh4qAivzTAeMzvY9xs9HY5rAcr2E4I7tiSSCokRFi7XIZCAu92ZkSTsIj1OPceCifL3cpfteP3pDT9/QQ==}
+    engines: {node: '>=14.0.0'}
 
   '@napi-rs/canvas-android-arm64@1.0.6':
     resolution: {integrity: sha512-CZUmZEyN/cmSN1OhRJ44vBE6xyb5ekBbsIF8dqNgizbnAiHSFNi8eAA4oyyIAe5KzJ72K16OKC2lAynZLhv32Q==}
@@ -4450,6 +4457,8 @@ snapshots:
       '@chevrotain/types': 11.1.2
 
   '@mixmark-io/domino@2.2.0': {}
+
+  '@mozilla/readability@0.6.0': {}
 
   '@napi-rs/canvas-android-arm64@1.0.6':
     optional: true
