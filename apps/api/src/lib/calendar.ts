@@ -1,8 +1,8 @@
 import { fail } from "@kb/shared";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/client.ts";
-import { backgroundJobs, calendarItems, calendarOverrides, calendarReminders, notebooks, notes, users, workspaceMembers } from "../db/schema.ts";
+import { backgroundJobs, calendarItems, calendarOverrides, calendarReminders, notes } from "../db/schema.ts";
 import { writeNoteFile } from "./files.ts";
 import { mergeableNoteVersion } from "./note-version-merge.ts";
 import { recordNoteVersion } from "./versions.ts";
@@ -326,85 +326,10 @@ export async function rescheduleNoteCalendarItem(item: typeof calendarItems.$inf
 
 // ── 差量同步：新增插入、消失标 detached、内容变更更新，绝不整表删重建 ──────────
 
-export async function syncNoteTasks(noteId: string) {
- return db.transaction(async tx => {
-  const [note] = await tx.select().from(notes).where(eq(notes.id, noteId)).for("update");
-  if (!note) return { added: 0, updated: 0, detached: 0 };
-  const [notebook] = await tx.select().from(notebooks).where(eq(notebooks.id, note.notebookId));
-  const tz = DEFAULT_TZ;
-  const tasks = parseTaskLines(note.bodyMd, tz);
-
-  if (notebook?.taskAnchors !== false) {
-    const rewritten = writeAnchors(note.bodyMd, tasks);
-    if (rewritten) {
-      // 补锚是系统标注，不算用户编辑：不升 version、不写 note_versions。
-      // 带 version 条件，正文在解析期间被改过就跳过，下一轮再补。
-      const [saved] = await tx.update(notes).set({ bodyMd: rewritten }).where(and(eq(notes.id, note.id), eq(notes.version, note.version))).returning();
-      if (saved) await writeNoteFile({ ...saved, noteId: saved.id });
-      else return { added: 0, updated: 0, detached: 0 };
-    }
-  }
-
-  // +@handle 只在本工作区成员里解析；认不出就当没写，不建幽灵指派
-  const handles = [...new Set(tasks.map(t => t.assignee).filter((h): h is string => !!h))];
-  const assignees = new Map<string, string>();
-  if (handles.length) {
-    const rows = await tx.select({ id: users.id, handle: users.handle, role: workspaceMembers.role })
-      .from(users)
-      .innerJoin(workspaceMembers, and(eq(workspaceMembers.userId, users.id), eq(workspaceMembers.workspaceId, note.workspaceId)))
-      .where(inArray(users.handle, handles));
-    for (const r of rows) assignees.set(r.handle, r.id);
-  }
-
-  const existing = await tx.select().from(calendarItems).where(and(eq(calendarItems.sourceNoteId, note.id), eq(calendarItems.source, "note")));
-  const byKey = new Map(existing.map(e => [e.sourceAnchor ?? `h:${createHash("sha1").update(e.title.normalize("NFKC").trim().toLocaleLowerCase()).digest("hex").slice(0, 16)}`, e]));
-  const seen = new Set<string>();
-  let added = 0, updated = 0, detached = 0;
-
-  for (const t of tasks) {
-    seen.add(t.key);
-    const row = byKey.get(t.key);
-    const values = {
-      title: t.title,
-      kind: t.startsAt ? "event" : "task",
-      allDay: t.allDay,
-      startsAt: t.startsAt,
-      endsAt: t.endsAt,
-      dueAt: t.dueAt,
-      priority: t.priority,
-      rrule: t.rrule,
-      notebookId: note.notebookId,
-      assigneeUserId: t.assignee ? assignees.get(t.assignee) ?? null : null,
-      linkState: "linked",
-      updatedAt: new Date(),
-    };
-    if (!row) {
-      await tx.insert(calendarItems).values({
-        ...values, workspaceId: note.workspaceId, timezone: tz, source: "note", sourceNoteId: note.id,
-        sourceAnchor: t.anchor, status: t.checked ? "done" : "open", doneAt: t.checked ? new Date() : null,
-        createdBy: note.updatedBy, updatedBy: note.updatedBy,
-      });
-      added++;
-    } else {
-      const statusChanged = (row.status === "done") !== t.checked;
-      await tx.update(calendarItems).set({
-        ...values, updatedBy: note.updatedBy,
-        ...(statusChanged ? { status: t.checked ? "done" : "open", doneAt: t.checked ? new Date() : null, doneBy: t.checked ? note.updatedBy : null } : {}),
-      }).where(eq(calendarItems.id, row.id));
-      updated++;
-    }
-  }
-
-  for (const [key, row] of byKey) {
-    if (seen.has(key) || row.linkState === "detached") continue;
-    await tx.update(calendarItems).set({ linkState: "detached", updatedAt: new Date() }).where(eq(calendarItems.id, row.id));
-    detached++;
-  }
-  return { added, updated, detached };
- });
+/** 兼容已入队的旧任务：停止读取复选框，不改笔记、不删历史导入记录。 */
+export async function syncNoteTasks(_noteId: string) {
+  return { added: 0, updated: 0, detached: 0 };
 }
-
-// ── 展开窗口内的实例，供列表接口用 ────────────────────────────────────────
 
 export type Occurrence = {
   item: typeof calendarItems.$inferSelect;
@@ -483,7 +408,7 @@ export async function rescheduleReminders(itemId: string) {
   if (!item) return;
   await db.delete(backgroundJobs).where(and(eq(backgroundJobs.type, "calendar_reminder"), eq(backgroundJobs.status, "pending"), sql`payload->>'itemId' = ${itemId}`));
   const reminders = await db.select().from(calendarReminders).where(eq(calendarReminders.itemId, itemId));
-  if (item.trashedAt || item.status !== "open") {
+  if (item.source === "note" || item.trashedAt || item.status !== "open") {
     for (const r of reminders) if (r.status !== "fired") await db.update(calendarReminders).set({ status: "skipped" }).where(eq(calendarReminders.id, r.id));
     return;
   }

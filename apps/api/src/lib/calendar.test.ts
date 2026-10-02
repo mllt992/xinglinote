@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { expandRule, localDayKey, nextOccurrence, occurrencesOf, parseRrule, parseTaskLines, startOfLocalDay, toggleTaskLine, wallToUtc, writeAnchors } from "./calendar.ts";
+import { expandRule, localDayKey, nextOccurrence, occurrencesOf, parseRrule, parseTaskLines, startOfLocalDay, syncNoteTasks, toggleTaskLine, wallToUtc, writeAnchors } from "./calendar.ts";
 import { parseQuickAdd } from "./quick-add.ts";
 
 const SH = "Asia/Shanghai";
@@ -171,4 +171,10 @@ test('重复例外按实际时间进出窗口，不按旧日期',()=>{
  assert.equal(occurrencesOf(item,[override],from,to).length,0);
  const moved=occurrencesOf(item,[override],new Date(to.getTime()+1),new Date(to.getTime()+86400000));
  assert.ok(moved.some(o=>o.occurrenceStart.getTime()===base.getTime() && o.start.getTime()===next.getTime()));
+});
+
+
+test("旧笔记同步队列不读取或写入笔记与日历", async () => {
+  assert.deepEqual(await syncNoteTasks("missing-note"), { added: 0, updated: 0, detached: 0 });
+  assert.deepEqual(await syncNoteTasks("missing-note"), { added: 0, updated: 0, detached: 0 });
 });

@@ -4,6 +4,7 @@ import {
   ArrowLeft, Share2, Globe2, ChevronDown, Copy, FileUp, FolderInput, History, MoreHorizontal, Network, PenTool, Pencil, Plus, RotateCcw, Search, Sparkles, Trash2,
 } from "lucide-react";
 import { drawioText, type BoardKind, type DrawioData, type MindMapData } from "@kb/shared";
+import { AiModelSelect, useAiModel } from "./ai-model-select";
 import { ShareDialog } from "./share-dialog";
 import { api } from "../api";
 import { AppNav, saveLastWorkspace } from "./app-nav";
@@ -20,6 +21,8 @@ import { Tooltip, TooltipProvider } from "./ui/tooltip";
 import { useConfirm, usePrompt } from "./ui/confirm";
 import { useToast } from "./ui/toast";
 import { cn } from "../lib/utils";
+import { useDeviceAccountKey } from "../lib/use-device-account";
+import { deviceStorage } from "../lib/device-storage";
 
 // 编辑器（simple-mind-map / draw.io 外壳）只在打开时才需要，单独拆包，不拖慢笔记首屏。
 const MindMapEditor = lazy(() => import("./mind-map-editor").then(m => ({ default: m.MindMapEditor })));
@@ -51,13 +54,17 @@ const when = (iso: string) => new Date(iso).toLocaleString("zh-CN", { month: "nu
 const errMsg = (e: unknown) => (e as Error).message || "请稍后再试";
 const aiErr = (e: unknown) => (e as { code?: string }).code === "AI_NOT_CONFIGURED" ? "还没有可用的 AI，可以在「AI 与自动化」里设置，或联系站点管理员开放平台 AI。" : errMsg(e);
 
-function Header({ wsId, children }: { wsId: string; children?: React.ReactNode }) {
+function Header({ wsId, children, beforeSwitch }: { wsId: string; children?: React.ReactNode; beforeSwitch?: () => Promise<boolean> }) {
+  const [spaces, setSpaces] = useState<Array<{ id: string; name: string }>>([]);
+  const [switching, setSwitching] = useState(false);
+  useEffect(() => { let active = true; void api<{ workspaces: Array<{ id: string; name: string }> }>("/api/v1/workspaces").then(d => { if (active) setSpaces(d.workspaces); }).catch(() => {}); return () => { active = false; }; }, []);
   const nav = useNavigate();
   return <header className="sticky top-0 z-30 shrink-0 border-b border-border bg-background">
     <div className="mx-auto flex h-14 w-full max-w-[1180px] items-center gap-2 px-4 sm:px-6">
       <button className="-mx-1 flex items-center gap-2 rounded-lg px-1.5 py-1.5 hover:bg-muted" onClick={() => nav(`/w/${wsId}`)} aria-label="回到笔记">
         <span className="grid size-7 place-items-center rounded-lg bg-primary text-xs font-semibold text-primary-foreground">星</span>
       </button>
+      <label className="min-w-0 shrink text-xs text-muted-foreground"><span className="sr-only">当前导图工作区</span><select aria-label="当前导图工作区" className="h-8 max-w-32 rounded-md border border-input bg-background px-1 text-sm text-foreground sm:max-w-48" value={wsId} disabled={switching} onChange={async e => { const target = e.target.value; if (target === wsId) return; setSwitching(true); try { if (!beforeSwitch || await beforeSwitch()) nav(mindMapPath(target)); } finally { setSwitching(false); } }}>{!spaces.some(w => w.id === wsId) && <option value={wsId}>当前工作区</option>}{spaces.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
       <AppNav wsId={wsId} active="mindmaps" />
       <div className="ml-auto flex items-center gap-1">{children}<NotificationBell /></div>
     </div>
@@ -109,8 +116,13 @@ function CreateDialog({ open, kind, onOpenChange, notebooks, onCreate, drawioEna
 }
 
 /** 一句话让 AI 生成导图。 */
-function AiCreateDialog({ open, onOpenChange, notebooks, onDone }: { open: boolean; onOpenChange: (v: boolean) => void; notebooks: NotebookRow[]; onDone: (id: string) => void }) {
+function AiCreateDialog({ workspaceId, open, onOpenChange, notebooks, onDone }: { workspaceId: string; open: boolean; onOpenChange: (v: boolean) => void; notebooks: NotebookRow[]; onDone: (id: string) => void }) {
   const toast = useToast();
+  const model = useAiModel(workspaceId);
+  const active = useRef(true);
+  const account = useRef({ epoch: deviceStorage.epoch(), identity: deviceStorage.identity() });
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  const currentAccount = () => active.current && account.current.epoch === deviceStorage.epoch() && account.current.identity === deviceStorage.identity();
   const [prompt, setPrompt] = useState("");
   const [notebookId, setNotebookId] = useState("");
   const [busy, setBusy] = useState(false);
@@ -120,16 +132,18 @@ function AiCreateDialog({ open, onOpenChange, notebooks, onDone }: { open: boole
       <DialogHeader><DialogTitle>用 AI 生成思维导图</DialogTitle><DialogDescription>说说要画什么，AI 先搭好结构，你再接着改。</DialogDescription></DialogHeader>
       <form className="grid gap-3" onSubmit={async e => {
         e.preventDefault();
-        if (prompt.trim().length < 2 || !notebookId) return;
+        if (!currentAccount() || prompt.trim().length < 2 || !notebookId) return;
         setBusy(true);
         try {
-          const d = await api<{ mindMap: Brief }>(`/api/v1/notebooks/${notebookId}/mindmaps/ai`, { method: "POST", body: JSON.stringify({ prompt: prompt.trim() }) });
+          const d = await api<{ mindMap: Brief }>(`/api/v1/notebooks/${notebookId}/mindmaps/ai`, { method: "POST", body: JSON.stringify({ prompt: prompt.trim(), selection: model.selection }) });
+          if (!currentAccount()) return;
           toast.success("已生成", `「${d.mindMap.title}」`);
           onOpenChange(false);
           onDone(d.mindMap.id);
-        } catch (err) { toast.error("AI 没能生成", aiErr(err)); } finally { setBusy(false); }
+        } catch (err) { if (currentAccount()) toast.error("AI 没能生成", aiErr(err)); } finally { if (currentAccount()) setBusy(false); }
       }}>
         <Textarea autoFocus rows={4} maxLength={2000} value={prompt} placeholder="比如：给新人准备的前端工程化学习路线；或者：一场 200 人技术大会的筹备清单" onChange={e => setPrompt(e.target.value)} />
+        <AiModelSelect model={model} disabled={busy} />
         <NotebookSelect notebooks={notebooks} value={notebookId} onChange={setNotebookId} />
         <div className="flex justify-end gap-2">
           <Button type="button" variant="ghost" disabled={busy} onClick={() => onOpenChange(false)}>取消</Button>
@@ -197,12 +211,23 @@ function MoveDialog({ open, onOpenChange, notebooks, current, onMove }: { open: 
 /** 列表页：按笔记本分组，能按类型筛选、按标题过滤。 */
 export function MindMapsPage() {
   const { wsId = "" } = useParams();
+  const account = useDeviceAccountKey();
+  return <MindMapsWorkspacePage key={`${wsId}:${account}`} />;
+}
+function MindMapsWorkspacePage() {
+  const { wsId = "" } = useParams();
   const nav = useNavigate();
   const toast = useToast();
   const confirm = useConfirm();
   const prompt = usePrompt();
   const [notebooks, setNotebooks] = useState<NotebookRow[]>([]);
   const [maps, setMaps] = useState<Brief[]>([]);
+  const scope = useRef(wsId);
+  const account = useRef(deviceStorage.epoch());
+  const stillCurrent = () => scope.current === wsId && account.current === deviceStorage.epoch();
+  useEffect(() => { scope.current = wsId; return () => { scope.current = ""; }; }, [wsId]);
+  const generation = useRef(0);
+  const [loadedScope, setLoadedScope] = useState("");
   const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
   const [creating, setCreating] = useState<BoardKind | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
@@ -214,27 +239,30 @@ export function MindMapsPage() {
 
   useEffect(() => { if (wsId) saveLastWorkspace(wsId); }, [wsId]);
   const load = useCallback(async () => {
-    setState(s => s === "ready" ? s : "loading");
+    const requestScope = wsId, requestGeneration = ++generation.current, accountEpoch = deviceStorage.epoch();
+    setState("loading");
     try {
       const d = await api<{ notebooks: NotebookRow[]; mindMaps: Brief[]; drawioEnabled?: boolean }>(`/api/v1/workspaces/${wsId}/mindmaps`);
-      setNotebooks(d.notebooks); setMaps(d.mindMaps); setDrawioEnabled(d.drawioEnabled !== false); setState("ready");
-    } catch (e) { setState("failed"); toast.error("没能加载思维导图", errMsg(e)); }
+      if (scope.current !== requestScope || generation.current !== requestGeneration || accountEpoch !== deviceStorage.epoch()) return;
+      setLoadedScope(requestScope); setNotebooks(d.notebooks); setMaps(d.mindMaps); setDrawioEnabled(d.drawioEnabled !== false); setState("ready");
+    } catch (e) { if (scope.current !== requestScope || generation.current !== requestGeneration || accountEpoch !== deviceStorage.epoch()) return; setState("failed"); toast.error("没能加载思维导图", errMsg(e)); }
   }, [wsId, toast]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { setNotebooks([]); setMaps([]); setCreating(null); setAiOpen(false); setImportOpen(false); setMoving(null); void load(); return () => { ++generation.current; }; }, [load]);
 
-  const editable = notebooks.filter(nb => nb.canEdit);
+  const editable = (loadedScope === wsId ? notebooks : []).filter(nb => nb.canEdit);
   const shown = useMemo(() => {
     const k = q.trim().toLowerCase();
-    return maps.filter(m => (filter === "all" || m.kind === filter) && (!k || m.title.toLowerCase().includes(k)));
-  }, [maps, filter, q]);
+    return (loadedScope === wsId ? maps : []).filter(m => (filter === "all" || m.kind === filter) && (!k || m.title.toLowerCase().includes(k)));
+  }, [maps, filter, q, loadedScope, wsId]);
   const groups = useMemo(() => notebooks.map(nb => ({ nb, maps: shown.filter(m => m.notebookId === nb.id) })).filter(g => g.maps.length), [notebooks, shown]);
   const counts = useMemo(() => ({ all: maps.length, mindmap: maps.filter(m => m.kind === "mindmap").length, drawio: maps.filter(m => m.kind === "drawio").length }), [maps]);
 
   async function rename(m: Brief) {
     const title = await prompt({ title: `重命名${BOARD_KIND_LABEL[m.kind]}`, label: "标题", defaultValue: m.title, confirmText: "保存" });
-    if (title === null || !title.trim() || title.trim() === m.title) return;
+    if (!stillCurrent() || title === null || !title.trim() || title.trim() === m.title) return;
     try {
       const d = await api<{ mindMap: Brief }>(`/api/v1/mindmaps/${m.id}`, { method: "PATCH", body: JSON.stringify({ title: title.trim(), expectedVersion: m.version }) });
+      if (!stillCurrent()) return;
       setMaps(list => list.map(x => x.id === m.id ? d.mindMap : x));
       toast.success("已重命名");
     } catch (e) { toast.error("重命名失败", errMsg(e)); }
@@ -242,14 +270,17 @@ export function MindMapsPage() {
   async function duplicate(m: Brief) {
     try {
       const d = await api<{ mindMap: Brief }>(`/api/v1/mindmaps/${m.id}/duplicate`, { method: "POST", body: "{}" });
+      if (!stillCurrent()) return;
       setMaps(list => [d.mindMap, ...list]);
       toast.success("已复制", `「${d.mindMap.title}」`);
     } catch (e) { toast.error("复制失败", errMsg(e)); }
   }
   async function remove(m: Brief) {
     if (!await confirm({ title: `把「${m.title}」移到回收站？`, description: "30 天内可以在回收站恢复，之后会被彻底删除。关联的笔记不受影响。", confirmText: "移到回收站", destructive: true })) return;
+    if (!stillCurrent()) return;
     try {
       await api(`/api/v1/mindmaps/${m.id}`, { method: "DELETE" });
+      if (!stillCurrent()) return;
       setMaps(list => list.filter(x => x.id !== m.id));
       toast.success("已移到回收站", "30 天内可以在回收站恢复。");
     } catch (e) { toast.error("删除失败", errMsg(e)); }
@@ -319,16 +350,17 @@ export function MindMapsPage() {
     <CreateDialog open={!!creating} kind={creating ?? "mindmap"} drawioEnabled={drawioEnabled} onOpenChange={v => { if (!v) setCreating(null); }} notebooks={editable} onCreate={async (kind, title, notebookId) => {
       try {
         const d = await api<{ mindMap: Brief }>(`/api/v1/notebooks/${notebookId}/mindmaps`, { method: "POST", body: JSON.stringify({ title, kind }) });
-        nav(mindMapPath(wsId, d.mindMap.id));
+        if (stillCurrent()) nav(mindMapPath(wsId, d.mindMap.id));
       } catch (e) { toast.error("创建失败", errMsg(e)); throw e; }
     }} />
-    <AiCreateDialog open={aiOpen} onOpenChange={setAiOpen} notebooks={editable} onDone={id => nav(mindMapPath(wsId, id))} />
-    <ImportDialog open={importOpen} onOpenChange={setImportOpen} notebooks={editable} onDone={id => nav(mindMapPath(wsId, id))} />
+    <AiCreateDialog workspaceId={wsId} open={aiOpen} onOpenChange={setAiOpen} notebooks={editable} onDone={id => { if (stillCurrent()) nav(mindMapPath(wsId, id)); }} />
+    <ImportDialog open={importOpen} onOpenChange={setImportOpen} notebooks={editable} onDone={id => { if (stillCurrent()) nav(mindMapPath(wsId, id)); }} />
     <MoveDialog open={!!moving} onOpenChange={v => { if (!v) setMoving(null); }} notebooks={editable} current={moving?.notebookId ?? ""} onMove={async notebookId => {
       if (!moving) return;
       try {
         const d = await api<{ mindMap: Brief }>(`/api/v1/mindmaps/${moving.id}`, { method: "PATCH", body: JSON.stringify({ notebookId, expectedVersion: moving.version }) });
-        setMaps(list => list.map(x => x.id === moving.id ? d.mindMap : x));
+        if (!stillCurrent()) return;
+      setMaps(list => list.map(x => x.id === moving.id ? d.mindMap : x));
         toast.success("已移动", `放进了「${notebooks.find(n => n.id === notebookId)?.title ?? "目标笔记本"}」`);
       } catch (e) { toast.error("移动失败", errMsg(e)); throw e; }
     }} />
@@ -425,6 +457,8 @@ const SAVE_LABEL: Record<SaveState, string> = { saved: "已保存", dirty: "有�
  */
 function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null, refreshPreview: (version: number) => Promise<void>) {
   const toast = useToast();
+  const owner = useRef({ epoch: deviceStorage.epoch(), user: deviceStorage.identity() });
+  const accountCurrent = () => owner.current.epoch === deviceStorage.epoch() && owner.current.user === deviceStorage.identity() && !!owner.current.user;
   const [state, setState] = useState<SaveState>("saved");
   const version = useRef(0);
   const lastSaved = useRef("");
@@ -451,8 +485,9 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
   }, []);
 
   const save = useCallback(async (): Promise<void> => {
+    if (!accountCurrent()) { if (timer.current) window.clearTimeout(timer.current); timer.current = null; return; }
     const generation=saveGeneration.current,id=loaded?.mindMap.id;
-    const stillCurrent=()=>generation===saveGeneration.current && id===liveLoaded.current?.mindMap.id;
+    const stillCurrent=()=>accountCurrent() && generation===saveGeneration.current && id===liveLoaded.current?.mindMap.id;
     if (timer.current) { window.clearTimeout(timer.current); timer.current = null; }
     if (inFlight.current) { await inFlight.current; }
     if(!stillCurrent())return;
@@ -463,7 +498,7 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
     setState("saving");
     const run = (async () => {
       try {
-        const d = await api<{ mindMap: Brief }>(`/api/v1/mindmaps/${loaded.mindMap.id}`, { method: "PATCH", keepalive: body.length < 60_000, body: JSON.stringify({ data, expectedVersion: version.current, source: source.current }) });
+        const d = await api<{ mindMap: Brief }>(`/api/v1/mindmaps/${loaded.mindMap.id}`, { method: "PATCH", keepalive: body.length < 60_000, body: JSON.stringify({ data, expectedUserId: owner.current.user, expectedVersion: version.current, source: source.current }) });
         if(!stillCurrent())return;
         source.current = "edit";
         version.current = d.mindMap.version;
@@ -493,7 +528,7 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
   saveRef.current = save;
 
   const schedule = useCallback((data?: BoardData | null) => {
-    if (!loaded?.canEdit || blocked.current) return;
+    if (!accountCurrent() || !loaded?.canEdit || blocked.current) return;
     const snap = data ?? latest.current();
     if (snap) pending.current = snap;
     if (pending.current && JSON.stringify(pending.current) === lastSaved.current) { setState(s => s === "saving" ? s : "saved"); return; }
@@ -503,7 +538,7 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
   }, [loaded]);
 
   useEffect(() => {
-    const flush = () => { if (timer.current) void saveRef.current(); };
+    const flush = () => { if (timer.current && accountCurrent()) void saveRef.current(); else if (timer.current) { window.clearTimeout(timer.current); timer.current = null; } };
     window.addEventListener("pagehide", flush);
     return () => { window.removeEventListener("pagehide", flush); flush(); };
   }, []);
@@ -514,7 +549,7 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
   /** 先把没存的存掉，返回当前服务端版本号；冲突 / 失败返回 null。 */
   const settle = useCallback(async (): Promise<number | null> => {
     await saveRef.current();
-    return blocked.current || JSON.stringify(latest.current()) !== lastSaved.current ? null : version.current;
+    return !accountCurrent() || blocked.current || JSON.stringify(latest.current()) !== lastSaved.current ? null : version.current;
   }, []);
   const dirty = () => !!timer.current || !!inFlight.current;
 
@@ -524,12 +559,21 @@ function useBoardSaver(loaded: Loaded | null, getLatest: () => BoardData | null,
 /** 编辑页：思维导图 / 画板共用外壳（标题、保存状态、版本历史、复制、移动、删除）。 */
 export function MindMapPage() {
   const { wsId = "", mindMapId = "" } = useParams();
+  const account = useDeviceAccountKey();
+  return <MindMapWorkspacePage key={`${wsId}:${mindMapId}:${account}`} />;
+}
+function MindMapWorkspacePage() {
+  const { wsId = "", mindMapId = "" } = useParams();
   const [params] = useSearchParams();
   const focusNodeId = params.get("node");
   const nav = useNavigate();
   const toast = useToast();
   const confirm = useConfirm();
   const prompt = usePrompt();
+  const alive = useRef(true);
+  const accountEpoch = useRef(deviceStorage.epoch());
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const stillOnPage = () => alive.current && accountEpoch.current === deviceStorage.epoch();
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [failed, setFailed] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
@@ -538,6 +582,7 @@ export function MindMapPage() {
   const editor = useRef<MindMapEditorHandle | null>(null);
   const board = useRef<DrawioBoardHandle | null>(null);
   const routeId=useRef(mindMapId);routeId.current=mindMapId;
+  const routeWorkspace=useRef(wsId);routeWorkspace.current=wsId;
   const loadGeneration=useRef(0);
   const [sharing,setSharing]=useState(false);
   const [previewBusy,setPreviewBusy]=useState(false);
@@ -581,17 +626,18 @@ export function MindMapPage() {
   }
 
   const load = useCallback(async () => {
-    const generation=++loadGeneration.current;
+    const generation=++loadGeneration.current, accountEpoch=deviceStorage.epoch();
     setSharing(false);setFailed(false);
     try {
       const d = await api<Loaded>(`/api/v1/mindmaps/${mindMapId}`);
-      if(generation!==loadGeneration.current || routeId.current!==d.mindMap.id)return;
+      if(generation!==loadGeneration.current || routeId.current!==d.mindMap.id || routeWorkspace.current!==wsId || accountEpoch!==deviceStorage.epoch())return;
+      if(d.workspaceId!==wsId)throw new Error("导图不属于当前工作区");
       saver.reset(d);
       setLoaded(d);
       setMountKey(k => k + 1);
-    } catch (e) { if(generation!==loadGeneration.current)return;setFailed(true); toast.error("打不开这张图", errMsg(e)); }
-  }, [mindMapId, toast]);
-  useEffect(() => { void load(); }, [load]);
+    } catch (e) { if(generation!==loadGeneration.current || accountEpoch!==deviceStorage.epoch())return;setFailed(true); toast.error("打不开这张图", errMsg(e)); }
+  }, [mindMapId, wsId, toast]);
+  useEffect(() => { void load(); return () => { ++loadGeneration.current; }; }, [load]);
   useEffect(() => { if (wsId) saveLastWorkspace(wsId); }, [wsId]);
   useEffect(() => {
     if (loaded && focusNodeId && loaded.mindMap.kind === "mindmap") { const t = window.setTimeout(() => editor.current?.focusNode(focusNodeId), 300); return () => window.clearTimeout(t); }
@@ -606,6 +652,7 @@ export function MindMapPage() {
     try {
       const note = await api<{ id: string; workspaceId: string }>(`/api/v1/notes/${noteId}`);
       if (saver.dirty()) await saver.save();
+      if (!stillOnPage()) return;
       nav(`/w/${note.workspaceId}/n/${note.id}`);
     } catch { toast.error("打不开关联的笔记", "笔记可能已被删除，或者你没有查看权限。"); }
   }
@@ -613,9 +660,9 @@ export function MindMapPage() {
   async function rename() {
     if (!loaded || !canEdit) return;
     const title = await prompt({ title: `重命名${label}`, label: "标题", defaultValue: loaded.mindMap.title, confirmText: "保存" });
-    if (title === null || !title.trim() || title.trim() === loaded.mindMap.title) return;
+    if (!stillOnPage() || title === null || !title.trim() || title.trim() === loaded.mindMap.title) return;
     const expected = await saver.settle();
-    if (expected === null) return;
+    if (expected === null || !stillOnPage()) return;
     try {
       const d = await api<{ mindMap: Brief }>(`/api/v1/mindmaps/${loaded.mindMap.id}`, { method: "PATCH", body: JSON.stringify({ title: title.trim(), expectedVersion: expected }) });
       saver.version.current = d.mindMap.version;
@@ -626,6 +673,7 @@ export function MindMapPage() {
   async function duplicate() {
     if (!loaded) return;
     if (saver.dirty()) await saver.save();
+    if (!stillOnPage()) return;
     try {
       const d = await api<{ mindMap: Brief }>(`/api/v1/mindmaps/${loaded.mindMap.id}/duplicate`, { method: "POST", body: "{}" });
       toast.success("已复制", `正在打开「${d.mindMap.title}」`);
@@ -642,7 +690,9 @@ export function MindMapPage() {
     if (!loaded) return;
     if (!await confirm({ title: `把「${loaded.mindMap.title}」移到回收站？`, description: "30 天内可以在回收站恢复，之后会被彻底删除。关联的笔记不受影响。", confirmText: "移到回收站", destructive: true })) return;
     try {
+      if (!stillOnPage()) return;
       await saver.save();
+      if (!stillOnPage()) return;
       saver.blocked.current = true;
       await api(`/api/v1/mindmaps/${loaded.mindMap.id}`, { method: "DELETE" });
       toast.success("已移到回收站", "30 天内可以在回收站恢复。");
@@ -672,9 +722,9 @@ export function MindMapPage() {
   const opening = <div className="grid h-full place-items-center text-sm text-muted-foreground">正在打开…</div>;
 
   return <TooltipProvider delayDuration={300}><div className="flex h-full min-h-0 flex-col bg-background">
-    <Header wsId={wsId} />
+    <Header wsId={wsId} beforeSwitch={async () => { if (!loaded || !loaded.canEdit) return true; return await saver.settle() !== null && stillOnPage(); }} />
     <main className="relative min-h-0 flex-1">
-      {loaded ? <Suspense fallback={opening}>
+      {loaded && loaded.workspaceId === wsId && loaded.mindMap.id === mindMapId ? <Suspense fallback={opening}>
         {loaded.mindMap.kind === "drawio"
           ? <DrawioBoard key={`${loaded.mindMap.id}:${mountKey}`} ref={board} data={loaded.mindMap.data as DrawioData} title={loaded.mindMap.title} mapId={loaded.mindMap.id}
             workspaceId={loaded.workspaceId} editable={canEdit} drawioUrl={loaded.drawioUrl} leading={leading} menu={menu} onChange={d => saver.schedule(d)} onSourceHint={s => saver.hint(s)} onOpenNote={id => void openNote(id)} onSaveNow={() => void saver.save()} />

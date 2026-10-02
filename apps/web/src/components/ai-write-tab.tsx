@@ -1,3 +1,4 @@
+import { AiModelSelect, useAiModel } from "./ai-model-select";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Bot, Check, RefreshCw, Sparkles, Undo2, X } from "lucide-react";
 import { applyHunks, collapseDiff, diffLines, hunksOf, type DiffLine } from "@kb/shared";
@@ -125,9 +126,12 @@ export function AiWriteTab({
   const [accepted, setAccepted] = useState<Set<number>>(new Set());
   const abort = useRef<AbortController | null>(null);
   const toast = useToast();
+  const model = useAiModel(workspaceId);
+  const resultOwner = useRef<{ epoch: number; identity: string | null } | null>(null);
+  const ownsResult = () => model.isCurrent() && resultOwner.current?.epoch === model.epoch && resultOwner.current?.identity === model.identity;
 
   // 换笔记就清空，免得把上一篇的建议应用到这一篇。
-  useEffect(() => { setProposal(""); setError(""); setSelection(null); }, [note.id]);
+  useEffect(() => { abort.current?.abort(); abort.current = null; resultOwner.current = null; setBusy(false); setProposal(""); setSource(""); setInstruction(""); setAccepted(new Set()); setError(""); setSelection(null); }, [note.id, workspaceId, model.epoch, model.identity]);
   useEffect(() => () => abort.current?.abort(), []);
 
   const lines = useMemo(() => (proposal ? diffLines(source, proposal) : []), [source, proposal]);
@@ -142,13 +146,14 @@ export function AiWriteTab({
   const changed = accepted.size > 0;
 
   async function generate() {
-    if (!note.canEdit) return;
+    if (!note.canEdit || !model.data || !model.isCurrent()) return;
     const picked = getSelection();
     const text = picked?.text.trim() ? picked.text : note.bodyMd;
     if (!text.trim()) { setError("笔记还是空的，没东西可改。"); return; }
     if (action === "custom" && !instruction.trim()) { setError("先写一句指令，比如「改成面向新人的说明」。"); return; }
 
     abort.current?.abort();
+    const liveAccount = model.isCurrent;
     const ctrl = new AbortController();
     abort.current = ctrl;
     setBusy(true);
@@ -158,6 +163,7 @@ export function AiWriteTab({
         method: "POST",
         signal: ctrl.signal,
         body: JSON.stringify({
+          selection: model.selection,
           noteId: note.id,
           expectedVersion: note.version,
           action,
@@ -165,6 +171,8 @@ export function AiWriteTab({
           ...(action === "custom" ? { instruction: instruction.trim() } : {}),
         }),
       });
+      if (ctrl.signal.aborted || !liveAccount()) return;
+      resultOwner.current = { epoch: model.epoch, identity: model.identity };
       setSelection(picked);
       setSource(text);
       setProposal(d.text);
@@ -172,31 +180,37 @@ export function AiWriteTab({
       // 默认全采纳，用户再挑要退回哪几处。
       setAccepted(new Set(hunksOf(diffLines(text, d.text)).map(h => h.index)));
     } catch (e) {
-      if ((e as Error).name !== "AbortError") setError((e as Error).message);
+      if (liveAccount() && (e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
-      if (abort.current === ctrl) { abort.current = null; setBusy(false); }
+      if (liveAccount() && abort.current === ctrl) { abort.current = null; setBusy(false); }
     }
   }
 
   async function apply() {
+    if (!ownsResult()) return;
+    const liveAccount = model.isCurrent;
     // 改的是选区就只换那一段，其余正文一个字节都不动。
     const next = selection
       ? note.bodyMd.slice(0, selection.from) + merged + note.bodyMd.slice(selection.to)
       : source.endsWith("\n") && merged ? `${merged}\n` : merged;
     try {
       await onApply(next, baseVersion);
+      if (!liveAccount()) return;
       setProposal("");
       toast.success("已应用 AI 建议", `采纳了 ${accepted.size} 处改动`);
     } catch (e) {
-      setError((e as Error).message);
+      if (liveAccount()) setError((e as Error).message);
     }
   }
+
+  if (!model.data) return <div className="p-3"><AiModelSelect model={model} /></div>;
 
   if (!workspaceId) return <p className="p-6 text-sm text-muted-foreground">先打开一个工作区里的笔记。</p>;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="space-y-2 border-b border-border p-3">
+        <AiModelSelect model={model} disabled={busy} />
         <div className="flex flex-wrap gap-1">
           {ACTIONS.map(a => (
             <button

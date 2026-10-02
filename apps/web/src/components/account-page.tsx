@@ -1,7 +1,8 @@
 import { OfflineDevicePanel } from "./offline-device-panel";
 import { useCallback, useEffect, useState } from "react";
 import { HardDrive, Inbox, Send } from "lucide-react";
-import { api } from "../api";
+import { api, type Me } from "../api";
+import { AccountDeletionPanel } from "./account-deletion-panel";
 import { formatBytes, presetLabel, STORAGE_PRESETS, usagePercent } from "../lib/bytes";
 import { cn } from "../lib/utils";
 import { EmptyState, Field, SectionCard, SettingsShell } from "./settings-shell";
@@ -53,6 +54,7 @@ function tone(status: string) {
 export function AccountPage() {
   const toast = useToast();
   const confirm = useConfirm();
+  const [me, setMe] = useState<Me | null>(null);
   const [storage, setStorage] = useState<StorageMe | null>(null);
   const [history, setHistory] = useState<ServiceRequest[]>([]);
   const [loading, setLoading] = useState(true);
@@ -64,10 +66,12 @@ export function AccountPage() {
   const [formErr, setFormErr] = useState("");
 
   const load = useCallback(async () => {
-    const [s, h] = await Promise.all([
+    const [s, h, user] = await Promise.all([
       api<StorageMe>("/api/v1/me/storage"),
       api<{ requests: ServiceRequest[] }>("/api/v1/me/service-requests"),
+      api<Me>("/api/v1/me"),
     ]);
+    setMe(user);
     setStorage(s);
     setHistory(h.requests);
     const next = STORAGE_PRESETS.find(o => o.value > s.quotaBytes)?.value ?? s.quotaBytes * 2;
@@ -205,6 +209,7 @@ export function AccountPage() {
             <Badge className={tone(r.status)}>{STATUS[r.status] ?? r.status}</Badge>
           </div>)}
       </SectionCard>
+      {me && <AccountDeletionPanel key={me.id} me={me} onChanged={load} />}
     </div>
   </SettingsShell>;
 }

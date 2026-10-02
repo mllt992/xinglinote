@@ -69,7 +69,7 @@ async function visibleNotebookIds(workspaceId: string, userId: string, role: WsR
 }
 
 /** source=note 的条目完全继承来源笔记的可见性：无权时不返回，而不是灰显。 */
-async function readableItems(workspaceId: string, userId: string, role: WsRole, rows: Array<typeof calendarItems.$inferSelect>) {
+async function readableItems(workspaceId: string, userId: string, role: WsRole, rows: Array<typeof calendarItems.$inferSelect>, includeLegacy = false) {
   const visible = await visibleNotebookIds(workspaceId, userId, role);
   const noteIds = [...new Set(rows.map(r => r.sourceNoteId).filter((x): x is string => !!x))];
   const sourceNotes = noteIds.length ? await db.select({ id: notes.id, title: notes.title, trashedAt: notes.trashedAt }).from(notes).where(inArray(notes.id, noteIds)) : [];
@@ -77,6 +77,7 @@ async function readableItems(workspaceId: string, userId: string, role: WsRole, 
   const mine = (r: typeof calendarItems.$inferSelect) => r.visibility !== "private" || r.createdBy === userId;
   const kept = rows.filter(r => {
     if (r.source === "note") {
+      if (!includeLegacy) return false;
       const note = r.sourceNoteId ? noteById.get(r.sourceNoteId) : null;
       return !!note && !note.trashedAt && !!r.notebookId && visible.has(r.notebookId);
     }
@@ -91,6 +92,7 @@ async function readableItems(workspaceId: string, userId: string, role: WsRole, 
 function itemDto(row: typeof calendarItems.$inferSelect, noteTitle?: string | null, occurrence?: { occurrenceStart: Date; start: Date; end: Date | null; status: string; recurring: boolean }) {
   return {
     id: row.id,
+    workspaceId: row.workspaceId,
     occurrenceStart: occurrence?.occurrenceStart ?? row.startsAt ?? row.dueAt,
     kind: row.kind,
     title: row.title,
@@ -122,7 +124,7 @@ async function loadItem(c: Parameters<typeof currentUser>[0], id: string, mode: 
   if (!item || item.trashedAt) throw fail("NOT_FOUND", "日历项不存在");
   const role = await memberRole(item.workspaceId, user.id);
   if (!role) throw fail("NOT_FOUND", "日历项不存在");
-  const { kept } = await readableItems(item.workspaceId, user.id, role, [item]);
+  const { kept } = await readableItems(item.workspaceId, user.id, role, [item], true);
   if (!kept.length) throw fail("NOT_FOUND", "日历项不存在");
   if (mode === "edit") {
     const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, item.workspaceId));
@@ -194,8 +196,9 @@ calendarRoutes.get("/workspaces/:id/calendar/inbox", async c => {
   const workspaceId = c.req.param("id");
   const { user, role, ws } = await workspaceContext(c, workspaceId);
   const rows = await db.select().from(calendarItems).where(and(eq(calendarItems.workspaceId, workspaceId), isNull(calendarItems.trashedAt)));
-  const { kept, noteById } = await readableItems(workspaceId, user.id, role, rows);
-  const tasks = kept.filter(r => r.kind === "task");
+  const { kept, noteById } = await readableItems(workspaceId, user.id, role, rows, true);
+  const legacy = kept.filter(r => r.source === "note").map(r => itemDto(r, r.sourceNoteId ? noteById.get(r.sourceNoteId)?.title : null));
+  const tasks = kept.filter(r => r.kind === "task" && r.source !== "note");
   const inbox = tasks.filter(r => !r.dueAt && !r.startsAt).map(r => itemDto(r, null));
   const groups = new Map<string, { noteId: string; noteTitle: string; items: ReturnType<typeof itemDto>[] }>();
   for (const r of tasks) {
@@ -208,7 +211,7 @@ calendarRoutes.get("/workspaces/:id/calendar/inbox", async c => {
   const now = Date.now();
   const overdue = tasks.filter(r => r.status === "open" && r.dueAt && r.dueAt.getTime() < now).length;
   // me / kind / canEdit 给面板用：「我的」筛选、指派下拉、只读成员藏掉写入口，都要它们
-  return ok(c, { inbox, groups: [...groups.values()], overdue, me: user.id, workspaceKind: ws.kind, canEdit: role !== "viewer" && !ws.frozen, timezone: DEFAULT_TZ });
+  return ok(c, { inbox, legacy, groups: [...groups.values()], overdue, me: user.id, workspaceKind: ws.kind, canEdit: role !== "viewer" && !ws.frozen, timezone: DEFAULT_TZ });
 });
 
 // ── 写 ────────────────────────────────────────────────────────────────
@@ -425,6 +428,7 @@ calendarRoutes.post("/calendar/items/:id/detach", async c => {
   if (item.source !== "note") throw fail("VALIDATION", "这条本来就不来自笔记");
   const [saved] = await db.update(calendarItems).set({ source: "manual", sourceNoteId: null, sourceAnchor: null, linkState: "linked", updatedBy: user.id, updatedAt: new Date() }).where(eq(calendarItems.id, item.id)).returning();
   await audit(item.workspaceId, user.id, "calendar.item.detach", item.id, { fromNoteId: item.sourceNoteId });
+  await rescheduleReminders(saved.id);
   return ok(c, itemDto(saved));
 });
 

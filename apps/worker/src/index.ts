@@ -105,7 +105,7 @@ async function execute(job:typeof backgroundJobs.$inferSelect){
    const[reminder]=await db.select().from(calendarReminders).where(eq(calendarReminders.id,String(reminderId??"")));
    if(!item||!reminder)return;if(await restoring(item.workspaceId))throw new Error("workspace restore in progress");
    // 条目已完成/取消/删除：不发，置 skipped
-   if(item.trashedAt||item.status!=="open"){await db.update(calendarReminders).set({status:"skipped"}).where(eq(calendarReminders.id,reminder.id));return;}
+   if(item.source==="note"||item.trashedAt||item.status!=="open"){await db.update(calendarReminders).set({status:"skipped"}).where(eq(calendarReminders.id,reminder.id));return;}
    const occurrence=occurrenceStart?new Date(occurrenceStart):undefined;
    const fireAt=reminderFireAt(item,reminder,occurrence);
    // 条目改期后旧 job 会滞留，新 job 已入队：时间对不上就丢掉这条

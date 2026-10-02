@@ -1,3 +1,5 @@
+import { deviceStorage } from "../lib/device-storage";
+import { AiModelSelect, useAiModel } from "./ai-model-select";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Bot, FilePlus2, Notebook, Search, Sparkles, Trash2, X } from "lucide-react";
@@ -62,14 +64,18 @@ export function AskSidebar({
 }) {
   const nav = useNavigate();
   const toast = useToast();
+  const model = useAiModel(workspaceId);
   const [width, setWidth] = useState(loadWidth);
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
   const [scope, setScope] = useState<"workspace" | "notebook">("workspace");
-  const [turns, setTurns] = useState<Turn[]>(() => workspaceId ? loadTurns(workspaceId) : []);
+  const [turns, setTurns] = useState<Turn[]>(() => []);
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [streamingId, setStreamingId] = useState<string | null>(null);
+  const request = useRef<AbortController | null>(null);
+  const context = useRef(workspaceId);
+  context.current = workspaceId;
   const host = useRef<HTMLElement | null>(null);
   const bottom = useRef<HTMLDivElement | null>(null);
   const box = useRef<HTMLTextAreaElement | null>(null);
@@ -79,13 +85,19 @@ export function AskSidebar({
   }, [width]);
 
   useEffect(() => {
-    if (!workspaceId) return;
-    setTurns(loadTurns(workspaceId));
+    request.current?.abort();
+    request.current = null;
+    setBusy(false); setStreamingId(null); setQ("");
+    if (!workspaceId) { setTurns([]); return; }
+    setTurns([]);
     setConfigured(null);
-    api<{ providers: Array<{ enabled: boolean }> }>(`/api/v1/workspaces/${workspaceId}/ai/provider`)
-      .then(d => setConfigured(d.providers.some(p => p.enabled)))
-      .catch(() => setConfigured(null));
-  }, [workspaceId]);
+
+    return () => request.current?.abort();
+  }, [workspaceId, model.epoch, model.identity]);
+
+  useEffect(() => { setConfigured(model.data ? !!model.data.effective || !!model.selection : null); }, [model.data, model.selection]);
+
+  useEffect(() => { if (workspaceId && model.data) setTurns(loadTurns(`${model.data.userId}.${workspaceId}`)); }, [workspaceId, model.data]);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "end" });
@@ -113,11 +125,16 @@ export function AskSidebar({
   }
 
   async function ask() {
-    if (!workspaceId || !q.trim() || busy) return;
+    if (!workspaceId || !model.data || !q.trim() || busy || request.current) return;
     if (scope === "notebook" && !notebookId) {
       toast.error("还不能提问", "先在左侧选一个笔记本，才能只问当前本。");
       return;
     }
+    const ctrl = new AbortController();
+    request.current = ctrl;
+    const requestEpoch = deviceStorage.epoch();
+    const requestIdentity = deviceStorage.identity();
+    const live = () => !ctrl.signal.aborted && context.current === workspaceId && request.current === ctrl && requestEpoch === deviceStorage.epoch() && requestIdentity === deviceStorage.identity();
     const question = q.trim();
     setBusy(true);
     setQ("");
@@ -133,18 +150,22 @@ export function AskSidebar({
         | { type: "error"; error: { code: string; message: string } }
       >("/api/v1/ai/ask/stream", {
         method: "POST",
+        signal: ctrl.signal,
         body: JSON.stringify({
+          selection: model.selection,
           workspaceId,
           question,
           notebookId: scope === "notebook" ? notebookId : undefined,
           history: turns.slice(-3).map(t => ({ question: t.question, answer: t.answer.slice(0, 240) })),
         }),
       }, event => {
+        if (!live()) return;
         if (event.type === "error") throw Object.assign(new Error(event.error.message), { code: event.error.code });
         if (event.type === "done") { done = event.data; return; }
         answer += event.delta;
         setTurns(current => current.map(turn => turn.id === id ? { ...turn, answer } : turn));
       });
+      if (!live()) return;
       if (!done) throw new Error("回答流提前结束");
       const data = done as { answer: string; citations: Citation[]; grounded?: boolean };
       const completed: Turn = {
@@ -158,23 +179,23 @@ export function AskSidebar({
       };
       const next: Turn[] = [...turns, completed];
       setTurns(next);
-      saveTurns(workspaceId, next);
+      if (model.data) saveTurns(`${model.data.userId}.${workspaceId}`, next);
     } catch (e) {
+      if (!live()) return;
       const err = e as Error & { code?: string };
       toast.error(err.code === "AI_QUOTA_EXCEEDED" ? "今天的平台 AI 次数用完了" : "没能回答", err.message);
       if (err.code === "AI_NOT_CONFIGURED") setConfigured(false);
       setQ(question);
       setTurns(current => current.filter(turn => turn.id !== id));
     } finally {
-      setStreamingId(null);
-      setBusy(false);
+      if (live()) { request.current = null; setStreamingId(null); setBusy(false); }
     }
   }
 
   function clearTurns() {
     if (!workspaceId) return;
     setTurns([]);
-    saveTurns(workspaceId, []);
+    if (model.data) saveTurns(`${model.data.userId}.${workspaceId}`, []);
   }
 
   async function saveAsNote(turn: Turn) {
@@ -182,6 +203,8 @@ export function AskSidebar({
       toast.error("还不能保存", "先选一个笔记本，才能把回答沉淀成笔记。");
       return;
     }
+    const originWorkspace = workspaceId;
+    const originEpoch = deviceStorage.epoch();
     setSavingId(turn.id);
     try {
       const created = await api<{ id: string; version: number; title: string }>("/api/v1/notes", {
@@ -232,7 +255,7 @@ export function AskSidebar({
         </div>
         {turns.length > 0 && (
           <Tooltip content="清空这轮会话">
-            <Button variant="ghost" size="icon" className="size-8" aria-label="清空会话" onClick={clearTurns}><Trash2 /></Button>
+            <Button variant="ghost" size="icon" className="size-8" aria-label="清空会话" disabled={busy} onClick={clearTurns}><Trash2 /></Button>
           </Tooltip>
         )}
         <Button variant="ghost" size="icon" className="size-8" aria-label="关闭问答栏" onClick={onClose}><X /></Button>
@@ -258,6 +281,7 @@ export function AskSidebar({
         </Button>
       </div>
 
+      <div className="border-b border-border p-3"><AiModelSelect model={model} disabled={busy} /></div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-4 p-3">
           {configured === false && (
@@ -276,7 +300,7 @@ export function AskSidebar({
             </div>
           )}
 
-          {turns.map(turn => (
+          {(model.data ? turns : []).map(turn => (
             <article key={turn.id} className="space-y-2">
               <div className="ml-6 rounded-xl bg-primary px-3 py-2 text-sm text-primary-foreground">{turn.question}</div>
               <div className="rounded-xl bg-muted/50 px-3 py-2.5">
@@ -328,7 +352,7 @@ export function AskSidebar({
           ref={box}
           value={q}
           rows={3}
-          disabled={busy || configured === false}
+          disabled={busy || !model.data || configured === false}
           onChange={e => setQ(e.target.value)}
           onKeyDown={e => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -341,7 +365,7 @@ export function AskSidebar({
         />
         <div className="flex items-center justify-between gap-2">
           <p className="text-[11px] text-muted-foreground">Enter 发送 · Shift+Enter 换行</p>
-          <Button type="submit" disabled={busy || !q.trim() || configured === false}>{busy ? "生成中…" : "提问"}</Button>
+          <Button type="submit" disabled={busy || !model.data || !q.trim() || configured === false}>{busy ? "生成中…" : "提问"}</Button>
         </div>
       </form>
     </aside>

@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { BellRing, CalendarDays, ChevronRight, FileText, History, Inbox, Layers, Link2Off, MoreHorizontal, PenLine, Plus, RotateCcw, Sparkles, Star, UserPlus, X } from "lucide-react";
 import { api } from "../api";
+import { deviceStorage } from "../lib/device-storage";
+import { useDeviceAccountKey } from "../lib/use-device-account";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -20,6 +22,7 @@ import { reschedulePresetDate, type ReschedulePreset } from "../lib/mobile-captu
 
 export type CalendarItem = {
   id: string;
+  workspaceId?: string;
   occurrenceStart: string | null;
   kind: "task" | "event";
   title: string;
@@ -42,7 +45,7 @@ export type CalendarItem = {
   canEdit?: boolean;
 };
 type Footprint = { id: string; title: string; notebookId: string; updatedAt: string };
-type InboxData = { inbox: CalendarItem[]; groups: Array<{ noteId: string; noteTitle: string; items: CalendarItem[] }>; overdue: number; me: string; workspaceKind: string; canEdit: boolean };
+type InboxData = { inbox: CalendarItem[]; legacy?: CalendarItem[]; groups: Array<{ noteId: string; noteTitle: string; items: CalendarItem[] }>; overdue: number; me: string; workspaceKind: string; canEdit: boolean };
 type Member = { userId: string; displayName: string; handle: string };
 type QuickPreview = { title: string; startsAt: string | null; endsAt: string | null; dueAt: string | null; allDay: boolean; priority: number; rrule: string | null; chips: Array<{ kind: string; text: string }> };
 
@@ -97,6 +100,15 @@ function rangeOf(view: View, cursor: Date) {
 
 export function CalendarPage() {
   const { wsId = "" } = useParams();
+  const accountKey = useDeviceAccountKey();
+  return <CalendarWorkspacePage key={`${wsId}:${accountKey}`} />;
+}
+function CalendarWorkspacePage() {
+  const { wsId = "" } = useParams();
+  const alive = useRef(true);
+  const accountEpoch = useRef(deviceStorage.epoch());
+  const stillCurrent = () => alive.current && accountEpoch.current === deviceStorage.epoch();
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const nav = useNavigate();
   const toast = useToast();
   const [params, setParams] = useSearchParams();
@@ -140,7 +152,7 @@ export function CalendarPage() {
   const [members, setMembers] = useState<Member[]>([]);
   useEffect(() => {
     // 指派只在团队工作区有意义，但成员列表本身对谁都无害，失败也不该打断日历
-    api<{ members: Member[] }>(`/api/v1/workspaces/${wsId}/members`).then(r => setMembers(r.members)).catch(() => {});
+    api<{ members: Member[] }>(`/api/v1/workspaces/${wsId}/members`).then(r => { if (stillCurrent()) setMembers(r.members); }).catch(() => {});
   }, [wsId]);
   useEffect(() => {
     // 实例级配置，跟工作区无关：没开推送就别在提醒浮层里摆一个必然失败的选项
@@ -159,25 +171,36 @@ export function CalendarPage() {
   }, { replace: true });
 
   const { start, end } = rangeOf(view, cursor);
+  const loadSequence = useRef(0);
   const load = useCallback(async () => {
+    if (!stillCurrent()) return;
+    const sequence = ++loadSequence.current;
     setLoadError("");
     try {
       const [grid, inbox] = await Promise.all([
         api<{ items: CalendarItem[]; notes: Footprint[]; timezone: string }>(`/api/v1/workspaces/${wsId}/calendar?from=${wallToIso(start, tz)}&to=${wallToIso(end, tz)}&layers=${[...layers].join(",")}`),
         api<InboxData>(`/api/v1/workspaces/${wsId}/calendar/inbox`),
       ]);
+      if (!stillCurrent() || sequence !== loadSequence.current) return;
       setItems(grid.items);
       setFootprints(grid.notes);
       setTz(grid.timezone);
       setPanel(inbox);
     } catch (e) {
       // 加载失败不清空已渲染内容，只挂一条可重试的错误
-      setLoadError((e as Error).message);
+      if (stillCurrent() && sequence === loadSequence.current) setLoadError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (stillCurrent() && sequence === loadSequence.current) setLoading(false);
     }
   }, [wsId, start.getTime(), end.getTime(), [...layers].join(","), tz]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); return () => { loadSequence.current++; }; }, [load]);
+  useEffect(() => {
+    setItems([]); setFootprints([]);
+    setPanel({ inbox: [], groups: [], legacy: [], overdue: 0, me: "", workspaceKind: "personal", canEdit: false });
+    setSelected(new Set()); setEditor(null); setFocusKey(null);
+    setQuick({ open: false, text: "", preview: null });
+    setLoading(true);
+  }, [wsId]);
 
   /**
    * 撤销栈只保留当前会话最近 20 步（设计 16 §3.7）。服务端不做反向日志，
@@ -194,15 +217,18 @@ export function CalendarPage() {
 
   /** 乐观更新 + 失败回滚 + 撤销。改期、勾选、删除都走这里，保证反馈一致。 */
   async function act(label: string, apply: () => void, commit: () => Promise<unknown>, undo: () => Promise<unknown>, extra?: React.ReactNode) {
+    if (!stillCurrent()) return;
     const snapshot = items;
     apply();
     try {
       await commit();
-      const id = pushUndo(async () => { await undo(); await load(); });
+      if (!stillCurrent()) return;
+      const id = pushUndo(async () => { if (!stillCurrent()) return; await undo(); await load(); });
       toast.toast({
         title: label,
         description: <span className="flex items-center gap-3">{extra}<button className="underline underline-offset-2" onClick={async () => {
           // toast 上撤销过的，就不该再被 Ctrl+Z 撤第二遍
+          if (!stillCurrent()) return;
           dropUndo(id);
           try { await undo(); await load(); toast.success("已撤销"); } catch (e) { toast.error("撤销失败", (e as Error).message); }
         }}>撤销</button></span>,
@@ -210,6 +236,7 @@ export function CalendarPage() {
       });
       await load();
     } catch (e) {
+      if (!stillCurrent()) return;
       setItems(snapshot);
       toast.error("操作失败", (e as Error).message);
       await load();
@@ -399,6 +426,7 @@ export function CalendarPage() {
     }, { replace: true });
   }, [setParams]);
   const closeEditor = useCallback(() => {
+    if (!stillCurrent()) return;
     setEditor(null);
     setParams(p => {
       if (!p.has("item")) return p;
@@ -414,6 +442,7 @@ export function CalendarPage() {
     if (!id) return;
     const found = items.find(i => i.id === id)
       ?? panel.inbox.find(i => i.id === id)
+      ?? panel.legacy?.find(i => i.id === id)
       ?? panel.groups.flatMap(g => g.items).find(i => i.id === id);
     if (found) {
       setEditor(cur => (cur?.mode === "edit" && cur.item.id === found.id && cur.item.updatedAt === found.updatedAt ? cur : { mode: "edit", item: found }));
@@ -422,7 +451,7 @@ export function CalendarPage() {
     if (loading) return;
     let cancelled = false;
     api<CalendarItem>(`/api/v1/calendar/items/${id}`).then(item => {
-      if (!cancelled) setEditor({ mode: "edit", item });
+      if (!cancelled && stillCurrent() && item.workspaceId === wsId) setEditor({ mode: "edit", item });
     }).catch(() => {
       if (cancelled) return;
       toast.error("找不到这条");
@@ -680,8 +709,8 @@ export function CalendarPage() {
       tz={tz}
       canEdit={panel.canEdit}
       onClose={closeEditor}
-      onSaved={() => { closeEditor(); void load(); }}
-      onDelete={item => { closeEditor(); void removeItem(item); }}
+      onSaved={() => { if (!stillCurrent()) return; closeEditor(); void load(); }}
+      onDelete={item => { if (!stillCurrent()) return; closeEditor(); void removeItem(item); }}
       onOpenNote={id => nav(`/w/${wsId}/n/${id}`)}
     />
   </div></SelectionCtx.Provider></TooltipProvider>;
@@ -726,7 +755,7 @@ function MiniMonthJump({ title, cursor, today, onPick }: { title: string; cursor
             className={cn(
               "aspect-square rounded text-[11px] tabular-nums hover:bg-muted",
               d.getUTCMonth() !== month.getUTCMonth() && "text-muted-foreground/40",
-              key === today && "bg-destructive font-semibold text-destructive-foreground hover:bg-destructive",
+              key === today && "bg-primary font-semibold text-primary-foreground hover:bg-primary/90",
               key === dayKey(cursor) && key !== today && "bg-foreground text-background hover:bg-foreground",
             )}
           >{d.getUTCDate()}</button>;
@@ -911,7 +940,7 @@ function MonthCell({ day, dayKeyStr, outside, isToday, notes, onDrop, onDiary, o
           >
             <Plus className="size-3" />
           </button>
-          <span className={cn("ml-auto grid size-5 place-items-center rounded-full text-[11px] tabular-nums", isToday ? "bg-destructive font-semibold text-destructive-foreground" : outside ? "text-muted-foreground/50" : "text-muted-foreground")}>{day.getUTCDate()}</span>
+          <span className={cn("ml-auto grid size-5 place-items-center rounded-full text-[11px] tabular-nums", isToday ? "bg-primary font-semibold text-primary-foreground" : outside ? "text-muted-foreground/50" : "text-muted-foreground")}>{day.getUTCDate()}</span>
         </div>
         {children}
         {showNotes && notes.map(n => <span key={n.id} className="truncate px-1.5 text-[11px] text-muted-foreground">· {n.title}</span>)}
@@ -948,7 +977,7 @@ function MonthCompact(props: { canEdit: boolean; onOpen: (item: CalendarItem) =>
           className={cn(
             "flex min-h-11 aspect-square flex-col items-center justify-center rounded-lg text-xs tabular-nums",
             d.getUTCMonth() !== props.cursor.getUTCMonth() && "text-muted-foreground/40",
-            k === props.today && "bg-destructive font-semibold text-destructive-foreground",
+            k === props.today && "bg-primary font-semibold text-primary-foreground",
             k === key && k !== props.today && "bg-foreground text-background",
           )}
         >
@@ -1093,7 +1122,7 @@ function TimeGrid(props: { start: Date; days: number; today: string; byDay: Map<
         const notes = props.notesByDay.get(key)?.length ?? 0;
         return <div key={key} className={cn("border-l border-border px-2 py-1.5 text-center", key === props.today && "bg-accent/30")}>
           <div className="text-xs text-muted-foreground">{WEEK_LABELS[(d.getUTCDay() + 6) % 7]}</div>
-          <div className={cn("text-lg font-semibold tabular-nums", key === props.today && "text-destructive")}>{d.getUTCDate()}</div>
+          <div className={cn("text-lg font-semibold tabular-nums", key === props.today && "text-primary")}>{d.getUTCDate()}</div>
           {notes > 0 && <div className="flex items-center justify-center gap-0.5 text-[10px] text-muted-foreground"><FileText className="size-3" />{notes}</div>}
         </div>;
       })}
@@ -1124,7 +1153,7 @@ function TimeGrid(props: { start: Date; days: number; today: string; byDay: Map<
           const mine = draft && dayKey(draft.day) === key ? draft : null;
           return <div key={key} data-kb-col className="relative border-l border-border" onPointerDown={e => beginDraft(day, e)}>
             {Array.from({ length: 24 }, (_, h) => <HourSlot key={h} onDrop={drop(day, h)} />)}
-            {key === props.today && <div className="pointer-events-none absolute inset-x-0 z-10 border-t-2 border-destructive" style={{ top: (minutesOf(now) / 60) * HOUR_PX }}><span className="absolute -left-0.5 -top-1 size-2 rounded-full bg-destructive" /></div>}
+            {key === props.today && <div className="pointer-events-none absolute inset-x-0 z-10 border-t-2 border-primary" style={{ top: (minutesOf(now) / 60) * HOUR_PX }}><span className="absolute -left-0.5 -top-1 size-2 rounded-full bg-primary" /></div>}
             {list.map(it => {
               const at = it.startsAt ?? it.dueAt;
               if (!at) return null;
@@ -1187,7 +1216,7 @@ function AgendaList(props: { start: Date; days: number; today: string; byDay: Ma
       const key = dayKey(d);
       return <section key={key} className="flex flex-col gap-2 px-3 py-3 md:flex-row md:gap-4 md:px-5">
         <div className="flex items-baseline gap-2 md:block md:w-20 md:shrink-0">
-          <div className={cn("text-xl font-semibold tabular-nums", key === props.today && "text-destructive")}>{d.getUTCMonth() + 1}月{d.getUTCDate()}日</div>
+          <div className={cn("text-xl font-semibold tabular-nums", key === props.today && "text-primary")}>{d.getUTCMonth() + 1}月{d.getUTCDate()}日</div>
           <div className="text-xs text-muted-foreground">{WEEK_LABELS[(d.getUTCDay() + 6) % 7]}{key === props.today ? " · 今天" : ""}</div>
         </div>
         <div className="min-w-0 flex-1 space-y-2">
@@ -1280,9 +1309,14 @@ function TaskPanel({ narrow, onClose, data, members, onToggle, onOpenNote, onCap
           />}
           <div className="space-y-0.5 rounded-lg border border-border bg-background p-1.5">
             {inbox.map(i => narrow ? mobileRow(i) : <PanelRow key={i.id} item={i} tz={tz} data={data} members={members} onToggle={onToggle} onReschedule={onReschedule} onRemind={onRemind} onAssign={onAssign} pushReady={pushReady} />)}
-            {!inbox.length && <p className="px-1.5 py-2 text-xs text-muted-foreground">这里接住随手记。也可以在笔记里写 <code className="rounded bg-muted px-1">- [ ] 事情</code>，它会自动出现在下面。</p>}
+            {!inbox.length && <p className="px-1.5 py-2 text-xs text-muted-foreground">在这里添加日历待办；笔记复选框不会自动导入。</p>}
           </div>
         </section>
+        {!!data.legacy?.length && <details className="rounded-lg border border-border bg-background p-2">
+          <summary className="min-h-11 cursor-pointer text-xs font-medium">历史笔记导入（{data.legacy.length}）</summary>
+          <p className="py-2 text-xs text-muted-foreground">已保留历史记录，不计入日历待办，也不再自动同步。打开记录后可解除笔记关联，转为日历任务。</p>
+          {data.legacy.map(item => <button key={item.id} className="flex min-h-11 w-full items-center rounded px-2 text-left text-sm hover:bg-muted" onClick={() => selection?.open(item)}>{item.title}</button>)}
+        </details>}
         {data.groups.map(g => {
           const rows = g.items.filter(keep);
           if (!rows.length) return null;
@@ -1537,6 +1571,15 @@ type TodayData = { date: string; timezone: string; canEdit: boolean; items: Cale
 
 export function TodayPage() {
   const { wsId = "" } = useParams();
+  const accountKey = useDeviceAccountKey();
+  return <TodayWorkspacePage key={`${wsId}:${accountKey}`} />;
+}
+function TodayWorkspacePage() {
+  const { wsId = "" } = useParams();
+  const alive = useRef(true);
+  const accountEpoch = useRef(deviceStorage.epoch());
+  const stillCurrent = () => alive.current && accountEpoch.current === deviceStorage.epoch();
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const nav = useNavigate();
   const toast = useToast();
   const narrow = useNarrow();
@@ -1552,15 +1595,16 @@ export function TodayPage() {
   const tz = data?.timezone ?? "Asia/Shanghai";
   const canEdit = data?.canEdit === true;
   const load = useCallback(async () => {
+    if (!stillCurrent()) return;
     const sequence = ++loadSequence.current;
     try {
       // 离线快照必须先拿到服务器确认的身份，不能把上个账号当缓存命名空间。
       await api("/api/v1/me");
-      if (sequence !== loadSequence.current) return;
+      if (!stillCurrent() || sequence !== loadSequence.current) return;
       const result = await api<TodayData>(`/api/v1/workspaces/${wsId}/today`);
-      if (sequence === loadSequence.current) { setData(result); setError(""); }
+      if (stillCurrent() && sequence === loadSequence.current) { setData(result); setError(""); }
     }
-    catch (e) { if (sequence === loadSequence.current) setError((e as Error).message); }
+    catch (e) { if (stillCurrent() && sequence === loadSequence.current) setError((e as Error).message); }
   }, [wsId]);
   useEffect(() => { setData(null); void load(); return () => { loadSequence.current++; }; }, [load]);
   useEffect(() => {

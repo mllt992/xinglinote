@@ -1,3 +1,4 @@
+import { AiModelSelect, useAiModel } from "./ai-model-select";
 import { useEffect, useRef, useState } from "react";
 import { Bot, Check, PenLine, RefreshCw, Sparkles, Wrench, X } from "lucide-react";
 import { diagramFence, type DiagramBlock } from "@kb/shared/markdown";
@@ -50,9 +51,12 @@ export function AiDiagramTab({
   const [error, setError] = useState("");
   const abort = useRef<AbortController | null>(null);
   const toast = useToast();
+  const model = useAiModel(workspaceId);
+  const resultOwner = useRef<{ epoch: number; identity: string | null } | null>(null);
+  const ownsResult = () => model.isCurrent() && resultOwner.current?.epoch === model.epoch && resultOwner.current?.identity === model.identity;
 
   // 换笔记就清空，免得把上一篇的图插到这一篇。
-  useEffect(() => { setSource(""); setSvg(""); setDrawError(""); setError(""); setTarget(null); }, [note.id]);
+  useEffect(() => { abort.current?.abort(); abort.current = null; resultOwner.current = null; setBusy(false); setPrompt(""); setSource(""); setSvg(""); setDrawError(""); setError(""); setTarget(null); }, [note.id, workspaceId, model.epoch, model.identity]);
   useEffect(() => () => abort.current?.abort(), []);
 
   // 拿到源码就当场画一遍：画得出来才让插。
@@ -60,18 +64,20 @@ export function AiDiagramTab({
     if (!source) { setSvg(""); setDrawError(""); return; }
     let live = true;
     renderDiagram(source)
-      .then(out => { if (live) { setSvg(out); setDrawError(""); } })
-      .catch((e: unknown) => { if (live) { setSvg(""); setDrawError(e instanceof Error ? e.message : "这张图画不出来"); } });
+      .then(out => { if (live && model.isCurrent()) { setSvg(out); setDrawError(""); } })
+      .catch((e: unknown) => { if (live && model.isCurrent()) { setSvg(""); setDrawError(e instanceof Error ? e.message : "这张图画不出来"); } });
     return () => { live = false; };
-  }, [source]);
+  }, [source, model.epoch, model.identity]);
 
   async function generate(fixError?: string) {
+    if (!model.data || !model.isCurrent()) return;
     if (!note.canEdit || !prompt.trim()) { setError("先说一句要画什么，比如「用户下单到发货的流程」。"); return; }
     // 改图时以「上一版生成的源码」为准；还没生成过就用光标所在的那张图。
     const spot = fixError ? target : getTarget();
     const current = fixError ? source : spot?.source;
 
     abort.current?.abort();
+    const liveAccount = model.isCurrent;
     const ctrl = new AbortController();
     abort.current = ctrl;
     setBusy(true);
@@ -81,6 +87,7 @@ export function AiDiagramTab({
         method: "POST",
         signal: ctrl.signal,
         body: JSON.stringify({
+          selection: model.selection,
           noteId: note.id,
           prompt: prompt.trim(),
           kind,
@@ -88,26 +95,32 @@ export function AiDiagramTab({
           ...(fixError ? { fixError } : {}),
         }),
       });
+      if (ctrl.signal.aborted || !liveAccount()) return;
+      resultOwner.current = { epoch: model.epoch, identity: model.identity };
       setTarget(spot);
       setSource(d.source);
     } catch (e) {
-      if ((e as Error).name !== "AbortError") setError((e as Error).message);
+      if (liveAccount() && (e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
-      if (abort.current === ctrl) { abort.current = null; setBusy(false); }
+      if (liveAccount() && abort.current === ctrl) { abort.current = null; setBusy(false); }
     }
   }
 
   function insert() {
+    if (!ownsResult()) return;
     onInsert(diagramFence(source), target);
     toast.success(target ? "已替换这张图" : "已插入到笔记", "接着可以在正文里手改，它就是一段 mermaid 源码");
     setSource("");
   }
+
+  if (!model.data) return <div className="p-3"><AiModelSelect model={model} /></div>;
 
   if (!workspaceId) return <p className="p-6 text-sm text-muted-foreground">先打开一个工作区里的笔记。</p>;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="space-y-2 border-b border-border p-3">
+        <AiModelSelect model={model} disabled={busy} />
         <div className="flex flex-wrap gap-1">
           {KINDS.map(k => (
             <button
