@@ -38,7 +38,7 @@ jobs:
       - name: Install
         run: npm install -g pnpm@11.7.0 && pnpm install --frozen-lockfile
       - name: Typecheck, lint and unit tests
-        run: pnpm typecheck && pnpm lint && pnpm test
+        run: pnpm typecheck && pnpm lint && pnpm test && node --test scripts/canvas-pan.test.mjs
       - name: Prepare isolated database and build
         run: pnpm db:push && pnpm --filter @kb/web build
       - name: Real database regression tests
