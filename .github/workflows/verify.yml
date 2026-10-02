@@ -1,7 +1,7 @@
 name: Verify
 on:
   pull_request:
-    branches: [main, dot/home-offline-onboarding-75]
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
