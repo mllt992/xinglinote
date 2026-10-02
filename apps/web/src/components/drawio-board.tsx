@@ -1,5 +1,6 @@
 import { AiModelSelect, useAiModel } from "./ai-model-select";
 import { normalizeBoardPreviewSvg } from "../lib/board-preview";
+import { drawioFrameUrl } from "../lib/drawio-embed";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { BookOpen, Download, Maximize, MoreHorizontal, Send, Sparkles, Undo2, X } from "lucide-react";
 import type { DrawioData } from "@kb/shared";
@@ -82,12 +83,7 @@ export const DrawioBoard = forwardRef<DrawioBoardHandle, Props>(function DrawioB
     frame.current?.contentWindow?.postMessage(JSON.stringify(msg), origin || "*");
   }, [origin]);
 
-  const src = (() => {
-    const dark = document.documentElement.dataset.mode === "dark";
-    const q = new URLSearchParams({ embed: "1", proto: "json", spin: "1", lang: "zh", ui: "kennedy", dark: dark ? "1" : "0", libraries: "1", noSaveBtn: "1", noExitBtn: "1", saveAndExit: "0" });
-    if (!editable) q.set("chrome", "0");
-    return `${drawioUrl}/?${q.toString()}`;
-  })();
+  const src = drawioFrameUrl(drawioUrl, editable, document.documentElement.dataset.mode === "dark");
 
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {

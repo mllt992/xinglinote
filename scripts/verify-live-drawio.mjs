@@ -31,18 +31,20 @@ try{
  // next gesture, while still requiring every gesture to move the real shape.
  // Record scroll extents as diagnostics so an actual boundary is not called a
  // timing problem. Keep reload/navigation coverage even if a pan step failed.
- for(let i=0;i<8;i++){
+ const panDirections=[...Array.from({length:8},()=>[-220,-80]),...Array.from({length:16},()=>[220,80]),...Array.from({length:8},()=>[-220,-80])];
+ report.expectedPanSteps=panDirections.length;
+ for(const [i,[dx,dy]] of panDirections.entries()){
   const currentViewport=await canvas.boundingBox(),beforePan=await label.boundingBox();assert.ok(currentViewport);assert.ok(beforePan);
   const x=currentViewport.x+currentViewport.width*.45,y=currentViewport.y+currentViewport.height*.6;
-  await page.mouse.move(x,y);await page.mouse.down({button:'middle'});await page.mouse.move(x-220,y-80,{steps:10});await page.mouse.up({button:'middle'});
+  await page.mouse.move(x,y);await page.mouse.down({button:'middle'});await page.mouse.move(x+dx,y+dy,{steps:10});await page.mouse.up({button:'middle'});
   const observed=await observePan(()=>label.boundingBox(),beforePan);
   const scroll=await canvas.evaluate(el=>({left:el.scrollLeft,top:el.scrollTop,width:el.scrollWidth,height:el.scrollHeight,clientWidth:el.clientWidth,clientHeight:el.clientHeight}));
-  report.panTrace.push({step:i+1,...observed,scroll});
+  report.panTrace.push({step:i+1,dx,dy,...observed,scroll});
  }
  report.continuousPanSteps=report.panTrace.filter(step=>step.moved).length;
  await page.screenshot({path:'/tmp/xingli-live-drawio-pan.png',fullPage:true});
  phase='reload persistence and note link';const persisted=(await call(`/mindmaps/${board.id}`)).mindMap;await page.reload();await page.frameLocator('[data-testid="drawio-frame"]').getByText('画布验收块',{exact:true}).first().waitFor({timeout:30000});const reloaded=(await call(`/mindmaps/${board.id}`)).mindMap;assert.equal(reloaded.data.xml,persisted.data.xml);assert.deepEqual(reloaded.data.noteIds,[id.note]);report.reload=true;await page.screenshot({path:'/tmp/xingli-live-drawio-reload.png',fullPage:true});await page.getByRole('button',{name:/^关联笔记/}).click();await page.getByRole('complementary',{name:'关联笔记'}).getByRole('button',{name:'画布关联的合成笔记',exact:true}).click();await page.waitForURL(`**/w/${id.ws}/n/${id.note}`);report.noteNavigation=true;
- phase='continuous pan acceptance';assert.equal(report.continuousPanSteps,8,'连续平移仍有未生效步骤，详见 panTrace；不得因其它步骤通过而关闭 #48');report.status='passed';console.log(JSON.stringify(report));
+ phase='continuous pan acceptance';assert.equal(report.continuousPanSteps,report.expectedPanSteps,'连续平移仍有未生效步骤，详见 panTrace；不得因其它步骤通过而关闭 #48');report.status='passed';console.log(JSON.stringify(report));
 }catch(e){failure=true;report.status=engineReady?'functional-acceptance-failed':'external-editor-unavailable-or-startup-failed';report.phase=phase;report.error=String(e.message).slice(0,1800);console.error(JSON.stringify(report));if(page)await page.screenshot({path:'/tmp/xingli-live-drawio-failure.png',fullPage:true}).catch(()=>{});process.exitCode=1;}finally{
  await writeFile('/tmp/xingli-live-drawio-report.json',JSON.stringify(report,null,2));await browser?.close();if(server){server.kill('SIGTERM');await new Promise(r=>server.exitCode===null?server.once('exit',r):r());}
  try{if(board){await db.delete(mindMapNoteLinks).where(eq(mindMapNoteLinks.mindMapId,board.id));await db.delete(mindMapVersions).where(eq(mindMapVersions.mindMapId,board.id));await db.delete(mindMaps).where(eq(mindMaps.id,board.id));}await db.delete(noteVisits).where(eq(noteVisits.noteId,id.note));await db.delete(notes).where(eq(notes.id,id.note));await db.delete(notebooks).where(eq(notebooks.workspaceId,id.ws));await db.delete(workspaceMembers).where(eq(workspaceMembers.workspaceId,id.ws));await db.delete(workspaces).where(eq(workspaces.id,id.ws));await db.delete(sessions).where(eq(sessions.userId,id.user));await db.delete(users).where(eq(users.id,id.user));}catch(e){console.error('画布验收清理失败',e);if(!failure)process.exitCode=1;}finally{await sql.end();}
