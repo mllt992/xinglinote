@@ -3,9 +3,9 @@ import type { WsRole } from "@kb/core";
 import { db } from "../db/client.ts";
 import { attachments,folders,notebooks,notes,shareLinks,workspaceMembers,workspaces } from "../db/schema.ts";
 
-export async function createPersonalWorkspace(userId: string, displayName: string) {
+export async function createPersonalWorkspace(userId: string, displayName: string, writer: Pick<typeof db, "insert"> = db) {
   const slug = `u-${userId.replace(/-/g, "").slice(0, 12)}`;
-  const [ws] = await db
+  const [ws] = await writer
     .insert(workspaces)
     .values({
       slug,
@@ -15,8 +15,8 @@ export async function createPersonalWorkspace(userId: string, displayName: strin
       personalUserId: userId,
     })
     .returning();
-  await db.insert(workspaceMembers).values({ workspaceId: ws.id, userId, role: "owner" });
-  await db.insert(notebooks).values({
+  await writer.insert(workspaceMembers).values({ workspaceId: ws.id, userId, role: "owner" });
+  await writer.insert(notebooks).values({
     workspaceId: ws.id,
     slug: "notes",
     title: "笔记",

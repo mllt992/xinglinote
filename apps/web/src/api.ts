@@ -1,7 +1,11 @@
+import { captureDeviceResponse, deviceStorage } from "./lib/device-storage";
 export type ApiOk<T> = { ok: true; data: T };
 export type ApiErr = { ok: false; error: { code: string; message: string; fields?: Record<string, string> } };
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (path === "/api/v1/auth/logout") deviceStorage.logout();
+  const user = deviceStorage.identity(), epoch = deviceStorage.epoch();
   const res = await fetch(path, {
     ...init,
     credentials: "include",
@@ -12,7 +16,17 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   const json = (await res.json()) as ApiOk<T> | ApiErr;
-  if (!json.ok) throw Object.assign(new Error(json.error.message), { code: json.error.code, fields: json.error.fields });
+  if (!json.ok) {
+    if (epoch === deviceStorage.epoch()) {
+      if (json.error.code === "UNAUTHENTICATED") deviceStorage.logout();
+      const note = /^\/api\/v1\/notes\/([^/?]+)$/.exec(path);
+      if (note && ["FORBIDDEN", "NOT_FOUND", "GONE_TRASHED"].includes(json.error.code)) deviceStorage.forgetSnapshot(note[1]!);
+      const today = /^\/api\/v1\/workspaces\/([^/?]+)\/today$/.exec(path);
+      if (today && ["FORBIDDEN", "NOT_FOUND"].includes(json.error.code)) deviceStorage.forgetSnapshot(today[1]!);
+    }
+    throw Object.assign(new Error(json.error.message), { code: json.error.code, fields: json.error.fields });
+  }
+  captureDeviceResponse(path, json.data, method, user, epoch);
   return json.data;
 }
 

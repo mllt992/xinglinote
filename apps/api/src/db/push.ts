@@ -48,6 +48,7 @@ const statements = [
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), code_id uuid NOT NULL REFERENCES registration_codes(id),
     user_id uuid NOT NULL REFERENCES users(id), used_at timestamptz NOT NULL DEFAULT now()
   )`,
+  `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS instance_name text NOT NULL DEFAULT '星璃笔记'`,
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS smtp_host text`,
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS smtp_port integer`,
   `ALTER TABLE instance_settings ADD COLUMN IF NOT EXISTS smtp_user text`,

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { and, count, eq, inArray } from "drizzle-orm";
+import { and, count, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { hashPassword, validPassword, verifyPassword } from "@kb/core";
 import { HANDLE_RE, fail } from "@kb/shared";
@@ -56,11 +56,15 @@ auth.post("/auth/register", async (c) => {
   if (!HANDLE_RE.test(body.handle)) throw fail("VALIDATION", "用户名格式不正确", { handle: "小写字母开头，3–32 位" });
   if (!validPassword(body.password)) throw fail("VALIDATION", "密码至少 10 位且含字母和数字", { password: "太弱" });
 
-  const [{ value: userCount }] = await db.select({ value: count() }).from(users);
-  const [settings] = await db.select().from(instanceSettings);
+  const passwordHash=await hashPassword(body.password);
+  const {user,isFirst,verifiedNow}=await db.transaction(async tx=>{
+    // 所有首次注册竞争共用一把事务锁：计数、授管理员、消耗邀请码与个人库提交原子化。
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('xingli:first-registration'))`);
+  const [{ value: userCount }] = await tx.select({ value: count() }).from(users);
+  const [settings] = await tx.select().from(instanceSettings);
   let code: typeof registrationCodes.$inferSelect | undefined;
   if (body.registrationCode) {
-    [code] = await db.select().from(registrationCodes).where(eq(registrationCodes.codeHash, hashCode(body.registrationCode)));
+    [code] = await tx.select().from(registrationCodes).where(eq(registrationCodes.codeHash, hashCode(body.registrationCode)));
     if (!code || code.status !== "active") throw fail("VALIDATION", "注册码无效或已作废", { registrationCode: "无效" });
     if (code.expiresAt && code.expiresAt.getTime() <= Date.now()) throw fail("VALIDATION", "注册码已过期", { registrationCode: "已过期" });
     if (code.usedCount >= code.maxUses) throw fail("VALIDATION", "注册码已用完", { registrationCode: "已用完" });
@@ -69,17 +73,17 @@ auth.post("/auth/register", async (c) => {
   if (!allow) throw fail("FORBIDDEN", "目前不开放注册，请向管理员索取注册码");
 
   const email = body.email.toLowerCase();
-  const exists = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
+  const exists = await tx.select({ id: users.id }).from(users).where(eq(users.email, email));
   if (exists.length) throw fail("VALIDATION", "邮箱已被使用", { email: "已被使用" });
-  if (await handleOccupied(body.handle)) throw fail("VALIDATION", "该用户名已被使用", { handle: "已被使用" });
+  if (await handleOccupied(body.handle,undefined,undefined,tx)) throw fail("VALIDATION", "该用户名已被使用", { handle: "已被使用" });
 
   const isFirst = userCount === 0;
   const verifiedNow = isFirst || !settings?.requireEmailVerification || !!code?.skipEmailVerification;
-  const [user] = await db
+  const [user] = await tx
     .insert(users)
     .values({
       email,
-      passwordHash: await hashPassword(body.password),
+      passwordHash,
       handle: body.handle,
       displayName: body.displayName,
       roleInstance: isFirst ? "admin" : "user",
@@ -89,18 +93,20 @@ auth.post("/auth/register", async (c) => {
     .returning();
 
   if (isFirst) {
-    await db.update(instanceSettings).set({ firstAdminUserId: user.id }).where(eq(instanceSettings.id, 1));
+    await tx.update(instanceSettings).set({ firstAdminUserId: user.id }).where(eq(instanceSettings.id, 1));
   }
   if (code) {
     const used = code.usedCount + 1;
-    await db.update(registrationCodes).set({ usedCount: used, status: used >= code.maxUses ? "exhausted" : "active" }).where(eq(registrationCodes.id, code.id));
-    await db.insert(registrationCodeUsages).values({ codeId: code.id, userId: user.id });
+    await tx.update(registrationCodes).set({ usedCount: used, status: used >= code.maxUses ? "exhausted" : "active" }).where(eq(registrationCodes.id, code.id));
+    await tx.insert(registrationCodeUsages).values({ codeId: code.id, userId: user.id });
     if (code.bindWorkspaceId) {
-      const [targetWs] = await db.select().from(workspaces).where(eq(workspaces.id, code.bindWorkspaceId));
-      if (targetWs && targetWs.kind !== "personal") await db.insert(workspaceMembers).values({ workspaceId: targetWs.id, userId: user.id, role: code.bindRole ?? "viewer" }).onConflictDoNothing();
+      const [targetWs] = await tx.select().from(workspaces).where(eq(workspaces.id, code.bindWorkspaceId));
+      if (targetWs && targetWs.kind !== "personal") await tx.insert(workspaceMembers).values({ workspaceId: targetWs.id, userId: user.id, role: code.bindRole ?? "viewer" }).onConflictDoNothing();
     }
   }
-  await createPersonalWorkspace(user.id, user.displayName);
+  await createPersonalWorkspace(user.id, user.displayName,tx);
+    return {user,isFirst,verifiedNow};
+  });
   if (!verifiedNow) {
     const token = secureToken(24);
     await db.insert(authTokens).values({

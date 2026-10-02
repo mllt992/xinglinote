@@ -9,3 +9,8 @@ data
 .data
 artifacts
 *.log
+
+# 家用配置与离线备份含凭据，不能复制进镜像层
+.env.*
+!.env.example
+home-backup

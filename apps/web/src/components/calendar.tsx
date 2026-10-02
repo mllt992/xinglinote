@@ -1553,7 +1553,13 @@ export function TodayPage() {
   const canEdit = data?.canEdit === true;
   const load = useCallback(async () => {
     const sequence = ++loadSequence.current;
-    try { const result = await api<TodayData>(`/api/v1/workspaces/${wsId}/today`); if (sequence === loadSequence.current) { setData(result); setError(""); } }
+    try {
+      // 离线快照必须先拿到服务器确认的身份，不能把上个账号当缓存命名空间。
+      await api("/api/v1/me");
+      if (sequence !== loadSequence.current) return;
+      const result = await api<TodayData>(`/api/v1/workspaces/${wsId}/today`);
+      if (sequence === loadSequence.current) { setData(result); setError(""); }
+    }
     catch (e) { if (sequence === loadSequence.current) setError((e as Error).message); }
   }, [wsId]);
   useEffect(() => { setData(null); void load(); return () => { loadSequence.current++; }; }, [load]);

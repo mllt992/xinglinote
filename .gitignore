@@ -12,3 +12,6 @@ apps/api/dist
 # 本地 env 备份不进库（.env.bak 里有 APP_SECRET 与库密码明文）
 .env.*
 !.env.example
+
+# 家用部署备份包含实例密钥，不得提交
+home-backup/

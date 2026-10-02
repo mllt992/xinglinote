@@ -1,3 +1,4 @@
+import { OfflineDevicePanel } from "./offline-device-panel";
 import { useCallback, useEffect, useState } from "react";
 import { HardDrive, Inbox, Send } from "lucide-react";
 import { api } from "../api";
@@ -113,6 +114,7 @@ export function AccountPage() {
   }
 
   return <SettingsShell current="account" loading={loading} error={error} onRetry={reload}>
+    <OfflineDevicePanel />
     <div className="space-y-4">
       <SectionCard icon={<HardDrive className="size-4" />} title="存储空间"
         desc={storage?.quotaOverride ? "管理员为你单独分配的配额。" : `跟随实例默认（${presetLabel(storage?.defaultQuotaBytes ?? 0)}）。`}>
