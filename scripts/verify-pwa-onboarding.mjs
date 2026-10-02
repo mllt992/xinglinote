@@ -55,19 +55,33 @@ try {
  assert.ok(cached.includes('/offline.html'));assert.ok(cached.every(path=>!path.startsWith('/api/')&&!path.startsWith('/w/')&&!path.startsWith('/p/')));
  // 同一篇的两个独有分支；明确控制并行服务端写入，不能假定所有自动保存都无冲突。
  phase='two-tab unsynced branches';
+ // Playwright 明确建议请求拦截测试关闭 SW。真正的 SW 离线/恢复已在上面验收，
+ // 登出后的离线隔离仍回到原 context；受控双标签网络另用一个隔离 context。
+ const offlinePage=page;
+ const draftContext=await browser.newContext({viewport:{width:375,height:812},isMobile:true,hasTouch:true,serviceWorkers:'block',storageState:await context.storageState()});
+ await draftContext.routeWebSocket('**/*',socket=>socket.close());
+ page=await draftContext.newPage();let second;
+ let releaseA;const gateA=new Promise(resolve=>{releaseA=resolve;});
+ let sawBlockedB;const blockedB=new Promise(resolve=>{sawBlockedB=resolve;});
+ await draftContext.route(`**/api/v1/notes/${ids.note}`,async route=>{
+  if(route.request().method()!=='PATCH')return route.continue();
+  const source=route.request().frame().page(),body=route.request().postDataJSON();
+  if(noteWriteTrace.length<30)noteWriteTrace.push({event:'controlled-request',tab:source===second?'B':'A',title:body.title,expectedVersion:body.expectedVersion,force:body.force===true});
+  if(source===second){await route.abort('internetdisconnected');sawBlockedB();return;}
+  await gateA;return route.continue();
+ });
+ await page.goto(`${base}/w/${ids.ws}/n/${ids.note}`);await page.getByRole('textbox',{name:'笔记标题',exact:true}).waitFor();
  const noteApi=async(method='GET',body)=>{const response=await fetch(`${base}/api/v1/notes/${ids.note}`,{method,headers:{cookie:`kb_session=${token}`,'content-type':'application/json','x-requested-with':'fetch'},...(body?{body:JSON.stringify(body)}:{})});const result=await response.json();assert.ok(response.ok,JSON.stringify(result));return result.data;};
  const readBranches=()=>page.evaluate(({user,note})=>Object.fromEntries(Object.keys(localStorage).filter(k=>k.startsWith(`xingli.device.v1:draft:${user}:${note}:`)).sort().map(k=>[k,JSON.parse(localStorage.getItem(k))])),ids);
- const second=await context.newPage();
- // B 的正文只留本机；连关闭标签页触发的 flush 也必须失败，不能在恢复网络瞬间晚提交。
- await second.route(`**/api/v1/notes/${ids.note}`,route=>route.request().method()==='PATCH'?route.abort('internetdisconnected'):route.continue());
+ second=await draftContext.newPage();
  await second.goto(`${base}/w/${ids.ws}/n/${ids.note}`);await second.getByRole('textbox',{name:'笔记标题',exact:true}).waitFor();
- await context.setOffline(true);await second.getByRole('textbox',{name:'笔记标题',exact:true}).fill('标签 B 不应丢失');await page.getByRole('textbox',{name:'笔记标题',exact:true}).fill('标签 A 已保存');
+ await second.getByRole('textbox',{name:'笔记标题',exact:true}).fill('标签 B 不应丢失');await second.getByRole('textbox',{name:'笔记标题',exact:true}).press('Control+s');let blockTimer;try{await Promise.race([blockedB,new Promise((_,reject)=>{blockTimer=setTimeout(()=>reject(Error('B 的受控离线请求未被拦截')),15000);})]);}finally{clearTimeout(blockTimer);}await page.getByRole('textbox',{name:'笔记标题',exact:true}).fill('标签 A 已保存');
  await page.waitForFunction(({user,note})=>{const rows=Object.keys(localStorage).filter(k=>k.startsWith(`xingli.device.v1:draft:${user}:${note}:`)).map(k=>JSON.parse(localStorage.getItem(k)));return rows.length===2&&rows.some(x=>x.title==='标签 B 不应丢失')&&rows.some(x=>x.title==='标签 A 已保存');},ids);
  const beforeConflict=await readBranches();for(const branch of Object.values(beforeConflict))assert.equal(branch.bodyMd,'只读快照正文');
  await second.close();
  phase='deterministic version conflict';
  const beforeRemote=await noteApi(),parallel=await noteApi('PATCH',{expectedVersion:beforeRemote.version,title:'并行服务端版本',bodyMd:beforeRemote.bodyMd});assert.equal(parallel.title,'并行服务端版本');
- await context.setOffline(false);await page.getByRole('textbox',{name:'笔记标题',exact:true}).press('Control+s');
+ const conflictResponse=page.waitForResponse(r=>r.url().endsWith(`/api/v1/notes/${ids.note}`)&&r.request().method()==='PATCH');releaseA();await page.getByRole('textbox',{name:'笔记标题',exact:true}).press('Control+s');assert.equal((await conflictResponse).status(),409);
  await page.getByRole('button',{name:'加载对方版本',exact:true}).waitFor();
  assert.deepEqual(await readBranches(),beforeConflict,'409 不能确认、覆盖或清除任一未同步分支');
  assert.equal((await noteApi()).title,'并行服务端版本','冲突期间不能静默覆盖服务端版本');
@@ -79,6 +93,7 @@ try {
  const afterResolution=await noteApi();assert.equal(afterResolution.title,'标签 A 已保存');assert.equal(afterResolution.bodyMd,'只读快照正文');assert.ok(afterResolution.version>parallel.version);
  const retained=Object.values(await readBranches());assert.deepEqual(retained,[Object.values(beforeConflict).find(x=>x.title==='标签 B 不应丢失')],'A 确认后 B 的完整不可变修订仍须保持原样');
  await page.reload();await page.getByText('有本机未同步草稿',{exact:true}).waitFor();assert.ok((await page.locator('section[role="status"] pre').textContent()).includes('标签 B 不应丢失'));assert.equal((await noteApi()).title,'标签 A 已保存','显示 B 恢复提示不能自动写回');
+ await draftContext.close();page=offlinePage;
  phase='logout isolation';
  // 服务端退出后 /me 的拒绝也必须撤销离线身份。
  await page.evaluate(async()=>{const response=await fetch('/api/v1/auth/logout',{method:'POST',headers:{'x-requested-with':'fetch'}});if(!response.ok)throw Error('logout failed');});
