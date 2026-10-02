@@ -1,3 +1,4 @@
+import { chatSelectionAllowed } from "./ai-chat-selection.ts";
 import { and, desc, eq } from "drizzle-orm";
 import { AppError, fail } from "@kb/shared";
 import { db } from "../db/client.ts";
@@ -103,8 +104,17 @@ export async function aiProvider(wsId: string, userId?: string): Promise<Resolve
  * 真正要调模型前用这个：解析渠道，并在用到平台渠道时检查这个人今天的额度。
  * 只查不扣；成功后由调用方写 ai_usage（带上 usageMeta），失败的请求不算次数。
  */
-export async function aiChatProvider(wsId: string, userId: string) {
-  const p = await aiProvider(wsId, userId);
+export type ChatSelection = { providerId: string; model: string };
+
+/** 请求级选择只使用当前成员可见、启用且登记的模型，绝不静默回退。 */
+export async function aiChatProvider(wsId: string, userId: string, selection?: ChatSelection) {
+  let p: ResolvedChatProvider | undefined;
+  if (selection) {
+    const selected = await assignedChannel(wsId, selection.providerId);
+    if (!selected || (selected.ownerUserId && selected.ownerUserId !== userId)) throw fail("FORBIDDEN", "所选 AI 渠道不可用或无权使用，请重新选择");
+    if (!chatSelectionAllowed(selected, userId, selection.model)) throw fail("VALIDATION", "所选模型不在渠道目录中，请重新选择");
+    p = { ...selected, chatModel: selection.model };
+  } else p = await aiProvider(wsId, userId);
   if (p?.platform) await assertPlatformAiQuota(userId, p.id);
   return p;
 }

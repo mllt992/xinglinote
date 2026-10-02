@@ -1,3 +1,4 @@
+import { AiModelSelect, useAiModel } from "./ai-model-select";
 import { normalizeBoardPreviewSvg } from "../lib/board-preview";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import MindMap, { type SmmNode } from "simple-mind-map";
@@ -671,7 +672,7 @@ export const MindMapEditor = forwardRef<MindMapEditorHandle, Props>(function Min
         }
         refreshSel();
       }} />
-    <AiExpandDialog open={dialog === "ai"} mapId={mapId} onOpenChange={o => { if (!o) setDialog(null); }}
+    <AiExpandDialog key={mapId} workspaceId={workspaceId} open={dialog === "ai"} mapId={mapId} onOpenChange={o => { if (!o) setDialog(null); }}
       getTarget={() => { const n = active()[0]; return n ? { path: pathOf(n), existing: n.children.map(c => String(c.getData("text") ?? "")) } : null; }}
       onInsert={items => {
         const n = active()[0];
@@ -999,11 +1000,14 @@ function IconsDialog({ open, selected, onOpenChange, onToggle }: { open: boolean
   </DialogContent></Dialog>;
 }
 
-function AiExpandDialog({ open, mapId, onOpenChange, getTarget, onInsert }: {
-  open: boolean; mapId: string; onOpenChange: (o: boolean) => void;
+function AiExpandDialog({ workspaceId, open, mapId, onOpenChange, getTarget, onInsert }: {
+  workspaceId: string; open: boolean; mapId: string; onOpenChange: (o: boolean) => void;
   getTarget: () => { path: string[]; existing: string[] } | null; onInsert: (items: OutlineNode[]) => boolean;
 }) {
   const toast = useToast();
+  const model = useAiModel(workspaceId);
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => { if (!open) { request.current?.abort(); request.current = null; setBusy(false); } return () => request.current?.abort(); }, [open]);
   const [count, setCount] = useState(5);
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1013,22 +1017,26 @@ function AiExpandDialog({ open, mapId, onOpenChange, getTarget, onInsert }: {
   const target = useMemo(() => open ? getTargetRef.current() : null, [open]);
   useEffect(() => { if (open) { setItems(null); setInstruction(""); } }, [open]);
   const run = async () => {
-    if (!target) return;
+    if (!target || request.current) return;
+    const ctrl = new AbortController(); request.current = ctrl;
     setBusy(true);
     try {
-      const d = await api<{ items: OutlineNode[] }>(`/api/v1/mindmaps/${mapId}/ai/expand`, { method: "POST", body: JSON.stringify({
+      const d = await api<{ items: OutlineNode[] }>(`/api/v1/mindmaps/${mapId}/ai/expand`, { method: "POST", signal: ctrl.signal, body: JSON.stringify({
+        selection: model.selection,
         path: target.path.slice(-60).map(t => t.slice(0, 500)), existing: target.existing.slice(0, 200).map(t => t.slice(0, 500)), count, instruction: instruction.trim() || undefined,
       }) });
-      setItems(d.items);
+      if (!ctrl.signal.aborted) setItems(d.items);
     } catch (e) {
+      if (ctrl.signal.aborted) return;
       const code = (e as { code?: string }).code;
       toast.error("AI 没能扩展", code === "AI_NOT_CONFIGURED" ? "还没有可用的 AI，可以在「AI 与自动化」里设置。" : (e as Error).message);
-    } finally { setBusy(false); }
+    } finally { if (!ctrl.signal.aborted) { request.current = null; setBusy(false); } }
   };
   const list = (nodes: OutlineNode[], depth = 0): React.ReactNode => nodes.map((i, k) => <div key={`${depth}-${k}`} style={{ paddingLeft: depth * 14 }} className="text-sm leading-6">· {i.text}{i.children.length > 0 && list(i.children, depth + 1)}</div>);
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-w-lg">
     <DialogHeader><DialogTitle>AI 扩展节点</DialogTitle><DialogDescription>{target ? `为「${target.path[target.path.length - 1] || "未命名"}」补充子节点。AI 会参考从中心主题到这里的路径和已有的子节点。` : "先选中一个节点。"}</DialogDescription></DialogHeader>
     <div className="grid gap-3">
+      <AiModelSelect model={model} disabled={busy} />
       <div className="grid grid-cols-[1fr_auto] items-end gap-2">
         <Field label="额外要求（可选）"><Input value={instruction} maxLength={500} placeholder="比如：侧重风险、每条带一个例子" onChange={e => setInstruction(e.target.value)} /></Field>
         <Field label="数量"><select className={selectCls} value={count} onChange={e => setCount(Number(e.target.value))}>{[3, 5, 8, 12].map(n => <option key={n} value={n}>{n} 个左右</option>)}</select></Field>

@@ -4,7 +4,7 @@ import { scoreNote, tokenize, type QueryPart } from "@kb/core";
 import { db } from "../db/client.ts";
 import { aiUsage, attachments, notes } from "../db/schema.ts";
 import { noteAccess } from "./note-access.ts";
-import { aiChatProvider, aiEmbeddingProvider, aiProvider, chatAi, embed, mediaCaption, streamChatAi, usageMeta, vector, type ResolvedChatProvider } from "./ai.ts";
+import { aiChatProvider, aiEmbeddingProvider, aiProvider, chatAi, embed, mediaCaption, streamChatAi, usageMeta, vector, type ChatSelection, type ResolvedChatProvider } from "./ai.ts";
 import { likeContains } from "./like.ts";
 
 type RetrieveInput = {
@@ -328,6 +328,7 @@ export async function retrieve(input: RetrieveInput): Promise<KnowledgeSourceHit
 }
 
 type AskInput = {
+  selection?: ChatSelection;
   workspaceId: string;
   userId: string;
   question: string;
@@ -338,22 +339,22 @@ type AskInput = {
 };
 
 export async function askKnowledge(input: AskInput) {
-  const p = await aiChatProvider(input.workspaceId, input.userId);
+  const p = await aiChatProvider(input.workspaceId, input.userId, input.selection);
   if (!p) throw fail("AI_NOT_CONFIGURED", "还没有可用的 AI，请在「AI 与自动化」里设置，或联系站点管理员开放平台 AI");
   const rows = askNeedsNotes(input.question)
     ? hitsSupportQuestion(input.question, await retrieve({ ...input, query: input.question, mode: "hybrid", limit: 8 }))
     : [];
-  return answerFromHits(input.workspaceId, input.userId, input.question, rows, input.history, input.maxContextChars);
+  return answerFromHits(input.workspaceId, input.userId, input.question, rows, input.history, input.maxContextChars, p);
 }
 
 /** 与 askKnowledge 共用检索、提示和引用校验，只把模型输出逐块交给 HTTP 层。 */
 export async function streamAskKnowledge(input: AskInput, onDelta: (delta: string) => void | Promise<void>) {
-  const p = await aiChatProvider(input.workspaceId, input.userId);
+  const p = await aiChatProvider(input.workspaceId, input.userId, input.selection);
   if (!p) throw fail("AI_NOT_CONFIGURED", "还没有可用的 AI，请在「AI 与自动化」里设置，或联系站点管理员开放平台 AI");
   const rows = askNeedsNotes(input.question)
     ? hitsSupportQuestion(input.question, await retrieve({ ...input, query: input.question, mode: "hybrid", limit: 8 }))
     : [];
-  return streamAnswerFromHits(input.workspaceId, input.userId, input.question, rows, input.history, onDelta, input.maxContextChars);
+  return streamAnswerFromHits(input.workspaceId, input.userId, input.question, rows, input.history, onDelta, input.maxContextChars, p);
 }
 
 /** 多工作区问答：各区检索后合并再答，模型用第一个配好 AI 的区。 */
@@ -398,9 +399,9 @@ export function markCitationVersions(
   });
 }
 
-async function answerFromHits(workspaceId: string, userId: string, question: string, rows: KnowledgeSourceHit[], history?: AskHistoryTurn[], maxContextChars?: number) {
+async function answerFromHits(workspaceId: string, userId: string, question: string, rows: KnowledgeSourceHit[], history?: AskHistoryTurn[], maxContextChars?: number, selected?: ResolvedChatProvider) {
   const packed = packAskContext(rows, maxContextChars ?? ASK_MAX_CONTEXT_CHARS);
-  const p = await aiChatProvider(workspaceId, userId);
+  const p = selected ?? await aiChatProvider(workspaceId, userId);
   if (!p) throw fail("AI_NOT_CONFIGURED", "还没有可用的 AI，请在「AI 与自动化」里设置，或联系站点管理员开放平台 AI");
   const grounded = packed.length > 0;
   const messages = [
@@ -420,9 +421,10 @@ async function streamAnswerFromHits(
   history: AskHistoryTurn[] | undefined,
   onDelta: (delta: string) => void | Promise<void>,
   maxContextChars?: number,
+  selected?: ResolvedChatProvider,
 ) {
   const packed = packAskContext(rows, maxContextChars ?? ASK_MAX_CONTEXT_CHARS);
-  const p = await aiChatProvider(workspaceId, userId);
+  const p = selected ?? await aiChatProvider(workspaceId, userId);
   if (!p) throw fail("AI_NOT_CONFIGURED", "还没有可用的 AI，请在「AI 与自动化」里设置，或联系站点管理员开放平台 AI");
   const grounded = packed.length > 0;
   const messages = [

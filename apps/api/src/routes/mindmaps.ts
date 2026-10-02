@@ -15,7 +15,7 @@ import { currentUser } from "../lib/session.ts";
 import { memberRole } from "../lib/workspace.ts";
 import { notebookAccess, notebookVisibleTo } from "../lib/notebook-access.ts";
 import { noteAccess } from "../lib/note-access.ts";
-import { aiChatProvider, chatAi, usageMeta } from "../lib/ai.ts";
+import { aiChatProvider, chatAi, usageMeta, type ChatSelection } from "../lib/ai.ts";
 import {
   boardKind, briefBoard, canEditNotebook, cleanBoard, createBoard, loadBoard, readableNotebooks, readBoardData, saveBoard,
 } from "../lib/mindmaps.ts";
@@ -202,11 +202,13 @@ mindMapRoutes.get("/notes/:id/mindmaps", async c => {
 
 // —— AI ——
 
-async function runAi(workspaceId: string, userId: string, action: string, messages: Array<{ role: string; content: string }>, opts?: { maxTokens?: number; timeoutMs?: number }) {
+const chatSelectionSchema = z.object({ providerId: z.string().uuid(), model: z.string().trim().min(1).max(200) }).optional();
+
+async function runAi(workspaceId: string, userId: string, action: string, messages: Array<{ role: string; content: string }>, opts?: { maxTokens?: number; timeoutMs?: number }, selection?: ChatSelection) {
   const [inst] = await db.select({ aiEnabled: instanceSettings.aiEnabled }).from(instanceSettings);
   const [ws] = await db.select({ aiEnabled: workspaces.aiEnabled }).from(workspaces).where(eq(workspaces.id, workspaceId));
   if (!inst?.aiEnabled || !ws?.aiEnabled) throw fail("FORBIDDEN", "这个工作区的 AI 已关闭");
-  const p = await aiChatProvider(workspaceId, userId);
+  const p = await aiChatProvider(workspaceId, userId, selection);
   if (!p) throw fail("AI_NOT_CONFIGURED", "还没有可用的 AI，请在「AI 与自动化」里设置，或联系站点管理员开放平台 AI");
   const out = await chatAi(p, messages, opts);
   await db.insert(aiUsage).values({ userId, workspaceId, action, model: p.chatModel, inputTokens: out.usage.prompt_tokens ?? 0, outputTokens: out.usage.completion_tokens ?? 0, ...usageMeta(p) });
@@ -231,7 +233,7 @@ function outlineOrFail(content: string) {
  */
 mindMapRoutes.post("/notes/:id/mindmaps", async c => {
   const user = await requireUser(c);
-  const body = z.object({ mode: z.enum(["outline", "ai"]).default("outline") }).parse(await c.req.json().catch(() => ({})));
+  const body = z.object({ selection: chatSelectionSchema, mode: z.enum(["outline", "ai"]).default("outline") }).parse(await c.req.json().catch(() => ({})));
   const { note } = await noteAccess(c.req.param("id"), user.id, "read");
   await notebookAccess(note.notebookId, user.id, "edit");
   const mapTitle = (note.title.trim() || "未命名").slice(0, 200);
@@ -240,7 +242,7 @@ mindMapRoutes.post("/notes/:id/mindmaps", async c => {
     // 整篇正文要交给模型，按设计 10 的 can_ai_read 要求篇开关打开。
     if (!note.aiIndex) throw fail("FORBIDDEN", "这篇笔记没有打开「AI 可读」，打开后再用 AI 提炼");
     if (!note.bodyMd.trim()) throw fail("VALIDATION", "这篇笔记还是空的，写点内容再生成");
-    const content = await runAi(note.workspaceId, user.id, "mindmap:generate", [{ role: "system", content: NOTE_SYSTEM }, { role: "user", content: `笔记标题：${note.title}\n\n${note.bodyMd.slice(0, 40_000)}` }]);
+    const content = await runAi(note.workspaceId, user.id, "mindmap:generate", [{ role: "system", content: NOTE_SYSTEM }, { role: "user", content: `笔记标题：${note.title}\n\n${note.bodyMd.slice(0, 40_000)}` }], undefined, body.selection);
     items = outlineOrFail(content).items;
   } else {
     const parsed = parseMindMapOutline(note.bodyMd);
@@ -255,9 +257,9 @@ mindMapRoutes.post("/notes/:id/mindmaps", async c => {
 /** 一句话生成一张新导图。 */
 mindMapRoutes.post("/notebooks/:id/mindmaps/ai", async c => {
   const user = await requireUser(c);
-  const body = z.object({ prompt: z.string().trim().min(2, "多说几个字，AI 才知道要画什么").max(2000) }).parse(await c.req.json());
+  const body = z.object({ selection: chatSelectionSchema, prompt: z.string().trim().min(2, "多说几个字，AI 才知道要画什么").max(2000) }).parse(await c.req.json());
   const { notebook } = await notebookAccess(c.req.param("id"), user.id, "edit");
-  const content = await runAi(notebook.workspaceId, user.id, "mindmap:prompt", [{ role: "system", content: PROMPT_SYSTEM }, { role: "user", content: body.prompt }]);
+  const content = await runAi(notebook.workspaceId, user.id, "mindmap:prompt", [{ role: "system", content: PROMPT_SYSTEM }, { role: "user", content: body.prompt }], undefined, body.selection);
   const { root, items } = outlineOrFail(content);
   const mapTitle = (root && /^#/m.test(content) ? root.text : body.prompt).slice(0, 200);
   const data = cleanBoard("mindmap", mindMapFromTree(mapTitle, items));
@@ -272,6 +274,7 @@ mindMapRoutes.post("/notebooks/:id/mindmaps/ai", async c => {
 mindMapRoutes.post("/mindmaps/:id/ai/expand", async c => {
   const user = await requireUser(c);
   const body = z.object({
+    selection: chatSelectionSchema,
     path: z.array(z.string().max(500)).min(1).max(60),
     existing: z.array(z.string().max(500)).max(200).default([]),
     count: z.number().int().min(1).max(12).default(5),
@@ -286,7 +289,7 @@ mindMapRoutes.post("/mindmaps/:id/ai/expand", async c => {
     `请补充 ${body.count} 个左右新的子节点。`,
     body.instruction ? `额外要求：${body.instruction}` : "",
   ].filter(Boolean).join("\n\n");
-  const content = await runAi(workspace.id, user.id, "mindmap:expand", [{ role: "system", content: EXPAND_SYSTEM }, { role: "user", content: prompt }]);
+  const content = await runAi(workspace.id, user.id, "mindmap:expand", [{ role: "system", content: EXPAND_SYSTEM }, { role: "user", content: prompt }], undefined, body.selection);
   const { items } = outlineOrFail(content);
   return ok(c, { items: items.slice(0, 30) });
 });
@@ -306,6 +309,7 @@ mindMapRoutes.get("/mindmaps/:id/outline", async c => {
 mindMapRoutes.post("/mindmaps/:id/ai/drawio", async c => {
   const user = await requireUser(c);
   const body = z.object({
+    selection: chatSelectionSchema,
     messages: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(8000) })).min(1).max(20),
     xml: z.string().max(400_000).default(""),
   }).parse(await c.req.json());
@@ -319,7 +323,7 @@ mindMapRoutes.post("/mindmaps/:id/ai/drawio", async c => {
     ...history.slice(0, -1).map(m => ({ role: m.role, content: m.role === "assistant" ? m.content.slice(0, 2000) : m.content })),
     { role: "user", content: `${body.xml.trim() ? `当前画板的 XML：\n${body.xml}\n\n` : "当前画板是空的。\n\n"}我的要求：${last.content}` },
   ];
-  const content = await runAi(workspace.id, user.id, "drawio:chat", messages, { maxTokens: 16_000, timeoutMs: 180_000 });
+  const content = await runAi(workspace.id, user.id, "drawio:chat", messages, { maxTokens: 16_000, timeoutMs: 180_000 }, body.selection);
   const result = extractDrawioXml(content);
   if (!result.xml) throw fail("AI_PROVIDER_ERROR", "模型没有给出可用的图，请换个说法再试");
   return ok(c, result);

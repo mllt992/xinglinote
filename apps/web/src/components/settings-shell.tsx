@@ -68,7 +68,7 @@ export const SETTINGS_NAV: Array<{ title: string; items: NavItem[] }> = [
     title: "账号",
     items: [
       { id: "profile", label: "个人资料", hint: "设置公开显示名、用户名和个人简介。", icon: UserRound, to: () => "/settings/profile" },
-      { id: "account", label: "存储与服务", hint: "看自己用了多少空间，向管理员申请扩容。", icon: HardDrive, to: () => "/settings/account" },
+      { id: "account", label: "账号与服务", hint: "管理存储空间、申请扩容，以及申请或撤销账号注销。", icon: HardDrive, to: () => "/settings/account" },
       { id: "appearance", label: "外观", hint: "选择明暗模式、强调色和已安装的主题包。", icon: Paintbrush, to: () => "/settings/appearance" },
       { id: "notifications", label: "通知与推送", hint: "日历提醒发到哪里；哪几台设备能收到推送。", icon: BellRing, to: () => "/settings/notifications" },
     ],

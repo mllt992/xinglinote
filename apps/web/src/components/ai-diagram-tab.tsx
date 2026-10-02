@@ -1,3 +1,4 @@
+import { AiModelSelect, useAiModel } from "./ai-model-select";
 import { useEffect, useRef, useState } from "react";
 import { Bot, Check, PenLine, RefreshCw, Sparkles, Wrench, X } from "lucide-react";
 import { diagramFence, type DiagramBlock } from "@kb/shared/markdown";
@@ -50,9 +51,10 @@ export function AiDiagramTab({
   const [error, setError] = useState("");
   const abort = useRef<AbortController | null>(null);
   const toast = useToast();
+  const model = useAiModel(workspaceId);
 
   // 换笔记就清空，免得把上一篇的图插到这一篇。
-  useEffect(() => { setSource(""); setSvg(""); setDrawError(""); setError(""); setTarget(null); }, [note.id]);
+  useEffect(() => { abort.current?.abort(); abort.current = null; setBusy(false); setSource(""); setSvg(""); setDrawError(""); setError(""); setTarget(null); }, [note.id, workspaceId]);
   useEffect(() => () => abort.current?.abort(), []);
 
   // 拿到源码就当场画一遍：画得出来才让插。
@@ -81,6 +83,7 @@ export function AiDiagramTab({
         method: "POST",
         signal: ctrl.signal,
         body: JSON.stringify({
+          selection: model.selection,
           noteId: note.id,
           prompt: prompt.trim(),
           kind,
@@ -88,6 +91,7 @@ export function AiDiagramTab({
           ...(fixError ? { fixError } : {}),
         }),
       });
+      if (ctrl.signal.aborted) return;
       setTarget(spot);
       setSource(d.source);
     } catch (e) {
@@ -108,6 +112,7 @@ export function AiDiagramTab({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="space-y-2 border-b border-border p-3">
+        <AiModelSelect model={model} disabled={busy} />
         <div className="flex flex-wrap gap-1">
           {KINDS.map(k => (
             <button

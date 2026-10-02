@@ -1,3 +1,4 @@
+import { AiModelSelect, useAiModel } from "./ai-model-select";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Bot, Check, RefreshCw, Sparkles, Undo2, X } from "lucide-react";
 import { applyHunks, collapseDiff, diffLines, hunksOf, type DiffLine } from "@kb/shared";
@@ -125,9 +126,10 @@ export function AiWriteTab({
   const [accepted, setAccepted] = useState<Set<number>>(new Set());
   const abort = useRef<AbortController | null>(null);
   const toast = useToast();
+  const model = useAiModel(workspaceId);
 
   // 换笔记就清空，免得把上一篇的建议应用到这一篇。
-  useEffect(() => { setProposal(""); setError(""); setSelection(null); }, [note.id]);
+  useEffect(() => { abort.current?.abort(); abort.current = null; setBusy(false); setProposal(""); setError(""); setSelection(null); }, [note.id, workspaceId]);
   useEffect(() => () => abort.current?.abort(), []);
 
   const lines = useMemo(() => (proposal ? diffLines(source, proposal) : []), [source, proposal]);
@@ -158,6 +160,7 @@ export function AiWriteTab({
         method: "POST",
         signal: ctrl.signal,
         body: JSON.stringify({
+          selection: model.selection,
           noteId: note.id,
           expectedVersion: note.version,
           action,
@@ -165,6 +168,7 @@ export function AiWriteTab({
           ...(action === "custom" ? { instruction: instruction.trim() } : {}),
         }),
       });
+      if (ctrl.signal.aborted) return;
       setSelection(picked);
       setSource(text);
       setProposal(d.text);
@@ -197,6 +201,7 @@ export function AiWriteTab({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="space-y-2 border-b border-border p-3">
+        <AiModelSelect model={model} disabled={busy} />
         <div className="flex flex-wrap gap-1">
           {ACTIONS.map(a => (
             <button

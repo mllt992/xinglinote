@@ -1,3 +1,4 @@
+import { AiModelSelect, useAiModel } from "./ai-model-select";
 import { normalizeBoardPreviewSvg } from "../lib/board-preview";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { BookOpen, Download, Maximize, MoreHorizontal, Send, Sparkles, Undo2, X } from "lucide-react";
@@ -178,7 +179,7 @@ export const DrawioBoard = forwardRef<DrawioBoardHandle, Props>(function DrawioB
         {drawioUrl && status !== "ready" && <div className="pointer-events-none absolute inset-0 grid place-items-center bg-background/80 text-sm text-muted-foreground">
           {status === "loading" ? "正在打开 draw.io 编辑器…" : "draw.io 编辑器没加载出来，请检查网络或 DRAWIO_URL 配置后刷新页面。"}</div>}
       </div>
-      {panel === "ai" && editable && <AiChatPanel mapId={mapId} getXml={() => xml.current} applyXml={applyXml} onClose={() => setPanel(null)} ready={status === "ready"} />}
+      {panel === "ai" && editable && <AiChatPanel key={mapId} workspaceId={workspaceId} mapId={mapId} getXml={() => xml.current} applyXml={applyXml} onClose={() => setPanel(null)} ready={status === "ready"} />}
       {panel === "notes" && <NoteLinksPanel ids={links} editable={editable} onOpen={id => props.onOpenNote(id)} onAdd={() => setPicking(true)} onClose={() => setPanel(null)}
         onRemove={async id => { if (await confirm({ title: "取消关联这篇笔记？", description: "只是去掉关联，笔记本身不受影响。", confirmText: "取消关联" })) setNoteLinks(links.filter(x => x !== id)); }} />}
     </div>
@@ -219,8 +220,11 @@ function NoteLinksPanel({ ids, editable, onOpen, onAdd, onRemove, onClose }: {
 
 const SUGGESTIONS = ["画一个用户注册登录的流程图，包含邮箱验证和失败分支", "画一张三层 Web 应用架构图：前端、API、数据库和缓存", "把现在的图改成从左到右排列，并统一配色"];
 
-function AiChatPanel({ mapId, getXml, applyXml, onClose, ready }: { mapId: string; getXml: () => string; applyXml: (xml: string) => void; onClose: () => void; ready: boolean }) {
+function AiChatPanel({ workspaceId, mapId, getXml, applyXml, onClose, ready }: { workspaceId: string; mapId: string; getXml: () => string; applyXml: (xml: string) => void; onClose: () => void; ready: boolean }) {
   const toast = useToast();
+  const model = useAiModel(workspaceId);
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => () => request.current?.abort(), []);
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -230,25 +234,29 @@ function AiChatPanel({ mapId, getXml, applyXml, onClose, ready }: { mapId: strin
   useEffect(() => { list.current?.scrollTo({ top: list.current.scrollHeight }); }, [msgs, busy]);
   const send = async (content: string) => {
     const c = content.trim();
-    if (!c || busy) return;
-    if (!ready) { toast.error("编辑器还没准备好", "等画板加载完再试。"); return; }
+    if (!c || busy || request.current) return;
+    const ctrl = new AbortController();
+    request.current = ctrl;
+    if (!ready) { request.current = null; toast.error("编辑器还没准备好", "等画板加载完再试。"); return; }
     const next = [...msgs, { role: "user" as const, content: c }];
     setMsgs(next);
     setText("");
     setBusy(true);
     try {
       const before = getXml();
-      const d = await api<{ xml: string; reply: string }>(`/api/v1/mindmaps/${mapId}/ai/drawio`, { method: "POST", body: JSON.stringify({ messages: next.slice(-10), xml: before.length <= 400_000 ? before : "" }) });
+      const d = await api<{ xml: string; reply: string }>(`/api/v1/mindmaps/${mapId}/ai/drawio`, { method: "POST", signal: ctrl.signal, body: JSON.stringify({ selection: model.selection, messages: next.slice(-10), xml: before.length <= 400_000 ? before : "" }) });
+      if (ctrl.signal.aborted) return;
       undo.current.push(before);
       setUndoCount(undo.current.length);
       applyXml(d.xml);
       setMsgs(m => [...m, { role: "assistant", content: d.reply || "已按要求更新画板。" }]);
     } catch (e) {
+      if (ctrl.signal.aborted) return;
       const code = (e as { code?: string }).code;
       toast.error("AI 没能画出来", code === "AI_NOT_CONFIGURED" ? "还没有可用的 AI，可以在「AI 与自动化」里设置。" : (e as Error).message);
       setMsgs(m => m.slice(0, -1));
       setText(c);
-    } finally { setBusy(false); }
+    } finally { if (!ctrl.signal.aborted) { request.current = null; setBusy(false); } }
   };
   return <aside className="flex w-80 shrink-0 flex-col border-l border-border bg-background" aria-label="AI 画图">
     <div className="flex h-11 items-center justify-between border-b border-border px-3">
@@ -262,6 +270,7 @@ function AiChatPanel({ mapId, getXml, applyXml, onClose, ready }: { mapId: strin
         <Button size="icon" variant="ghost" className="size-7" aria-label="关闭" onClick={onClose}><X /></Button>
       </div>
     </div>
+    <div className="border-b border-border p-3"><AiModelSelect model={model} disabled={busy} /></div>
     <div ref={list} className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
       {!msgs.length && <div className="space-y-2">
         <p className="text-xs leading-5 text-muted-foreground">用一句话描述想要的图，或者让 AI 改现在这张（它能看到当前画板）。每次修改都能撤销，也会进版本历史。</p>

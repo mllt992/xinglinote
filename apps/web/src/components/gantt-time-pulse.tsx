@@ -5,6 +5,7 @@ import {
   type BoardCol, type Detail, type Milestone, type Project, type Pulse, type Task,
   flattenTasks, fmtClock, fmtMin, fmtSec, HEALTH_BAND_LABEL, healthTone, isoDate, toIso,
 } from "./project-model";
+import { defaultGanttRange, ganttInterval, overlapsGanttRange } from "../lib/gantt-range";
 import { tasksOfMilestone } from "./project-tags";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -23,31 +24,43 @@ export function GanttView({ tasks, milestones, canEdit, onOpen, onFillDate, onRe
 }) {
   const [milestoneTitle, setMilestoneTitle] = useState("");
   const [milestoneDue, setMilestoneDue] = useState(isoDate(new Date().toISOString()));
-  const dated = flattenTasks(tasks).filter(t => t.startAt || t.dueAt);
-  const undated = flattenTasks(tasks).filter(t => !t.startAt && !t.dueAt);
   const today = todayKey();
-  const allDates = [
-    ...dated.flatMap(t => [t.startAt, t.dueAt]),
-    ...milestones.map(m => m.dueAt),
-    today,
-  ].filter((x): x is string => !!x).map(isoDate);
-  const min = allDates.length ? allDates.reduce((a, b) => a < b ? a : b) : today;
-  const max = allDates.length ? allDates.reduce((a, b) => a > b ? a : b) : today;
-  const start = new Date(`${min}T00:00:00Z`);
-  const end = addDays(new Date(`${max}T00:00:00Z`), 1);
+  const [range, setRange] = useState(() => defaultGanttRange(today, 15));
+  const [draftRange, setDraftRange] = useState(range);
+  const [rangeError, setRangeError] = useState("");
+  const all = flattenTasks(tasks);
+  const dated = all.filter(t => (t.startAt || t.dueAt) && overlapsGanttRange(t, range));
+  const undated = all.filter(t => !t.startAt && !t.dueAt);
+  const visibleMilestones = milestones.filter(m => overlapsGanttRange({ startAt: m.dueAt, dueAt: m.dueAt }, range));
+  const start = new Date(`${range.from}T00:00:00Z`);
+  const end = addDays(new Date(`${range.to}T00:00:00Z`), 1);
   const days: Date[] = [];
   for (let d = start; d < end; d = addDays(d, 1)) days.push(d);
   const COL = 28;
 
   function span(t: { startAt: string | null; dueAt: string | null }) {
-    const a = isoDate(t.startAt ?? t.dueAt);
-    const b = isoDate(t.dueAt ?? t.startAt);
+    const { from: a, to: b } = ganttInterval(t)!;
     const from = Math.max(0, Math.round((new Date(`${a}T00:00:00Z`).getTime() - start.getTime()) / 86400_000));
-    const to = Math.max(from + 1, Math.round((new Date(`${b}T00:00:00Z`).getTime() - start.getTime()) / 86400_000) + 1);
+    const to = Math.min(days.length, Math.max(from + 1, Math.round((new Date(`${b}T00:00:00Z`).getTime() - start.getTime()) / 86400_000) + 1));
     return { from, to };
   }
 
-  return <div className="flex h-full min-h-0">
+  return <div className="flex h-full min-h-0 flex-col">
+    <form className="flex shrink-0 flex-wrap items-center gap-2 border-b p-3" onSubmit={e => {
+      e.preventDefault();
+      const count = (Date.parse(draftRange.to) - Date.parse(draftRange.from)) / 86400_000 + 1;
+      if (!Number.isFinite(count) || count < 1 || count > 366) { setRangeError("请选择有效区间，开始不晚于结束，最多 366 天。"); return; }
+      setRange(draftRange); setRangeError("");
+    }}>
+      <span className="text-xs text-muted-foreground">日期范围</span>
+      {[7, 15, 30].map(n => <Button key={n} type="button" size="sm" variant="outline" onClick={() => { const next = defaultGanttRange(today, n); setRange(next); setDraftRange(next); setRangeError(""); }}>近 {n} 天</Button>)}
+      <Input aria-label="甘特开始日期" type="date" className="w-40" required value={draftRange.from} onChange={e => setDraftRange(r => ({ ...r, from: e.target.value }))} />
+      <span>至</span><Input aria-label="甘特结束日期" type="date" className="w-40" required value={draftRange.to} onChange={e => setDraftRange(r => ({ ...r, to: e.target.value }))} />
+      <Button size="sm" type="submit">应用</Button>
+      <p className="w-full text-xs text-muted-foreground">{range.from} — {range.to} · {dated.length} 项任务；跨区间任务仅显示区间内部分，无日期任务保留在下方。</p>
+      {rangeError && <p role="alert" className="text-xs text-destructive">{rangeError}</p>}
+    </form>
+    <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
     <ScrollArea className="min-w-0 flex-1">
       <div className="min-w-max p-4">
         <div className="sticky top-0 z-10 mb-2 flex bg-background/90 text-[11px] text-muted-foreground backdrop-blur">
@@ -58,13 +71,14 @@ export function GanttView({ tasks, milestones, canEdit, onOpen, onFillDate, onRe
             return <div key={key} className={cn("shrink-0 border-l border-border/60 px-0.5 text-center", weekend && "bg-muted/40", key === today && "text-foreground")} style={{ width: COL }}>{d.getUTCDate()}</div>;
           })}
         </div>
+        {!dated.length && !visibleMilestones.length && <p className="py-6 text-sm text-muted-foreground">此日期范围没有任务或里程碑，可调整范围查看。</p>}
         {dated.map(t => {
           const { from, to } = span(t);
           const mile = milestones.find(m => m.id === t.milestoneId);
           return <div key={t.id} className="relative mb-1 flex h-8 items-center">
             <button className="w-40 shrink-0 truncate pr-2 text-left text-xs hover:underline" onClick={() => onOpen(t)}>{t.title}{mile ? <span className="ml-1 text-[10px] text-muted-foreground">◇{mile.title}</span> : null}</button>
             <div className="relative h-8" style={{ width: days.length * COL }}>
-              <div className="absolute inset-y-0 border-l border-primary/40" style={{ left: days.findIndex(d => dayKey(d) === today) * COL }} />
+              {today >= range.from && today <= range.to && <div className="absolute inset-y-0 border-l border-primary/40" style={{ left: days.findIndex(d => dayKey(d) === today) * COL }} />}
               <GanttBar left={from * COL} width={(to - from) * COL} canEdit={canEdit} onShift={delta => {
                 const a = isoDate(t.startAt ?? t.dueAt)!;
                 const b = isoDate(t.dueAt ?? t.startAt)!;
@@ -81,7 +95,7 @@ export function GanttView({ tasks, milestones, canEdit, onOpen, onFillDate, onRe
             </div>
           </div>;
         })}
-        {milestones.map(m => {
+        {visibleMilestones.map(m => {
           const at = Math.round((new Date(`${isoDate(m.dueAt)}T00:00:00Z`).getTime() - start.getTime()) / 86400_000);
           return <div key={m.id} className="relative mb-1 flex h-6 items-center text-[11px] text-muted-foreground">
             <span className="w-40 shrink-0 truncate pr-2">◇ {m.title}</span>
@@ -92,14 +106,14 @@ export function GanttView({ tasks, milestones, canEdit, onOpen, onFillDate, onRe
         })}
       </div>
     </ScrollArea>
-    <aside className="w-64 shrink-0 border-l border-border p-3">
+    <aside className="max-h-48 shrink-0 overflow-y-auto border-t border-border p-3 lg:max-h-none lg:w-64 lg:border-l lg:border-t-0">
       <p className="text-xs font-medium text-muted-foreground">补上日期</p>
       {undated.length ? undated.map(t => <button key={t.id} onClick={() => onFillDate(t)} className="mt-2 block w-full truncate rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted">{t.title}</button>)
         : <p className="mt-2 text-xs text-muted-foreground">有日期的条都在图上。</p>}
-      {!!milestones.length && <div className="mt-6">
+      {!!visibleMilestones.length && <div className="mt-6">
         <p className="text-xs font-medium text-muted-foreground">里程碑对应任务</p>
-        {milestones.map(m => {
-          const linked = tasksOfMilestone(flattenTasks(tasks), m.id);
+        {visibleMilestones.map(m => {
+          const linked = tasksOfMilestone([...dated, ...undated], m.id);
           return <div key={m.id} className="mt-2">
             <p className="text-[11px] font-medium">◇ {m.title} · {isoDate(m.dueAt)}</p>
             {linked.length ? linked.map(t => <button key={t.id} type="button" onClick={() => onOpen(t)} className="mt-0.5 block w-full truncate rounded-md px-1 py-0.5 text-left text-xs text-muted-foreground hover:bg-muted">{t.title}{t.dueAt ? ` · ${isoDate(t.dueAt)}` : ""}</button>)
@@ -119,6 +133,7 @@ export function GanttView({ tasks, milestones, canEdit, onOpen, onFillDate, onRe
         <Button type="submit" size="sm" variant="outline" disabled={!milestoneTitle.trim()}>加上</Button>
       </form>}
     </aside>
+    </div>
   </div>;
 }
 
@@ -143,7 +158,7 @@ function GanttBar({ left, width, canEdit, onShift, onResize }: {
     else onResize(mode, delta);
   }
   return <div className="absolute top-1.5 h-5 rounded-md bg-primary/80" style={{ left, width: Math.max(width, 16) }}
-    onPointerDown={e => down("move", e)} onPointerUp={up}>
+    onPointerDown={e => down("move", e)} onPointerUp={up} onPointerCancel={() => { origin.current = null; }}>
     {canEdit && <>
       <span className="absolute inset-y-0 left-0 w-1.5 cursor-ew-resize" onPointerDown={e => down("start", e)} />
       <span className="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize" onPointerDown={e => down("end", e)} />

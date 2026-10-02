@@ -155,7 +155,8 @@ export function CalendarItemEditor({ target, wsId, tz, canEdit, onClose, onSaved
   }
 
   async function detach() {
-    if (!item) return;
+    if (!item || saving.current) return;
+    saving.current = true;
     setBusy(true);
     try {
       await api(`/api/v1/calendar/items/${item.id}/detach`, { method: "POST" });
@@ -164,6 +165,7 @@ export function CalendarItemEditor({ target, wsId, tz, canEdit, onClose, onSaved
     } catch (e) {
       setErr((e as Error).message);
     } finally {
+      saving.current = false;
       setBusy(false);
     }
   }
@@ -203,7 +205,7 @@ export function CalendarItemEditor({ target, wsId, tz, canEdit, onClose, onSaved
           {item.linkState === "detached" ? "已脱离原文" : `来自《${item.sourceNoteTitle ?? "笔记"}》`}
         </span>
         {item.sourceNoteId && item.linkState !== "detached" && <Button size="sm" variant="ghost" onClick={() => onOpenNote?.(item.sourceNoteId!)}><ExternalLink />打开原文</Button>}
-        {item.linkState === "detached" && canEdit && <Button size="sm" variant="outline" disabled={busy} onClick={() => void detach()}><Link2Off />转为独立任务</Button>}
+        {fromNote && canEdit && <Button size="sm" variant="outline" disabled={busy} onClick={() => void detach()}><Link2Off />转为独立任务</Button>}
       </div>}
 
       <form className="grid gap-3" onSubmit={e => { e.preventDefault(); if (!readOnly) void save(); }}>
